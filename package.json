@@ -1,0 +1,35 @@
+{
+  "name": "pindrop-monorepo",
+  "version": "1.0.0",
+  "description": "A monorepo for a web application with Express backend and React frontend",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "services/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "npm run dev --workspace=@pindrop/backend",
+    "dev:frontend": "npm run dev --workspace=@pindrop/frontend",
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces",
+    "lint": "npm run lint --workspaces",
+    "db:migrate": "npm run db:migrate --workspace=@pindrop/backend",
+    "db:seed": "npm run db:seed --workspace=@pindrop/backend",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:build": "docker-compose build"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "typescript": "^5.3.3",
+    "@types/node": "^20.10.5",
+    "eslint": "^8.56.0",
+    "prettier": "^3.1.1"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}
