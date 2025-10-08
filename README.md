@@ -1,6 +1,6 @@
-# Pindrop Monorepo
+# Pindrop - Social Media Platform
 
-A modern web application built with Express.js backend and React frontend, designed as a monorepo to support multiple backend services.
+A modern social media platform built with Express.js backend and React frontend, designed as a monorepo to support multiple backend services. Pindrop allows users to create posts, follow other users, like content, and interact through comments.
 
 ## 🏗️ Architecture
 
@@ -16,7 +16,7 @@ This monorepo contains:
 ### Backend
 - **Node.js** with **Express.js**
 - **TypeScript** for type safety
-- **PostgreSQL** with **Prisma** ORM
+- **MySQL** with custom database service
 - **JWT** for authentication
 - **Winston** for logging
 - **Joi** for validation
@@ -31,8 +31,8 @@ This monorepo contains:
 - **Lucide React** for icons
 
 ### Database
-- **PostgreSQL** 15
-- **Prisma** for database management and migrations
+- **MySQL** 8.0
+- **Custom database service** for data management
 
 ### Development
 - **Docker** and **Docker Compose** for containerization
@@ -52,7 +52,8 @@ pindrop/
 │   │   │   ├── schemas/         # Validation schemas
 │   │   │   ├── utils/           # Utility functions
 │   │   │   └── index.ts         # Application entry point
-│   │   ├── prisma/              # Database schema and migrations
+│   │   ├── src/
+│   │   │   ├── services/        # Database service
 │   │   └── package.json
 │   └── frontend/                # React application
 │       ├── src/
@@ -72,6 +73,8 @@ pindrop/
 │       │   └── constants/       # Application constants
 │       └── package.json
 ├── services/                    # Future microservices
+├── apps/
+│   └── models/                  # Database models and setup
 ├── scripts/                     # Development scripts
 ├── docker-compose.yml           # Docker services configuration
 └── package.json                 # Root package.json with workspaces
@@ -84,7 +87,7 @@ pindrop/
 - **Node.js** 18+ 
 - **npm** 9+
 - **Docker** and **Docker Compose**
-- **PostgreSQL** (if running locally)
+- **MySQL** (if running locally)
 
 ### Installation
 
@@ -116,10 +119,10 @@ pindrop/
    Or start individual services:
    ```bash
    # Start database
-   docker-compose up postgres -d
+   docker-compose up mysql -d
    
-   # Run database migrations
-   npm run db:migrate
+   # Setup database tables
+   npm run db:setup
    
    # Start backend
    npm run dev:backend
@@ -151,9 +154,8 @@ npm run test
 npm run lint
 
 # Database operations
-npm run db:migrate
+npm run db:setup
 npm run db:seed
-npm run db:generate
 
 # Docker operations
 npm run docker:up
@@ -163,20 +165,14 @@ npm run docker:build
 
 ## 🗄️ Database
 
-The application uses PostgreSQL with Prisma ORM. Database operations are handled through Prisma:
+The application uses MySQL with a custom database service. Database operations are handled through the custom service:
 
 ```bash
-# Generate Prisma client
-npm run db:generate
-
-# Run migrations
-npm run db:migrate
+# Setup database tables
+npm run db:setup
 
 # Seed the database
 npm run db:seed
-
-# Open Prisma Studio
-npm run db:studio
 ```
 
 ## 🔐 Authentication
@@ -191,15 +187,29 @@ The application uses JWT-based authentication:
 ## 🌐 API Endpoints
 
 ### Authentication
-- `POST /api/auth/register` - Register new user
-- `POST /api/auth/login` - Login user
+- `POST /api/auth/register` - Register new user (username, first_name, last_name, email, password)
+- `POST /api/auth/login` - Login user (email, password)
 - `POST /api/auth/logout` - Logout user
 - `POST /api/auth/refresh` - Refresh access token
 
 ### Users
 - `GET /api/users/profile` - Get user profile
-- `PUT /api/users/profile` - Update user profile
+- `PUT /api/users/profile` - Update user profile (username, first_name, last_name, email, bio, profile_picture)
 - `DELETE /api/users/profile` - Delete user account
+
+### Posts (Future)
+- `GET /api/posts` - Get posts feed
+- `POST /api/posts` - Create new post
+- `GET /api/posts/:id` - Get specific post
+- `PUT /api/posts/:id` - Update post
+- `DELETE /api/posts/:id` - Delete post
+- `POST /api/posts/:id/like` - Like/unlike post
+
+### Social Features (Future)
+- `GET /api/users/:id/followers` - Get user followers
+- `GET /api/users/:id/following` - Get user following
+- `POST /api/users/:id/follow` - Follow user
+- `DELETE /api/users/:id/follow` - Unfollow user
 
 ### Health Check
 - `GET /health` - Application health status
@@ -247,7 +257,11 @@ npm init -y
 
 ### Backend (.env)
 ```env
-DATABASE_URL="postgresql://username:password@localhost:5432/pindrop_db?schema=public"
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=pindrop_user
+DB_PASSWORD=pindrop_password
+DB_NAME=pindrop_db
 JWT_SECRET="your-super-secret-jwt-key-here"
 JWT_REFRESH_SECRET="your-super-secret-refresh-key-here"
 PORT=3001
