@@ -3,7 +3,7 @@ import pool from './connection.js';
 
 export async function resetDB() {
   try {
-    console.log('🔄 Resetting database...');
+    console.log('Resetting database...');
     
     // Drop all tables in reverse dependency order
     const dropQueries = [
@@ -29,9 +29,9 @@ export async function resetDB() {
       await pool.query(query);
     }
 
-    console.log('✅ Database reset complete.');
+    console.log('Database reset complete.');
   } catch (err) {
-    console.error('❌ Error resetting database:', err);
+    console.error('Error resetting database:', err);
     throw err;
   }
 }
@@ -39,10 +39,14 @@ export async function resetDB() {
 // Allow running this file directly
 if (process.argv[1].includes('reset.js')) {
   resetDB().then(() => {
-    console.log('🎉 Database reset complete.');
+    console.log('Database reset complete.');
     process.exit(0);
   }).catch((err) => {
     console.error('Failed to reset database:', err);
     process.exit(1);
   });
 }
+
+// the reset.js file only runs when you manually execute it, like this:
+// node backend/db/reset.js
+

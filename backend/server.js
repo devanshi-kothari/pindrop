@@ -4,6 +4,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
+import pool from './db/connection.js';
 import { initializeDB } from './db/init.js';
 
 // Load environment variables
@@ -28,6 +29,24 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Database health check
+app.get('/api/health/db', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT NOW()');
+    res.status(200).json({ 
+      status: 'OK',
+      database: 'Connected',
+      timestamp: result.rows[0]
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      status: 'ERROR',
+      database: 'Disconnected',
+      error: error.message
+    });
+  }
+});
+
 // API routes
 app.get('/api', (req, res) => {
   res.json({
@@ -35,6 +54,7 @@ app.get('/api', (req, res) => {
     version: '1.0.0',
     endpoints: {
       health: '/health',
+      dbHealth: '/api/health/db',
       api: '/api'
     }
   });
@@ -46,8 +66,8 @@ async function startServer() {
     await initializeDB();
     
     app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`Server running on port ${PORT}`);
+      console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
     });
   } catch (error) {
     console.error('Failed to start server:', error);

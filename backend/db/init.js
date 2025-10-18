@@ -8,7 +8,7 @@ export async function initializeDB() {
     const schemaPath = path.join(process.cwd(), 'backend/db/schema.sql');
     const schema = fs.readFileSync(schemaPath, 'utf8');
 
-    console.log('📜 Initializing database schema...');
+    console.log('Initializing database schema...');
     await pool.query(schema);
 
     console.log('Database schema ensured.');
@@ -20,7 +20,7 @@ export async function initializeDB() {
 // Optional: allow running this file directly
 if (process.argv[1].includes('init.js')) {
   initializeDB().then(() => {
-    console.log('🎉 Database setup complete.');
+    console.log('Database setup complete.');
     process.exit(0);
   });
 }
