@@ -1,35 +1,76 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import React, { useState } from 'react';
+import './App.css';
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    // Handle form submission here
+    console.log('Form submitted:', { email, password, isSignUp });
+  };
 
   return (
-    <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <div className="app">
+      <div className="auth-container">
+        <div className="auth-form">
+          <h1 className="auth-title">
+            {isSignUp ? 'Create Account' : 'Sign in - test change'}
+          </h1>
+          
+          <form onSubmit={handleSubmit} className="form">
+            <div className="input-group">
+              <label htmlFor="email" className="input-label">Email</label>
+              <input
+                type="email"
+                id="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="input-field"
+                placeholder="Enter your email"
+                required
+              />
+            </div>
+            
+            <div className="input-group">
+              <label htmlFor="password" className="input-label">Password</label>
+              <input
+                type="password"
+                id="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="input-field"
+                placeholder="Enter your password"
+                required
+              />
+            </div>
+            
+            <button type="submit" className="submit-button">
+              {isSignUp ? 'Sign up' : 'Sign in'}
+            </button>
+          </form>
+          
+          <div className="auth-links">
+            <a href="#" className="forgot-password">
+              Forgot password?
+            </a>
+            
+            <div className="signup-link">
+              <span>Don't have an account? </span>
+              <button 
+                onClick={() => setIsSignUp(!isSignUp)}
+                className="link-button"
+              >
+                Sign up
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
-      <h1>PinDrop</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.tsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
-    </>
-  )
+    </div>
+  );
 }
 
-export default App
+export default App;
