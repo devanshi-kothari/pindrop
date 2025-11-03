@@ -1,4 +1,4 @@
-# Pindrop - Social Media Platform
+# Pindrop - Travel Planning App
 
 A modern social media platform built with Express.js backend and React frontend, designed as a monorepo to support multiple backend services. Pindrop allows users to create posts, follow other users, like content, and interact through comments.
 
