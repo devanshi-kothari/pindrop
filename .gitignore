@@ -101,3 +101,8 @@ Thumbs.db
 
 # Docker
 .dockerignore
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.npm-cache/
