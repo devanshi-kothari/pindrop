@@ -22,12 +22,12 @@ const Header = () => {
               </Link>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <Button variant="ghost" className="text-foreground hover:bg-muted/50">
-              Sign Up
+          <div className="flex items-center gap-4">
+            <Button variant="ghost" className="text-foreground hover:bg-muted/50" asChild>
+              <Link to="/signup">Sign Up</Link>
             </Button>
-            <Button className="bg-primary text-primary-foreground hover:bg-primary/90 px-6 shadow-sm">
-              Log in
+            <Button className="bg-primary text-primary-foreground hover:bg-primary/90 px-6 shadow-sm" asChild>
+              <Link to="/login">Log in</Link>
             </Button>
           </div>
         </nav>
