@@ -4,7 +4,7 @@ import Gallery from "@/components/Gallery";
 
 const Index = () => {
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-white antialiased">
       <Header />
       <Hero />
       <Gallery />
