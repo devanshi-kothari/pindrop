@@ -22,8 +22,8 @@ app.use(express.urlencoded({ extended: true }));
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'OK', 
+  res.status(200).json({
+    status: 'OK',
     timestamp: new Date().toISOString(),
     uptime: process.uptime()
   });
@@ -33,13 +33,13 @@ app.get('/health', (req, res) => {
 app.get('/api/health/db', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW()');
-    res.status(200).json({ 
+    res.status(200).json({
       status: 'OK',
       database: 'Connected',
       timestamp: result.rows[0]
     });
   } catch (error) {
-    res.status(500).json({ 
+    res.status(500).json({
       status: 'ERROR',
       database: 'Disconnected',
       error: error.message
@@ -55,16 +55,47 @@ app.get('/api', (req, res) => {
     endpoints: {
       health: '/health',
       dbHealth: '/api/health/db',
-      api: '/api'
+      api: '/api',
+      testUsers: '/api/users/test'
     }
   });
+});
+
+// Test endpoint to verify dummy data
+app.get('/api/users/test', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        user_id,
+        name,
+        email,
+        home_location,
+        budget_preference,
+        travel_style,
+        liked_tags,
+        created_at
+      FROM app_user
+      ORDER BY user_id
+    `);
+
+    res.status(200).json({
+      success: true,
+      count: result.rows.length,
+      users: result.rows
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 // Initialize database and start server
 async function startServer() {
   try {
     await initializeDB();
-    
+
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
       console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);

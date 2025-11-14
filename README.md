@@ -84,7 +84,7 @@ pindrop/
 
 ### Prerequisites
 
-- **Node.js** 18+ 
+- **Node.js** 18+
 - **npm** 9+
 - **Docker** and **Docker Compose**
 - **MySQL** (if running locally)
@@ -106,7 +106,7 @@ pindrop/
    ```bash
    # Backend
    cp apps/backend/env.example apps/backend/.env
-   
+
    # Frontend
    cp apps/frontend/.env.example apps/frontend/.env
    ```
@@ -120,13 +120,13 @@ pindrop/
    ```bash
    # Start database
    docker-compose up mysql -d
-   
+
    # Setup database tables
    npm run db:setup
-   
+
    # Start backend
    npm run dev:backend
-   
+
    # Start frontend (in another terminal)
    npm run dev:frontend
    ```

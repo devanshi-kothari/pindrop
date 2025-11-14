@@ -9,6 +9,7 @@
     "start": "node backend/server.js",
     "db:init": "node backend/db/init.js",
     "db:reset": "node backend/db/reset.js",
+    "db:seed": "node backend/db/load_dummy_data.js",
     "test": "jest"
   },
   "dependencies": {

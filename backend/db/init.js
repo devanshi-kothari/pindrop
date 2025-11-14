@@ -2,6 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import pool from './connection.js';
+import { loadDummyData } from './load_dummy_data.js';
 
 export async function initializeDB() {
   try {
@@ -12,6 +13,14 @@ export async function initializeDB() {
     await pool.query(schema);
 
     console.log('Database schema ensured.');
+
+    // Load dummy data
+    console.log('Loading dummy data...');
+    await loadDummyData();
+
+    console.log('COMPLETE: Dummy data loaded successfully.');
+
+    // remove ^^
   } catch (err) {
     console.error('Error initializing database:', err);
   }
