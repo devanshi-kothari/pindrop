@@ -26,6 +26,5 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src", "tsconfig.app.json", "tsconfig.json", "tsconfig.node.json", "vite.config.ts"]
+  "include": ["src"]
 }
-, "tailwind.config.ts"
