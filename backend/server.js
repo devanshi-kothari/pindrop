@@ -4,8 +4,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
-import pool from './db/connection.js';
-import { initializeDB } from './db/init.js';
+import supabase from './supabaseClient.js';
 
 // Load environment variables
 dotenv.config();
@@ -14,7 +13,10 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
-app.use(helmet());
+app.use(helmet({
+  crossOriginEmbedderPolicy: false, // Allow iframe embedding if needed
+  contentSecurityPolicy: false, // Disable CSP to avoid CSRF-like issues in development
+}));
 app.use(cors());
 app.use(morgan('combined'));
 app.use(express.json({ limit: '10mb' }));
@@ -32,11 +34,19 @@ app.get('/health', (req, res) => {
 // Database health check
 app.get('/api/health/db', async (req, res) => {
   try {
-    const result = await pool.query('SELECT NOW()');
+    const { error } = await supabase
+      .from('app_user')
+      .select('user_id', { head: true, count: 'exact' })
+      .limit(1);
+
+    if (error) {
+      throw error;
+    }
+
     res.status(200).json({
       status: 'OK',
       database: 'Connected',
-      timestamp: result.rows[0]
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
     res.status(500).json({
@@ -61,27 +71,24 @@ app.get('/api', (req, res) => {
   });
 });
 
-// Test endpoint to verify dummy data
+// Test endpoint to verify Supabase data
 app.get('/api/users/test', async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT
-        user_id,
-        name,
-        email,
-        home_location,
-        budget_preference,
-        travel_style,
-        liked_tags,
-        created_at
-      FROM app_user
-      ORDER BY user_id
-    `);
+    const { data, error } = await supabase
+      .from('app_user')
+      .select(
+        'user_id, name, email, home_location, budget_preference, travel_style, liked_tags, created_at'
+      )
+      .order('user_id');
+
+    if (error) {
+      throw error;
+    }
 
     res.status(200).json({
       success: true,
-      count: result.rows.length,
-      users: result.rows
+      count: data.length,
+      users: data
     });
   } catch (error) {
     res.status(500).json({
@@ -91,19 +98,7 @@ app.get('/api/users/test', async (req, res) => {
   }
 });
 
-// Initialize database and start server
-async function startServer() {
-  try {
-    await initializeDB();
-
-    app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
-      console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-    });
-  } catch (error) {
-    console.error('Failed to start server:', error);
-    process.exit(1);
-  }
-}
-
-startServer();
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+});
