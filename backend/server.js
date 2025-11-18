@@ -6,6 +6,7 @@ import morgan from 'morgan';
 import dotenv from 'dotenv';
 import supabase from './supabaseClient.js';
 import authRoutes from './routes/auth.js';
+import chatRoutes from './routes/chat.js';
 
 // Load environment variables
 dotenv.config();
@@ -71,6 +72,11 @@ app.get('/api', (req, res) => {
       auth: {
         signup: 'POST /api/auth/signup',
         login: 'POST /api/auth/login'
+      },
+      chat: {
+        history: 'GET /api/chat/history',
+        chat: 'POST /api/chat/chat',
+        chatStream: 'POST /api/chat/chat/stream'
       }
     }
   });
@@ -78,6 +84,9 @@ app.get('/api', (req, res) => {
 
 // Authentication routes
 app.use('/api/auth', authRoutes);
+
+// Chat/LLM routes
+app.use('/api/chat', chatRoutes);
 
 // Test endpoint to verify Supabase data
 app.get('/api/users/test', async (req, res) => {

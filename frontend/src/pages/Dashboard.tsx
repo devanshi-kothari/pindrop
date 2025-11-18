@@ -1,9 +1,7 @@
-import { useState } from "react";
 import DashboardHeader from "@/components/DashboardHeader";
 import DashboardSidebar from "@/components/DashboardSidebar";
 import TravelCard from "@/components/TravelCard";
-import { Input } from "@/components/ui/input";
-import { Send } from "lucide-react";
+import ChatWindow from "@/components/ChatWindow";
 
 // Dummy travel data
 const travelDestinations = [
@@ -66,32 +64,13 @@ const travelDestinations = [
 ];
 
 const Dashboard = () => {
-  const [searchQuery, setSearchQuery] = useState("");
-
   return (
     <div className="min-h-screen bg-background">
       <DashboardHeader />
       <div className="flex">
         <DashboardSidebar />
-        <main className="flex-1 p-8">
+        <main className="flex-1 p-8 relative">
           <div className="max-w-7xl mx-auto space-y-8">
-            {/* Search Bar */}
-            <div className="relative max-w-3xl mx-auto">
-              <Input
-                type="text"
-                placeholder="Where do you want to go..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-12 pr-14 py-6 rounded-full border-2 text-base"
-              />
-              <div className="absolute left-4 top-1/2 -translate-y-1/2">
-                <div className="w-6 h-6 rounded-full bg-gradient-to-br from-pink-400 to-pink-500" />
-              </div>
-              <button className="absolute right-3 top-1/2 -translate-y-1/2 bg-cyan text-white p-2.5 rounded-full hover:bg-cyan/90 transition-colors">
-                <Send className="w-5 h-5" />
-              </button>
-            </div>
-
             {/* Title */}
             <h1 className="text-4xl font-bold text-center bg-gradient-to-r from-blue-600 to-blue-400 bg-clip-text text-transparent">
               Things to look forward to...
@@ -103,6 +82,17 @@ const Dashboard = () => {
                 <TravelCard key={destination.id} {...destination} />
               ))}
             </div>
+
+            {/* Click to view more suggestions (could trigger chat) */}
+            <div className="text-center space-y-2">
+              <p className="text-muted-foreground">Click to view more</p>
+              <p className="text-muted-foreground">Click to view more</p>
+            </div>
+          </div>
+
+          {/* Chat Window - Fixed position in bottom right */}
+          <div className="fixed bottom-6 right-6 w-[500px] h-[600px] bg-gradient-to-br from-blue-600 to-blue-700 rounded-lg shadow-2xl border-2 border-blue-400 overflow-hidden flex flex-col z-50">
+            <ChatWindow className="flex-1" />
           </div>
         </main>
       </div>

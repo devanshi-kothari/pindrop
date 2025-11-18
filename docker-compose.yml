@@ -37,6 +37,9 @@ services:
       PORT: 3001
       JWT_SECRET: your-super-secret-jwt-key-here
       JWT_REFRESH_SECRET: your-super-secret-refresh-key-here
+      # Ollama configuration - host.docker.internal allows Docker containers to access services on the host machine
+      OLLAMA_HOST: http://host.docker.internal:11434
+      OLLAMA_MODEL: gemma2
     ports:
       - "3001:3001"
     volumes:

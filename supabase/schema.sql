@@ -58,6 +58,16 @@ CREATE TABLE IF NOT EXISTS itinerary_activity (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
 
+CREATE TABLE IF NOT EXISTS chat_message (
+    message_id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES app_user(user_id) ON DELETE CASCADE,
+    role VARCHAR(20) NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+    content TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+);
+
 CREATE INDEX IF NOT EXISTS idx_trip_user_id ON trip(user_id);
 CREATE INDEX IF NOT EXISTS idx_itinerary_trip_id ON itinerary(trip_id);
 CREATE INDEX IF NOT EXISTS idx_itinerary_activity_ids ON itinerary_activity(itinerary_id, activity_id);
+CREATE INDEX IF NOT EXISTS idx_chat_message_user_id ON chat_message(user_id);
+CREATE INDEX IF NOT EXISTS idx_chat_message_created_at ON chat_message(user_id, created_at);
