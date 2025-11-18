@@ -13,9 +13,11 @@ interface Message {
 
 interface ChatWindowProps {
   className?: string;
+  tripId?: number | null;
+  initialMessage?: string | null;
 }
 
-const ChatWindow = ({ className = "" }: ChatWindowProps) => {
+const ChatWindow = ({ className = "", tripId = null, initialMessage = null }: ChatWindowProps) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -43,7 +45,11 @@ const ChatWindow = ({ className = "" }: ChatWindowProps) => {
       }
 
       try {
-        const response = await fetch(getApiUrl("api/chat/history"), {
+        const url = tripId
+          ? getApiUrl(`api/chat/history?tripId=${tripId}`)
+          : getApiUrl("api/chat/history");
+
+        const response = await fetch(url, {
           method: "GET",
           headers: {
             "Authorization": `Bearer ${token}`,
@@ -65,11 +71,12 @@ const ChatWindow = ({ className = "" }: ChatWindowProps) => {
 
           // If no history, show welcome message
           if (historyMessages.length === 0) {
-            setMessages([{
-              role: "assistant",
+            const welcomeMessage = {
+              role: "assistant" as const,
               content: "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            }]);
+            };
+            setMessages([welcomeMessage]);
           } else {
             setMessages(historyMessages);
           }
@@ -95,7 +102,7 @@ const ChatWindow = ({ className = "" }: ChatWindowProps) => {
     };
 
     loadHistory();
-  }, []);
+  }, [tripId]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -105,6 +112,28 @@ const ChatWindow = ({ className = "" }: ChatWindowProps) => {
   const formatTime = () => {
     return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
+
+  // Auto-send initial message once history is loaded
+  useEffect(() => {
+    if (initialMessage && !isLoadingHistory && messages.length > 0 && !isLoading) {
+      // Check if initial message hasn't been sent yet
+      const hasInitialMessage = messages.some(msg =>
+        msg.role === "user" && msg.content === initialMessage
+      );
+      if (!hasInitialMessage) {
+        setInputMessage(initialMessage);
+        // Auto-send after a short delay using the input's value
+        const timer = setTimeout(() => {
+          const sendBtn = document.getElementById('chat-send-button') as HTMLButtonElement;
+          if (sendBtn && !sendBtn.disabled) {
+            sendBtn.click();
+          }
+        }, 1000);
+        return () => clearTimeout(timer);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialMessage, isLoadingHistory, messages.length, isLoading]);
 
   const sendMessage = async () => {
     if (!inputMessage.trim() || isLoading) return;
@@ -134,6 +163,7 @@ const ChatWindow = ({ className = "" }: ChatWindowProps) => {
         },
         body: JSON.stringify({
           message: userMessage.content,
+          tripId: tripId,
           // Conversation history is now loaded from database on backend
         }),
       });
@@ -250,9 +280,11 @@ const ChatWindow = ({ className = "" }: ChatWindowProps) => {
             className="pl-12 pr-14 h-12 rounded-full border-2 bg-black text-white placeholder:text-gray-400 border-gray-700 focus:border-blue-400"
           />
           <Button
+            type="button"
             onClick={sendMessage}
             disabled={!inputMessage.trim() || isLoading}
             className="absolute right-2 h-8 w-8 rounded-full bg-blue-500 hover:bg-blue-400 text-white p-0 disabled:opacity-50 disabled:cursor-not-allowed"
+            id="chat-send-button"
           >
             <Send className="h-4 w-4" />
           </Button>

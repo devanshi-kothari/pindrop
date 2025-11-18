@@ -16,14 +16,23 @@ const groqClient = new OpenAI({
 const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
 
 // Helper function to load conversation history from database
-async function loadConversationHistory(userId) {
+async function loadConversationHistory(userId, tripId = null) {
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from('chat_message')
       .select('role, content, created_at')
       .eq('user_id', userId)
       .order('created_at', { ascending: true })
       .limit(50); // Limit to last 50 messages for context
+
+    // If tripId is provided, filter by trip_id, otherwise get general chat
+    if (tripId) {
+      query = query.eq('trip_id', tripId);
+    } else {
+      query = query.is('trip_id', null);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       console.error('Error loading conversation history:', error);
@@ -42,15 +51,21 @@ async function loadConversationHistory(userId) {
 }
 
 // Helper function to save message to database
-async function saveMessage(userId, role, content) {
+async function saveMessage(userId, role, content, tripId = null) {
   try {
+    const messageData = {
+      user_id: userId,
+      role: role,
+      content: content
+    };
+
+    if (tripId) {
+      messageData.trip_id = tripId;
+    }
+
     const { error } = await supabase
       .from('chat_message')
-      .insert([{
-        user_id: userId,
-        role: role,
-        content: content
-      }]);
+      .insert([messageData]);
 
     if (error) {
       console.error('Error saving message:', error);
@@ -64,7 +79,8 @@ async function saveMessage(userId, role, content) {
 router.get('/history', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-    const history = await loadConversationHistory(userId);
+    const tripId = req.query.tripId ? parseInt(req.query.tripId) : null;
+    const history = await loadConversationHistory(userId, tripId);
 
     res.status(200).json({
       success: true,
@@ -84,7 +100,7 @@ router.get('/history', authenticateToken, async (req, res) => {
 router.post('/chat', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-    const { message, model } = req.body;
+    const { message, model, tripId } = req.body;
 
     if (!message) {
       return res.status(400).json({
@@ -93,8 +109,10 @@ router.post('/chat', authenticateToken, async (req, res) => {
       });
     }
 
-    // Load conversation history from database
-    const conversationHistory = await loadConversationHistory(userId);
+    const parsedTripId = tripId ? parseInt(tripId) : null;
+
+    // Load conversation history from database (filtered by tripId if provided)
+    const conversationHistory = await loadConversationHistory(userId, parsedTripId);
 
     // Use provided model or default
     const chatModel = model || DEFAULT_MODEL;
@@ -115,8 +133,8 @@ router.post('/chat', authenticateToken, async (req, res) => {
       }
     ];
 
-    // Save user message to database
-    await saveMessage(userId, 'user', message);
+    // Save user message to database (with tripId if provided)
+    await saveMessage(userId, 'user', message, parsedTripId);
 
     // Call Groq API
     const completion = await groqClient.chat.completions.create({
@@ -126,8 +144,8 @@ router.post('/chat', authenticateToken, async (req, res) => {
 
     const assistantMessage = completion.choices[0]?.message?.content || 'Sorry, I did not receive a response.';
 
-    // Save assistant response to database
-    await saveMessage(userId, 'assistant', assistantMessage);
+    // Save assistant response to database (with tripId if provided)
+    await saveMessage(userId, 'assistant', assistantMessage, parsedTripId);
 
     // Return the response
     res.status(200).json({
@@ -168,10 +186,12 @@ router.post('/chat', authenticateToken, async (req, res) => {
 router.post('/chat/stream', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-    const { message, model } = req.body;
+    const { message, model, tripId } = req.body;
 
-    // Load conversation history from database
-    const conversationHistory = await loadConversationHistory(userId);
+    const parsedTripId = tripId ? parseInt(tripId) : null;
+
+    // Load conversation history from database (filtered by tripId if provided)
+    const conversationHistory = await loadConversationHistory(userId, parsedTripId);
 
     if (!message) {
       return res.status(400).json({
@@ -201,8 +221,8 @@ router.post('/chat/stream', authenticateToken, async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    // Save user message to database
-    await saveMessage(userId, 'user', message);
+    // Save user message to database (with tripId if provided)
+    await saveMessage(userId, 'user', message, parsedTripId);
 
     try {
       let fullResponse = '';
@@ -226,9 +246,9 @@ router.post('/chat/stream', authenticateToken, async (req, res) => {
         }
       }
 
-      // Save assistant response to database
+      // Save assistant response to database (with tripId if provided)
       if (fullResponse) {
-        await saveMessage(userId, 'assistant', fullResponse);
+        await saveMessage(userId, 'assistant', fullResponse, parsedTripId);
       }
 
       // Send completion signal
