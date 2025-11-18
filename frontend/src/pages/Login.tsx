@@ -14,6 +14,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import Header from "@/components/Header";
+import { getApiUrl } from "@/lib/api";
 
 const loginSchema = z.object({
   email: z.string().email("Please enter a valid email address"),
@@ -34,8 +35,7 @@ const Login = () => {
 
   const onSubmit = async (data: LoginFormValues) => {
     try {
-      // TODO: Replace with actual API call
-      const response = await fetch("/api/auth/login", {
+      const response = await fetch(getApiUrl("api/auth/login"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -46,16 +46,20 @@ const Login = () => {
         }),
       });
 
+      const result = await response.json();
+
       if (response.ok) {
-        const result = await response.json();
         // Store token if provided
         if (result.token) {
           localStorage.setItem("token", result.token);
         }
+        // Store user data if provided
+        if (result.user) {
+          localStorage.setItem("user", JSON.stringify(result.user));
+        }
         navigate("/");
       } else {
-        const error = await response.json();
-        alert(error.message || "Login failed. Please check your credentials.");
+        alert(result.message || "Login failed. Please check your credentials.");
       }
     } catch (error) {
       console.error("Login error:", error);
@@ -108,9 +112,9 @@ const Login = () => {
                   <p className="text-sm text-destructive font-medium">{errors.password.message}</p>
                 )}
               </div>
-              <Button 
-                type="submit" 
-                className="w-full h-11 text-base font-semibold shadow-md hover:shadow-lg transition-all duration-200" 
+              <Button
+                type="submit"
+                className="w-full h-11 text-base font-semibold shadow-md hover:shadow-lg transition-all duration-200"
                 disabled={isSubmitting}
               >
                 {isSubmitting ? "Logging in..." : "Log in"}
@@ -132,4 +136,3 @@ const Login = () => {
 };
 
 export default Login;
-

@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
 import supabase from './supabaseClient.js';
+import authRoutes from './routes/auth.js';
 
 // Load environment variables
 dotenv.config();
@@ -66,10 +67,17 @@ app.get('/api', (req, res) => {
       health: '/health',
       dbHealth: '/api/health/db',
       api: '/api',
-      testUsers: '/api/users/test'
+      testUsers: '/api/users/test',
+      auth: {
+        signup: 'POST /api/auth/signup',
+        login: 'POST /api/auth/login'
+      }
     }
   });
 });
+
+// Authentication routes
+app.use('/api/auth', authRoutes);
 
 // Test endpoint to verify Supabase data
 app.get('/api/users/test', async (req, res) => {
