@@ -1,4 +1,3 @@
-version: '3.8'
 
 services:
   postgres:
@@ -12,7 +11,7 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./supabase/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
     networks:
       - pindrop-network
     healthcheck:
