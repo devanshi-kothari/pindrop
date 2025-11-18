@@ -134,7 +134,11 @@ const Signup = () => {
         if (result.token) {
           localStorage.setItem("token", result.token);
         }
-        navigate("/");
+        // Store user data if provided
+        if (result.user) {
+          localStorage.setItem("user", JSON.stringify(result.user));
+        }
+        navigate("/dashboard");
       } else {
         alert(result.message || "Signup failed. Please try again.");
       }

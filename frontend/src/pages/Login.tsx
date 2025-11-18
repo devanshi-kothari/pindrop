@@ -57,7 +57,7 @@ const Login = () => {
         if (result.user) {
           localStorage.setItem("user", JSON.stringify(result.user));
         }
-        navigate("/");
+        navigate("/dashboard");
       } else {
         alert(result.message || "Login failed. Please check your credentials.");
       }
