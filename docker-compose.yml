@@ -37,9 +37,10 @@ services:
       PORT: 3001
       JWT_SECRET: your-super-secret-jwt-key-here
       JWT_REFRESH_SECRET: your-super-secret-refresh-key-here
-      # Ollama configuration - host.docker.internal allows Docker containers to access services on the host machine
-      OLLAMA_HOST: http://host.docker.internal:11434
-      OLLAMA_MODEL: gemma2
+      # Groq configuration for LLM chat
+      # API key should be set in .env file (gitignored) for security
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.1-8b-instant}
     ports:
       - "3001:3001"
     volumes:

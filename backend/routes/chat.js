@@ -1,18 +1,19 @@
 // backend/routes/chat.js
 import express from 'express';
-import { Ollama } from 'ollama';
+import OpenAI from 'openai';
 import supabase from '../supabaseClient.js';
 import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// Initialize Ollama client
-// Use OLLAMA_HOST env variable or default to localhost
-const ollamaHost = process.env.OLLAMA_HOST || 'http://localhost:11434';
-const ollama = new Ollama({ host: ollamaHost });
+// Initialize Groq client (OpenAI-compatible API)
+const groqClient = new OpenAI({
+  apiKey: process.env.GROQ_API_KEY,
+  baseURL: 'https://api.groq.com/openai/v1',
+});
 
 // Default model - can be overridden via env variable
-const DEFAULT_MODEL = process.env.OLLAMA_MODEL || 'gemma2';
+const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
 
 // Helper function to load conversation history from database
 async function loadConversationHistory(userId) {
@@ -117,13 +118,13 @@ router.post('/chat', authenticateToken, async (req, res) => {
     // Save user message to database
     await saveMessage(userId, 'user', message);
 
-    // Call Ollama
-    const response = await ollama.chat({
+    // Call Groq API
+    const completion = await groqClient.chat.completions.create({
       model: chatModel,
       messages: messages,
     });
 
-    const assistantMessage = response.message.content;
+    const assistantMessage = completion.choices[0]?.message?.content || 'Sorry, I did not receive a response.';
 
     // Save assistant response to database
     await saveMessage(userId, 'assistant', assistantMessage);
@@ -135,13 +136,22 @@ router.post('/chat', authenticateToken, async (req, res) => {
       model: chatModel
     });
   } catch (error) {
-    console.error('Ollama chat error:', error);
+    console.error('Groq chat error:', error);
 
-    // Check if it's a model not found error
-    if (error.message && error.message.includes('model')) {
-      return res.status(404).json({
+    // Check if it's an authentication error
+    if (error.status === 401 || error.message?.includes('API key')) {
+      return res.status(401).json({
         success: false,
-        message: `Model not found. Please ensure the model is downloaded: ollama pull ${DEFAULT_MODEL}`,
+        message: 'Invalid Groq API key. Please check your configuration.',
+        error: error.message
+      });
+    }
+
+    // Check if it's a model not found or decommissioned error
+    if (error.status === 404 || error.status === 400 || error.code === 'model_decommissioned' || error.message?.includes('model')) {
+      return res.status(400).json({
+        success: false,
+        message: error.message || 'Model error. Please check the model configuration.',
         error: error.message
       });
     }
@@ -191,9 +201,14 @@ router.post('/chat/stream', authenticateToken, async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
+    // Save user message to database
+    await saveMessage(userId, 'user', message);
+
     try {
-      // Stream the response
-      const stream = await ollama.chat({
+      let fullResponse = '';
+
+      // Stream the response from Groq
+      const stream = await groqClient.chat.completions.create({
         model: chatModel,
         messages: messages,
         stream: true,
@@ -201,27 +216,24 @@ router.post('/chat/stream', authenticateToken, async (req, res) => {
 
       // Send each chunk as it arrives
       for await (const chunk of stream) {
-        if (chunk.message && chunk.message.content) {
+        const content = chunk.choices[0]?.delta?.content || '';
+        if (content) {
+          fullResponse += content;
           res.write(`data: ${JSON.stringify({
-            content: chunk.message.content,
-            done: chunk.done || false
+            content: content,
+            done: false
           })}\n\n`);
         }
       }
 
-      // Save assistant response to database (full response accumulated in chunks)
-      // Note: For streaming, we'd need to accumulate chunks. For simplicity,
-      // you might want to save after completion or handle this differently.
-      // For now, we'll save the final accumulated message if available.
+      // Save assistant response to database
+      if (fullResponse) {
+        await saveMessage(userId, 'assistant', fullResponse);
+      }
 
       // Send completion signal
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
       res.end();
-
-      // Save user message and assistant response after streaming completes
-      await saveMessage(userId, 'user', message);
-      // Note: In a real implementation, you'd want to accumulate the full assistant response
-      // before saving. This is a simplified version.
     } catch (streamError) {
       console.error('Streaming error:', streamError);
       res.write(`data: ${JSON.stringify({
@@ -231,7 +243,7 @@ router.post('/chat/stream', authenticateToken, async (req, res) => {
       res.end();
     }
   } catch (error) {
-    console.error('Ollama stream chat error:', error);
+    console.error('Groq stream chat error:', error);
     if (!res.headersSent) {
       res.status(500).json({
         success: false,

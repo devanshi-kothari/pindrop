@@ -161,7 +161,7 @@ const ChatWindow = ({ className = "" }: ChatWindowProps) => {
       console.error("Chat error:", error);
       const errorMessage: Message = {
         role: "assistant",
-        content: "Sorry, I'm having trouble connecting. Please check if Ollama is running and try again.",
+        content: "Sorry, I'm having trouble connecting. Please try again later.",
         timestamp: formatTime()
       };
       setMessages((prev) => [...prev, errorMessage]);
