@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams, useLocation } from "react-router-dom";
 import ChatWindow from "@/components/ChatWindow";
 import { Button } from "@/components/ui/button";
 import { getApiUrl } from "@/lib/api";
@@ -19,11 +19,25 @@ interface Trip {
 const TripPlanning = () => {
   const { tripId } = useParams<{ tripId: string }>();
   const [searchParams] = useSearchParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const [trip, setTrip] = useState<Trip | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const initialMessage = searchParams.get("message");
+
+  // Check if we're on the /trip/new route (tripId is undefined when route matches /trip/new exactly)
+  const isNewTrip = location.pathname === "/trip/new" || tripId === "new";
+
+  // Debug logging
+  console.log('TripPlanning render:', {
+    tripId,
+    initialMessage,
+    isNewTrip,
+    pathname: location.pathname,
+    searchParamsString: searchParams.toString(),
+    allParams: Object.fromEntries(searchParams.entries())
+  });
 
   useEffect(() => {
     if (tripId && tripId !== "new") {
@@ -31,7 +45,7 @@ const TripPlanning = () => {
     } else {
       setLoading(false);
     }
-  }, [tripId]);
+  }, [tripId, isNewTrip]);
 
   const loadTrip = async (id: number) => {
     try {
@@ -167,14 +181,10 @@ const TripPlanning = () => {
     }
   };
 
-  // Auto-create trip if it's a new trip with an initial message
-  useEffect(() => {
-    if (tripId === "new" && initialMessage && !trip && !loading && !saving) {
-      handleCreateTrip();
-    }
-  }, [tripId, initialMessage, trip, loading, saving]);
+  // Note: Trip creation is now handled by the chat endpoint automatically
+  // This effect is kept for backwards compatibility but may not be needed
 
-  const currentTripId = trip ? trip.trip_id : (tripId && tripId !== "new" ? parseInt(tripId) : null);
+  const currentTripId = trip ? trip.trip_id : (tripId && tripId !== "new" && !isNewTrip ? parseInt(tripId) : null);
 
   return (
     <div className="min-h-screen bg-background">
@@ -235,8 +245,19 @@ const TripPlanning = () => {
                 <ChatWindow
                   tripId={currentTripId}
                   className="h-full"
-                  initialMessage={tripId === "new" ? initialMessage : null}
+                  initialMessage={isNewTrip ? initialMessage : null}
+                  onTripCreated={(newTripId) => {
+                    // Update URL to the new trip ID
+                    window.history.replaceState({}, "", `/trip/${newTripId}`);
+                    // Load the trip data
+                    loadTrip(newTripId);
+                  }}
                 />
+                {isNewTrip && (
+                  <div style={{ display: 'none' }}>
+                    Debug: tripId={tripId}, initialMessage={initialMessage}, currentTripId={currentTripId?.toString() || 'null'}, isNewTrip={isNewTrip.toString()}
+                  </div>
+                )}
               </div>
             )}
           </div>

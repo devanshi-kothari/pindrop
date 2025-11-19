@@ -59,19 +59,145 @@ async function saveMessage(userId, role, content, tripId = null) {
       content: content
     };
 
-    if (tripId) {
+    if (tripId !== null && tripId !== undefined) {
       messageData.trip_id = tripId;
     }
 
-    const { error } = await supabase
+    console.log(`Saving ${role} message:`, { userId, role, contentLength: content.length, tripId });
+
+    const { data, error } = await supabase
       .from('chat_message')
-      .insert([messageData]);
+      .insert([messageData])
+      .select();
 
     if (error) {
       console.error('Error saving message:', error);
+      throw error;
+    } else {
+      console.log(`Successfully saved ${role} message with trip_id:`, data[0]?.trip_id || 'NULL');
     }
   } catch (error) {
     console.error('Error saving message:', error);
+    throw error;
+  }
+}
+
+// Helper function to extract trip information from a message using LLM
+async function extractTripInfo(message) {
+  try {
+    const extractionPrompt = `Extract trip information from the following user message. Respond ONLY with valid JSON in this exact format (use null for missing values):
+{
+  "destination": "destination name or null",
+  "start_date": "YYYY-MM-DD or null",
+  "end_date": "YYYY-MM-DD or null",
+  "num_travelers": number or null,
+  "total_budget": number or null,
+  "is_trip_request": true or false
+}
+
+Message: "${message}"
+
+If the message is clearly about creating a new trip (e.g., "I want to go to X", "plan a trip to Y", "I'd like to visit Z"), set is_trip_request to true. Otherwise false.`;
+
+    const completion = await groqClient.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a travel information extraction assistant. Extract trip details from user messages and return only valid JSON.'
+        },
+        {
+          role: 'user',
+          content: extractionPrompt
+        }
+      ],
+      temperature: 0.3
+    });
+
+    const response = completion.choices[0]?.message?.content || '{}';
+
+    // Try to parse JSON, handling cases where response might have extra text
+    let parsed;
+    try {
+      // Try direct parse first
+      parsed = JSON.parse(response);
+    } catch (e) {
+      // Try to extract JSON from response if wrapped in markdown or other text
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('No JSON found in response');
+      }
+    }
+
+    return parsed;
+  } catch (error) {
+    console.error('Error extracting trip info:', error);
+    // Fallback: try to extract destination manually
+    const destinationMatch = message.match(/\bto\s+([A-Za-z\s]+?)(?:\s|$|,|\.|!|\?)/i);
+    return {
+      destination: destinationMatch ? destinationMatch[1].trim() : null,
+      start_date: null,
+      end_date: null,
+      num_travelers: null,
+      total_budget: null,
+      is_trip_request: destinationMatch !== null || /want.*go|plan.*trip|visit|travel/i.test(message)
+    };
+  }
+}
+
+// Helper function to create a trip
+async function createTrip(userId, tripInfo, imageUrl = null) {
+  try {
+    // Default dates if not provided
+    let startDate = tripInfo.start_date;
+    let endDate = tripInfo.end_date;
+
+    if (!startDate || !endDate) {
+      const today = new Date();
+      const defaultStart = new Date(today);
+      defaultStart.setDate(today.getDate() + 7); // 7 days from now
+      const defaultEnd = new Date(defaultStart);
+      defaultEnd.setDate(defaultStart.getDate() + 5); // 5 days trip
+
+      if (!startDate) startDate = defaultStart.toISOString().split('T')[0];
+      if (!endDate) endDate = defaultEnd.toISOString().split('T')[0];
+    }
+
+    const tripData = {
+      user_id: userId,
+      title: tripInfo.destination ? `Trip to ${tripInfo.destination}` : 'My Trip',
+      destination: tripInfo.destination || 'Unknown',
+      start_date: startDate,
+      end_date: endDate,
+      trip_status: 'draft',
+      num_travelers: tripInfo.num_travelers || 1,
+    };
+
+    if (tripInfo.total_budget !== null && tripInfo.total_budget !== undefined) {
+      tripData.total_budget = parseFloat(tripInfo.total_budget);
+    }
+
+    if (imageUrl) {
+      tripData.image_url = imageUrl;
+    }
+
+    const { data, error } = await supabase
+      .from('trip')
+      .insert([tripData])
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating trip:', error);
+      throw error;
+    }
+
+    return data;
+  } catch (error) {
+    console.error('Error creating trip:', error);
+    throw error;
   }
 }
 
@@ -109,7 +235,28 @@ router.post('/chat', authenticateToken, async (req, res) => {
       });
     }
 
-    const parsedTripId = tripId ? parseInt(tripId) : null;
+    let parsedTripId = tripId ? parseInt(tripId) : null;
+    let createdTrip = null;
+
+    // If no tripId provided, check if this is a trip creation request
+    if (!parsedTripId) {
+      const tripInfo = await extractTripInfo(message);
+
+      if (tripInfo.is_trip_request && tripInfo.destination) {
+        // Generate image URL for destination using Unsplash Source API
+        let imageUrl = `https://source.unsplash.com/800x450/?${encodeURIComponent(tripInfo.destination)},travel`;
+
+        // Create the trip
+        try {
+          createdTrip = await createTrip(userId, tripInfo, imageUrl);
+          parsedTripId = createdTrip.trip_id;
+          console.log(`Created new trip ${parsedTripId} for user ${userId}`);
+        } catch (tripError) {
+          console.error('Error creating trip:', tripError);
+          // Continue with chat even if trip creation fails
+        }
+      }
+    }
 
     // Load conversation history from database (filtered by tripId if provided)
     const conversationHistory = await loadConversationHistory(userId, parsedTripId);
@@ -133,7 +280,9 @@ router.post('/chat', authenticateToken, async (req, res) => {
       }
     ];
 
-    // Save user message to database (with tripId if provided)
+    // Save user message to database (with tripId if provided or created)
+    // Note: parsedTripId may have been set by trip creation above
+    console.log(`Saving user message with tripId: ${parsedTripId} for user ${userId}`);
     await saveMessage(userId, 'user', message, parsedTripId);
 
     // Call Groq API
@@ -144,15 +293,25 @@ router.post('/chat', authenticateToken, async (req, res) => {
 
     const assistantMessage = completion.choices[0]?.message?.content || 'Sorry, I did not receive a response.';
 
-    // Save assistant response to database (with tripId if provided)
+    // Save assistant response to database (with tripId if provided or created)
+    console.log(`Saving assistant message with tripId: ${parsedTripId} for user ${userId}`);
     await saveMessage(userId, 'assistant', assistantMessage, parsedTripId);
 
-    // Return the response
-    res.status(200).json({
+    // Return the response with trip info if trip was created
+    const response = {
       success: true,
       message: assistantMessage,
       model: chatModel
-    });
+    };
+
+    if (createdTrip) {
+      response.tripId = createdTrip.trip_id;
+      response.trip = createdTrip;
+    } else if (parsedTripId) {
+      response.tripId = parsedTripId;
+    }
+
+    res.status(200).json(response);
   } catch (error) {
     console.error('Groq chat error:', error);
 

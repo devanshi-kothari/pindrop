@@ -15,18 +15,28 @@ interface ChatWindowProps {
   className?: string;
   tripId?: number | null;
   initialMessage?: string | null;
+  onTripCreated?: (tripId: number) => void;
 }
 
-const ChatWindow = ({ className = "", tripId = null, initialMessage = null }: ChatWindowProps) => {
+const ChatWindow = ({ className = "", tripId = null, initialMessage = null, onTripCreated }: ChatWindowProps) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [isCreatingTrip, setIsCreatingTrip] = useState(false);
+  const [hasSentInitialMessage, setHasSentInitialMessage] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Debug logging
+  console.log('ChatWindow render:', { tripId, initialMessage, hasSentInitialMessage, isLoadingHistory, isLoading });
 
   // Get authentication token from localStorage
   const getAuthToken = () => {
     return localStorage.getItem("token");
+  };
+
+  const formatTime = () => {
+    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
   // Load conversation history on mount
@@ -41,6 +51,21 @@ const ChatWindow = ({ className = "", tripId = null, initialMessage = null }: Ch
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }]);
         setIsLoadingHistory(false);
+        return;
+      }
+
+      // For new trips with initial message, skip history loading entirely
+      // (every new trip from single-line prompt has no history)
+      if (initialMessage && !tripId) {
+        console.log('✅ New trip with initial message, skipping history load:', initialMessage);
+        const userMessage: Message = {
+          role: "user",
+          content: initialMessage,
+          timestamp: formatTime()
+        };
+        setMessages([userMessage]);
+        setIsLoadingHistory(false);
+        console.log('✅ Initial message added to state, history loading complete');
         return;
       }
 
@@ -69,19 +94,19 @@ const ChatWindow = ({ className = "", tripId = null, initialMessage = null }: Ch
               : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
           }));
 
-          // If no history, show welcome message
-          if (historyMessages.length === 0) {
+          if (historyMessages.length === 0 && !initialMessage) {
+            // If no history and no initial message, show welcome message
             const welcomeMessage = {
               role: "assistant" as const,
               content: "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
             };
             setMessages([welcomeMessage]);
-          } else {
+          } else if (historyMessages.length > 0) {
             setMessages(historyMessages);
           }
         } else {
-          // Error loading history, show welcome message
+          // Error loading history
           setMessages([{
             role: "assistant",
             content: "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
@@ -90,7 +115,6 @@ const ChatWindow = ({ className = "", tripId = null, initialMessage = null }: Ch
         }
       } catch (error) {
         console.error("Error loading conversation history:", error);
-        // Error loading history, show welcome message
         setMessages([{
           role: "assistant",
           content: "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
@@ -102,52 +126,95 @@ const ChatWindow = ({ className = "", tripId = null, initialMessage = null }: Ch
     };
 
     loadHistory();
-  }, [tripId]);
+  }, [tripId, initialMessage]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
 
-  const formatTime = () => {
-    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
-
   // Auto-send initial message once history is loaded
   useEffect(() => {
-    if (initialMessage && !isLoadingHistory && messages.length > 0 && !isLoading) {
-      // Check if initial message hasn't been sent yet
+    console.log('Auto-send effect check:', {
+      initialMessage,
+      isLoadingHistory,
+      hasSentInitialMessage,
+      isLoading,
+      tripId,
+      messagesCount: messages.length,
+      hasInitialMessage: messages.some(msg => msg.role === "user" && msg.content === initialMessage),
+      hasAssistantResponse: messages.some(msg => msg.role === "assistant")
+    });
+
+    if (initialMessage && !isLoadingHistory && !hasSentInitialMessage && !isLoading && !tripId) {
+      // Check if initial message is already in messages
       const hasInitialMessage = messages.some(msg =>
         msg.role === "user" && msg.content === initialMessage
       );
-      if (!hasInitialMessage) {
-        setInputMessage(initialMessage);
-        // Auto-send after a short delay using the input's value
+
+      // Check if assistant has already responded (meaning message was sent)
+      const hasAssistantResponse = messages.some(msg => msg.role === "assistant");
+
+      if (hasInitialMessage && !hasAssistantResponse) {
+        // Message is displayed but not sent yet, auto-send it
+        console.log('✅ Auto-sending initial message:', initialMessage);
+        setHasSentInitialMessage(true); // Mark as sending to prevent duplicate triggers
         const timer = setTimeout(() => {
-          const sendBtn = document.getElementById('chat-send-button') as HTMLButtonElement;
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.click();
-          }
-        }, 1000);
+          console.log('✅ Executing sendMessage for initial message');
+          sendMessage(initialMessage);
+        }, 300);
         return () => clearTimeout(timer);
+      } else if (hasAssistantResponse) {
+        // Already sent and got response
+        console.log('✅ Message already sent and got response');
+        setHasSentInitialMessage(true);
+      } else if (!hasInitialMessage) {
+        console.log('⚠️ Initial message not found in messages yet, waiting...');
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialMessage, isLoadingHistory, messages.length, isLoading]);
+  }, [initialMessage, isLoadingHistory, messages.length, isLoading, hasSentInitialMessage, tripId]);
 
-  const sendMessage = async () => {
-    if (!inputMessage.trim() || isLoading) return;
+  const sendMessage = async (messageContent?: string) => {
+    const messageToSend = messageContent || inputMessage.trim();
+    if (!messageToSend || isLoading) {
+      console.log('sendMessage skipped:', { messageToSend, isLoading });
+      return;
+    }
+
+    console.log('sendMessage called:', { messageToSend, initialMessage, tripId });
+
+    // Mark initial message as sent if it matches
+    if (initialMessage && messageToSend === initialMessage) {
+      setHasSentInitialMessage(true);
+    }
 
     const userMessage: Message = {
       role: "user",
-      content: inputMessage.trim(),
+      content: messageToSend,
       timestamp: formatTime()
     };
 
-    // Add user message immediately
-    setMessages((prev) => [...prev, userMessage]);
+    // Check if message is already in state (to avoid duplicates)
+    setMessages((prev) => {
+      const alreadyExists = prev.some(msg =>
+        msg.role === "user" && msg.content === messageToSend
+      );
+      if (alreadyExists) {
+        console.log('Message already exists, not adding duplicate');
+        return prev; // Don't add duplicate
+      }
+      return [...prev, userMessage];
+    });
     setInputMessage("");
     setIsLoading(true);
+
+    // Show "Creating your trip..." if no tripId and this looks like a trip request
+    const isTripRequest = /want.*go|plan.*trip|visit|travel|to\s+[A-Za-z]/i.test(messageToSend);
+    if (!tripId && (isTripRequest || (initialMessage && messageToSend === initialMessage))) {
+      console.log('Setting isCreatingTrip to true');
+      setIsCreatingTrip(true);
+    }
 
     try {
       const token = getAuthToken();
@@ -171,6 +238,11 @@ const ChatWindow = ({ className = "", tripId = null, initialMessage = null }: Ch
       const result = await response.json();
 
       if (response.ok && result.success) {
+        // Handle trip creation
+        if (result.tripId && !tripId && onTripCreated) {
+          onTripCreated(result.tripId);
+        }
+
         // Add assistant response
         const assistantMessage: Message = {
           role: "assistant",
@@ -197,13 +269,14 @@ const ChatWindow = ({ className = "", tripId = null, initialMessage = null }: Ch
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
+      setIsCreatingTrip(false);
     }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      sendMessage();
+      sendMessage(undefined);
     }
   };
 
@@ -253,7 +326,14 @@ const ChatWindow = ({ className = "", tripId = null, initialMessage = null }: Ch
               </div>
             </div>
           ))}
-          {isLoading && (
+          {isCreatingTrip && (
+            <div className="flex justify-start">
+              <div className="bg-white text-foreground rounded-lg px-4 py-3 shadow-sm">
+                <p className="text-sm">Creating your trip...</p>
+              </div>
+            </div>
+          )}
+          {isLoading && !isCreatingTrip && (
             <div className="flex justify-start">
               <div className="bg-white text-foreground rounded-lg px-4 py-3 shadow-sm">
                 <p className="text-sm">Thinking...</p>
@@ -272,7 +352,7 @@ const ChatWindow = ({ className = "", tripId = null, initialMessage = null }: Ch
           </div>
           <Input
             type="text"
-            placeholder="I'd like to go on October 25th-October 30th"
+            placeholder="I'd like to go on October 20th-October 30th"
             value={inputMessage}
             onChange={(e) => setInputMessage(e.target.value)}
             onKeyPress={handleKeyPress}
@@ -281,7 +361,7 @@ const ChatWindow = ({ className = "", tripId = null, initialMessage = null }: Ch
           />
           <Button
             type="button"
-            onClick={sendMessage}
+            onClick={() => sendMessage()}
             disabled={!inputMessage.trim() || isLoading}
             className="absolute right-2 h-8 w-8 rounded-full bg-blue-500 hover:bg-blue-400 text-white p-0 disabled:opacity-50 disabled:cursor-not-allowed"
             id="chat-send-button"
