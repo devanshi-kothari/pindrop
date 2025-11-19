@@ -150,44 +150,62 @@ If the message is clearly about creating a new trip (e.g., "I want to go to X", 
 // Helper function to create a trip
 async function createTrip(userId, tripInfo, imageUrl = null) {
   try {
-    // Default dates if not provided
-    let startDate = tripInfo.start_date;
-    let endDate = tripInfo.end_date;
-
-    if (!startDate || !endDate) {
-      const today = new Date();
-      const defaultStart = new Date(today);
-      defaultStart.setDate(today.getDate() + 7); // 7 days from now
-      const defaultEnd = new Date(defaultStart);
-      defaultEnd.setDate(defaultStart.getDate() + 5); // 5 days trip
-
-      if (!startDate) startDate = defaultStart.toISOString().split('T')[0];
-      if (!endDate) endDate = defaultEnd.toISOString().split('T')[0];
-    }
-
+    // Build trip data only from fields we actually have, and let the
+    // database schema decide which fields can be null or have defaults.
     const tripData = {
       user_id: userId,
-      title: tripInfo.destination ? `Trip to ${tripInfo.destination}` : 'My Trip',
-      destination: tripInfo.destination || 'Unknown',
-      start_date: startDate,
-      end_date: endDate,
       trip_status: 'draft',
-      num_travelers: tripInfo.num_travelers || 1,
+      // Title is required by the schema, so always provide at least a generic one
+      title: tripInfo.destination ? `Trip to ${tripInfo.destination}` : 'My Trip',
     };
 
+    if (tripInfo.destination) {
+      tripData.destination = tripInfo.destination;
+    }
+
+    if (tripInfo.start_date) {
+      tripData.start_date = tripInfo.start_date;
+    }
+    if (tripInfo.end_date) {
+      tripData.end_date = tripInfo.end_date;
+    }
+    if (tripInfo.num_travelers !== null && tripInfo.num_travelers !== undefined) {
+      tripData.num_travelers = tripInfo.num_travelers;
+    }
     if (tripInfo.total_budget !== null && tripInfo.total_budget !== undefined) {
       tripData.total_budget = parseFloat(tripInfo.total_budget);
     }
-
     if (imageUrl) {
       tripData.image_url = imageUrl;
     }
 
-    const { data, error } = await supabase
+    // First attempt: insert with all fields (including image_url)
+    let { data, error } = await supabase
       .from('trip')
       .insert([tripData])
       .select()
       .single();
+
+    // If the error is specifically about image_url not existing in the schema,
+    // retry the insert without the image_url field so that trip creation
+    // still succeeds even if the database schema is older.
+    if (error && error.message && error.message.includes('image_url')) {
+      console.warn('⚠️ trip.image_url column missing in DB schema. Retrying trip insert without image_url.');
+      const { image_url, ...tripDataWithoutImage } = tripData;
+
+      const retryResult = await supabase
+        .from('trip')
+        .insert([tripDataWithoutImage])
+        .select()
+        .single();
+
+      if (retryResult.error) {
+        console.error('Error creating trip on retry without image_url:', retryResult.error);
+        throw retryResult.error;
+      }
+
+      return retryResult.data;
+    }
 
     if (error) {
       console.error('Error creating trip:', error);
@@ -240,29 +258,34 @@ router.post('/chat', authenticateToken, async (req, res) => {
 
     let parsedTripId = tripId ? parseInt(tripId) : null;
     let createdTrip = null;
+    let tripCreationError = null;
 
-    // If no tripId provided, check if this is a trip creation request
+    // If no tripId provided, always create a new trip record for this chat "session"
+    // so that chat-created trips always have a corresponding row in the trip table.
     if (!parsedTripId) {
-      console.log('🔍 No tripId provided, extracting trip info from message...');
+      console.log('🔍 No tripId provided, extracting trip info from message to create a new trip...');
       const tripInfo = await extractTripInfo(message);
-      console.log('📋 Extracted trip info:', tripInfo);
+      console.log('📋 Extracted trip info for new trip:', tripInfo);
 
-      if (tripInfo.is_trip_request && tripInfo.destination) {
-        // Generate image URL for destination using Unsplash Source API
-        let imageUrl = `https://source.unsplash.com/800x450/?${encodeURIComponent(tripInfo.destination)},travel`;
+      // Generate image URL for destination using Unsplash Source API when we have one
+      let imageUrl = null;
+      if (tripInfo.destination) {
+        imageUrl = `https://source.unsplash.com/800x450/?${encodeURIComponent(tripInfo.destination)},travel`;
+      }
 
-        // Create the trip
-        try {
-          console.log('🏗️ Creating trip with info:', tripInfo);
-          createdTrip = await createTrip(userId, tripInfo, imageUrl);
-          parsedTripId = createdTrip.trip_id;
-          console.log(`✅ Created new trip ${parsedTripId} for user ${userId}`);
-        } catch (tripError) {
-          console.error('❌ Error creating trip:', tripError);
-          // Continue with chat even if trip creation fails
-        }
-      } else {
-        console.log('⚠️ Message is not a trip request or no destination found');
+      // Always attempt to create a trip row for chat-initiated trips.
+      // createTrip only sends fields it actually has, and lets the DB
+      // decide which columns can be null or use defaults.
+      try {
+        console.log('🏗️ Creating trip (chat-initiated) with info:', tripInfo);
+        createdTrip = await createTrip(userId, tripInfo, imageUrl);
+        parsedTripId = createdTrip.trip_id;
+        console.log(`✅ Created new trip ${parsedTripId} for user ${userId} from chat`);
+      } catch (tripError) {
+        console.error('❌ Error creating trip from chat:', tripError);
+        // Capture error so the frontend can surface it during debugging
+        tripCreationError = tripError.message || 'Unknown trip creation error';
+        // Continue with chat even if trip creation fails
       }
     }
 
@@ -320,7 +343,11 @@ router.post('/chat', authenticateToken, async (req, res) => {
     const response = {
       success: true,
       message: assistantMessage,
-      model: chatModel
+      model: chatModel,
+      // Debug info to help understand why a tripId might be missing
+      tripCreationError,
+      hasIncomingTripId: !!tripId,
+      parsedTripId: parsedTripId || null,
     };
 
     if (createdTrip) {

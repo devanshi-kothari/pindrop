@@ -84,17 +84,12 @@ router.post('/', authenticateToken, async (req, res) => {
     const userId = req.user.userId;
     const { title, destination, start_date, end_date, total_budget, num_travelers, image_url } = req.body;
 
-    // Validate required fields
-    if (!destination || !start_date || !end_date) {
-      return res.status(400).json({
-        success: false,
-        message: 'Destination, start_date, and end_date are required'
-      });
-    }
-
     const tripData = {
       user_id: userId,
-      title: title || `Trip to ${destination}`,
+      // Schema requires a non-null title, but all other fields are optional.
+      // Use the provided title when available, fall back to a destination-based
+      // title, and finally a generic "My Trip".
+      title: title || (destination ? `Trip to ${destination}` : 'My Trip'),
       destination,
       start_date,
       end_date,
@@ -110,11 +105,33 @@ router.post('/', authenticateToken, async (req, res) => {
       tripData.image_url = image_url;
     }
 
-    const { data, error } = await supabase
+    // First attempt: insert with all fields (including image_url)
+    let { data, error } = await supabase
       .from('trip')
       .insert([tripData])
       .select()
       .single();
+
+    // If the error is specifically about image_url not existing in the schema,
+    // retry the insert without the image_url field so that trip creation
+    // still succeeds even if the database schema is older.
+    if (error && error.message && error.message.includes('image_url')) {
+      console.warn('⚠️ trip.image_url column missing in DB schema. Retrying trip insert without image_url.');
+      const { image_url: _ignored, ...tripDataWithoutImage } = tripData;
+
+      const retryResult = await supabase
+        .from('trip')
+        .insert([tripDataWithoutImage])
+        .select()
+        .single();
+
+      if (retryResult.error) {
+        throw retryResult.error;
+      }
+
+      data = retryResult.data;
+      error = null;
+    }
 
     if (error) {
       throw error;
