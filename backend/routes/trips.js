@@ -82,56 +82,36 @@ router.get('/:tripId', authenticateToken, async (req, res) => {
 router.post('/', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-    const { title, destination, start_date, end_date, total_budget, num_travelers, image_url } = req.body;
-
-    const tripData = {
-      user_id: userId,
-      // Schema requires a non-null title, but all other fields are optional.
-      // Use the provided title when available, fall back to a destination-based
-      // title, and finally a generic "My Trip".
-      title: title || (destination ? `Trip to ${destination}` : 'My Trip'),
+    const {
+      title,
       destination,
       start_date,
       end_date,
+      total_budget,
+      num_travelers,
+      image_url,
+    } = req.body;
+
+    const tripData = {
+      user_id: userId,
+      title: title || (destination ? `Trip to ${destination}` : 'My Trip'),
       trip_status: 'draft',
       num_travelers: num_travelers || 1,
+      ...(destination && { destination }),
+      ...(start_date && { start_date }),
+      ...(end_date && { end_date }),
+      ...(total_budget !== undefined &&
+        total_budget !== null && {
+          total_budget: parseFloat(total_budget),
+        }),
+      ...(image_url && { image_url }),
     };
 
-    if (total_budget !== undefined && total_budget !== null) {
-      tripData.total_budget = parseFloat(total_budget);
-    }
-
-    if (image_url) {
-      tripData.image_url = image_url;
-    }
-
-    // First attempt: insert with all fields (including image_url)
-    let { data, error } = await supabase
+    const { data, error } = await supabase
       .from('trip')
       .insert([tripData])
       .select()
       .single();
-
-    // If the error is specifically about image_url not existing in the schema,
-    // retry the insert without the image_url field so that trip creation
-    // still succeeds even if the database schema is older.
-    if (error && error.message && error.message.includes('image_url')) {
-      console.warn('⚠️ trip.image_url column missing in DB schema. Retrying trip insert without image_url.');
-      const { image_url: _ignored, ...tripDataWithoutImage } = tripData;
-
-      const retryResult = await supabase
-        .from('trip')
-        .insert([tripDataWithoutImage])
-        .select()
-        .single();
-
-      if (retryResult.error) {
-        throw retryResult.error;
-      }
-
-      data = retryResult.data;
-      error = null;
-    }
 
     if (error) {
       throw error;
@@ -139,14 +119,14 @@ router.post('/', authenticateToken, async (req, res) => {
 
     res.status(201).json({
       success: true,
-      trip: data
+      trip: data,
     });
   } catch (error) {
     console.error('Error creating trip:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to create trip',
-      error: error.message
+      error: error.message,
     });
   }
 });

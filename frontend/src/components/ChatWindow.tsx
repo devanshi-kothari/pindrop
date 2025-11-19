@@ -18,55 +18,132 @@ interface ChatWindowProps {
   onTripCreated?: (tripId: number) => void;
 }
 
-const ChatWindow = ({ className = "", tripId = null, initialMessage = null, onTripCreated }: ChatWindowProps) => {
+const ChatWindow = ({
+  className = "",
+  tripId = null,
+  initialMessage = null,
+  onTripCreated,
+}: ChatWindowProps) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [isCreatingTrip, setIsCreatingTrip] = useState(false);
-  const [hasSentInitialMessage, setHasSentInitialMessage] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const sendTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Debug logging
-  console.log('ChatWindow render:', { tripId, initialMessage, hasSentInitialMessage, isLoadingHistory, isLoading });
+  const getAuthToken = () => localStorage.getItem("token");
 
-  // Get authentication token from localStorage
-  const getAuthToken = () => {
-    return localStorage.getItem("token");
-  };
+  const formatTime = () =>
+    new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-  const formatTime = () => {
-    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
+  const sendMessage = useCallback(
+    async (overrideContent?: string) => {
+      const content = (overrideContent ?? inputMessage).trim();
+      if (!content || isLoading) return;
 
-  // Load conversation history on mount
+      const userMessage: Message = {
+        role: "user",
+        content,
+        timestamp: formatTime(),
+      };
+
+      setMessages((prev) => [...prev, userMessage]);
+      if (!overrideContent) {
+        setInputMessage("");
+      }
+      setIsLoading(true);
+
+      const isTripRequest = /want.*go|plan.*trip|visit|travel|to\s+[A-Za-z]/i.test(
+        content
+      );
+      if (!tripId && (isTripRequest || content === initialMessage)) {
+        setIsCreatingTrip(true);
+      }
+
+      try {
+        const token = getAuthToken();
+        if (!token) {
+          throw new Error("Not authenticated. Please log in.");
+        }
+
+        const apiUrl = getApiUrl("api/chat/chat");
+        const response = await fetch(apiUrl, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            message: content,
+            tripId,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Backend error: ${response.status} ${response.statusText}`);
+        }
+
+        const result = await response.json();
+
+        if (result.success) {
+          if (result.tripId && !tripId && onTripCreated) {
+            onTripCreated(result.tripId);
+          }
+
+          const assistantMessage: Message = {
+            role: "assistant",
+            content: result.message || "No response from assistant",
+            timestamp: formatTime(),
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+        } else {
+          const errorMessage: Message = {
+            role: "assistant",
+            content:
+              result.message ||
+              "Sorry, I encountered an error. Please try again.",
+            timestamp: formatTime(),
+          };
+          setMessages((prev) => [...prev, errorMessage]);
+        }
+      } catch (error) {
+        console.error("Chat error:", error);
+        const errorMessage: Message = {
+          role: "assistant",
+          content:
+            "Sorry, I'm having trouble connecting. Please try again later.",
+          timestamp: formatTime(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+      } finally {
+        setIsLoading(false);
+        setIsCreatingTrip(false);
+      }
+    },
+    [inputMessage, isLoading, tripId, initialMessage, onTripCreated]
+  );
+
+  // Load conversation history or auto-start a new chat with the initial message
   useEffect(() => {
-    const loadHistory = async () => {
+    const loadHistoryOrStartNewChat = async () => {
       const token = getAuthToken();
       if (!token) {
-        // No token, show welcome message
-        setMessages([{
-          role: "assistant",
-          content: "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        }]);
+        setMessages([
+          {
+            role: "assistant",
+            content:
+              "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
+            timestamp: formatTime(),
+          },
+        ]);
         setIsLoadingHistory(false);
         return;
       }
 
-      // For new trips with initial message, skip history loading entirely
-      // (every new trip from single-line prompt has no history)
-      if (initialMessage && !tripId) {
-        console.log('✅ New trip with initial message, skipping history load:', initialMessage);
-        const userMessage: Message = {
-          role: "user",
-          content: initialMessage,
-          timestamp: formatTime()
-        };
-        setMessages([userMessage]);
+      // New trip started from the single-line prompt: skip history and send initial message
+      if (!tripId && initialMessage) {
         setIsLoadingHistory(false);
-        console.log('✅ Initial message added to state, history loading complete');
+        await sendMessage(initialMessage);
         return;
       }
 
@@ -78,7 +155,7 @@ const ChatWindow = ({ className = "", tripId = null, initialMessage = null, onTr
         const response = await fetch(url, {
           method: "GET",
           headers: {
-            "Authorization": `Bearer ${token}`,
+            Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
         });
@@ -86,47 +163,60 @@ const ChatWindow = ({ className = "", tripId = null, initialMessage = null, onTr
         const result = await response.json();
 
         if (response.ok && result.success) {
-          // Convert database messages to display format
-          const historyMessages: Message[] = result.messages.map((msg: { role: string; content: string; created_at?: string }) => ({
-            role: msg.role as "user" | "assistant",
-            content: msg.content,
-            timestamp: msg.created_at
-              ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-          }));
+          const historyMessages: Message[] = result.messages.map(
+            (msg: { role: string; content: string; created_at?: string }) => ({
+              role: msg.role as "user" | "assistant",
+              content: msg.content,
+              timestamp: msg.created_at
+                ? new Date(msg.created_at).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
+                : formatTime(),
+            })
+          );
 
-          if (historyMessages.length === 0 && !initialMessage) {
-            // If no history and no initial message, show welcome message
-            const welcomeMessage = {
-              role: "assistant" as const,
-              content: "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
-              timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            };
-            setMessages([welcomeMessage]);
-          } else if (historyMessages.length > 0) {
+          if (historyMessages.length === 0) {
+            setMessages([
+              {
+                role: "assistant",
+                content:
+                  "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
+                timestamp: formatTime(),
+              },
+            ]);
+          } else {
             setMessages(historyMessages);
           }
         } else {
-          // Error loading history
-          setMessages([{
-            role: "assistant",
-            content: "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-          }]);
+          setMessages([
+            {
+              role: "assistant",
+              content:
+                "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
+              timestamp: formatTime(),
+            },
+          ]);
         }
       } catch (error) {
         console.error("Error loading conversation history:", error);
-        setMessages([{
-          role: "assistant",
-          content: "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        }]);
+        setMessages([
+          {
+            role: "assistant",
+            content:
+              "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
+            timestamp: formatTime(),
+          },
+        ]);
       } finally {
         setIsLoadingHistory(false);
       }
     };
 
-    loadHistory();
+    loadHistoryOrStartNewChat();
+  // We intentionally omit sendMessage from deps to avoid double-sending
+  // the initial message when internal loading state changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tripId, initialMessage]);
 
   // Auto-scroll to bottom when new messages arrive
@@ -134,224 +224,10 @@ const ChatWindow = ({ className = "", tripId = null, initialMessage = null, onTr
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
 
-  // Define sendMessage function using useCallback for stable reference
-  const sendMessage = useCallback(async (messageContent?: string) => {
-    const messageToSend = messageContent || inputMessage.trim();
-    console.log('🔵 sendMessage function called:', {
-      messageToSend,
-      inputMessage,
-      messageContent,
-      initialMessage,
-      tripId,
-      isLoading
-    });
-
-    if (!messageToSend) {
-      console.warn('⚠️ sendMessage skipped: no message to send');
-      return;
-    }
-
-    if (isLoading) {
-      console.warn('⚠️ sendMessage skipped: already loading');
-      return;
-    }
-
-    // Mark initial message as sent if it matches
-    if (initialMessage && messageToSend === initialMessage) {
-      setHasSentInitialMessage(true);
-    }
-
-    const userMessage: Message = {
-      role: "user",
-      content: messageToSend,
-      timestamp: formatTime()
-    };
-
-    // Check if message is already in state (to avoid duplicates)
-    setMessages((prev) => {
-      const alreadyExists = prev.some(msg =>
-        msg.role === "user" && msg.content === messageToSend
-      );
-      if (alreadyExists) {
-        console.log('Message already exists, not adding duplicate');
-        return prev; // Don't add duplicate
-      }
-      return [...prev, userMessage];
-    });
-    setInputMessage("");
-    setIsLoading(true);
-
-    // Show "Creating your trip..." if no tripId and this looks like a trip request
-    const isTripRequest = /want.*go|plan.*trip|visit|travel|to\s+[A-Za-z]/i.test(messageToSend);
-    if (!tripId && (isTripRequest || (initialMessage && messageToSend === initialMessage))) {
-      console.log('Setting isCreatingTrip to true');
-      setIsCreatingTrip(true);
-    }
-
-    try {
-      const token = getAuthToken();
-      if (!token) {
-        throw new Error("Not authenticated. Please log in.");
-      }
-
-      const requestBody = {
-        message: userMessage.content,
-        tripId: tripId,
-      };
-      console.log('📤 Sending message to backend:', requestBody);
-
-      const apiUrl = getApiUrl("api/chat/chat");
-      console.log('🌐 Fetching from URL:', apiUrl);
-
-      const response = await fetch(apiUrl, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-      }).catch((fetchError) => {
-        console.error('❌ Fetch error (network or CORS):', fetchError);
-        throw fetchError;
-      });
-
-      console.log('📥 Backend response status:', response.status, response.statusText);
-
-      if (!response.ok) {
-        console.error('❌ Response not OK:', response.status, response.statusText);
-        const errorText = await response.text().catch(() => 'Could not read error');
-        console.error('❌ Error response body:', errorText);
-        throw new Error(`Backend error: ${response.status} ${response.statusText}`);
-      }
-
-      const result = await response.json().catch((jsonError) => {
-        console.error('❌ JSON parse error:', jsonError);
-        throw new Error('Invalid JSON response from backend');
-      });
-      console.log('📥 Backend response body:', result);
-
-      if (response.ok && result.success) {
-        // Handle trip creation
-        if (result.tripId && !tripId && onTripCreated) {
-          console.log('✅ Trip created! tripId:', result.tripId);
-          onTripCreated(result.tripId);
-        }
-
-        // Add assistant response
-        const assistantMessage: Message = {
-          role: "assistant",
-          content: result.message || "No response from assistant",
-          timestamp: formatTime()
-        };
-        console.log('✅ Adding assistant message:', assistantMessage.content.substring(0, 100));
-        setMessages((prev) => [...prev, assistantMessage]);
-      } else {
-        // Add error message
-        console.error('❌ Backend returned error:', result);
-        const errorMessage: Message = {
-          role: "assistant",
-          content: result.message || "Sorry, I encountered an error. Please try again.",
-          timestamp: formatTime()
-        };
-        setMessages((prev) => [...prev, errorMessage]);
-      }
-    } catch (error) {
-      console.error("❌ Chat error:", error);
-      const errorMessage: Message = {
-        role: "assistant",
-        content: "Sorry, I'm having trouble connecting. Please try again later.",
-        timestamp: formatTime()
-      };
-      setMessages((prev) => [...prev, errorMessage]);
-    } finally {
-      setIsLoading(false);
-      setIsCreatingTrip(false);
-    }
-  }, [tripId, initialMessage, onTripCreated, inputMessage, isLoading]);
-
-  // Auto-send initial message once history is loaded
-  useEffect(() => {
-    console.log('Auto-send effect check:', {
-      initialMessage,
-      isLoadingHistory,
-      hasSentInitialMessage,
-      isLoading,
-      tripId,
-      messagesCount: messages.length,
-      hasInitialMessage: messages.some(msg => msg.role === "user" && msg.content === initialMessage),
-      hasAssistantResponse: messages.some(msg => msg.role === "assistant"),
-      timerExists: !!sendTimerRef.current
-    });
-
-    // Don't run if we've already scheduled a send or there's a timer running
-    if (sendTimerRef.current || hasSentInitialMessage) {
-      console.log('⏭️ Skipping auto-send - already scheduled or sent');
-      return;
-    }
-
-    if (initialMessage && !isLoadingHistory && !isLoading && !tripId) {
-      // Check if initial message is already in messages
-      const hasInitialMessage = messages.some(msg =>
-        msg.role === "user" && msg.content === initialMessage
-      );
-
-      // Check if assistant has already responded (meaning message was sent)
-      const hasAssistantResponse = messages.some(msg => msg.role === "assistant");
-
-      if (hasInitialMessage && !hasAssistantResponse) {
-        // Message is displayed but not sent yet, auto-send it
-        console.log('✅ Auto-sending initial message:', initialMessage);
-
-        // Set the state first (but don't depend on it in this effect)
-        setHasSentInitialMessage(true);
-
-        // Schedule the send
-        sendTimerRef.current = setTimeout(() => {
-          console.log('⏰ setTimeout callback executing NOW');
-          console.log('✅ Executing sendMessage for initial message:', initialMessage);
-          const timerId = sendTimerRef.current;
-          sendTimerRef.current = null; // Clear the ref BEFORE sending
-
-          sendMessage(initialMessage).catch((error) => {
-            console.error('❌ Error in sendMessage:', error);
-          });
-        }, 500);
-        console.log('⏱️ setTimeout scheduled for 500ms, timer ref ID:', sendTimerRef.current);
-      } else if (hasAssistantResponse) {
-        // Already sent and got response
-        console.log('✅ Message already sent and got response');
-        setHasSentInitialMessage(true);
-      } else if (!hasInitialMessage) {
-        console.log('⚠️ Initial message not found in messages yet, waiting...');
-      }
-    }
-
-    // Cleanup function - only runs on unmount or when key dependencies change
-    return () => {
-      // Only clean up the timer if we're unmounting or the initialMessage changed
-      // Don't clean up just because hasSentInitialMessage changed
-      if (sendTimerRef.current) {
-        console.log('🧹 useEffect cleanup - checking if we should clear timer');
-        // Check if this is a real cleanup (unmount or initialMessage changed)
-        // by checking if the current values suggest we shouldn't be sending
-        const shouldClear = !initialMessage || isLoadingHistory || isLoading || tripId;
-        if (shouldClear) {
-          console.log('🧹 Clearing timer because conditions changed');
-          clearTimeout(sendTimerRef.current);
-          sendTimerRef.current = null;
-        } else {
-          console.log('⏸️ Keeping timer - conditions unchanged');
-        }
-      }
-    };
-    // Remove hasSentInitialMessage from deps - we use the ref to track this instead
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialMessage, isLoadingHistory, isLoading, tripId, sendMessage]);
-
   const handleKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      sendMessage(undefined);
+      sendMessage();
     }
   };
 

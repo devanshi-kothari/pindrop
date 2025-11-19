@@ -14,10 +14,22 @@ interface TripCardProps {
 const TripCard = ({ tripId, title, destination, imageUrl, startDate, endDate, status }: TripCardProps) => {
   const navigate = useNavigate();
 
-  // Format dates for display
+  // Format dates for display, falling back to a placeholder when missing/invalid
   const formatDate = (dateString: string) => {
+    if (!dateString) {
+      return "MM/DD/YYYY";
+    }
+
     const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    if (Number.isNaN(date.getTime()) || date.getFullYear() <= 1970) {
+      return "MM/DD/YYYY";
+    }
+
+    return date.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
   };
 
   // Default image if none provided

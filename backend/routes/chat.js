@@ -150,65 +150,31 @@ If the message is clearly about creating a new trip (e.g., "I want to go to X", 
 // Helper function to create a trip
 async function createTrip(userId, tripInfo, imageUrl = null) {
   try {
-    // Build trip data only from fields we actually have, and let the
-    // database schema decide which fields can be null or have defaults.
     const tripData = {
       user_id: userId,
       trip_status: 'draft',
-      // Title is required by the schema, so always provide at least a generic one
       title: tripInfo.destination ? `Trip to ${tripInfo.destination}` : 'My Trip',
+      ...(tripInfo.destination && { destination: tripInfo.destination }),
+      ...(tripInfo.start_date && { start_date: tripInfo.start_date }),
+      ...(tripInfo.end_date && { end_date: tripInfo.end_date }),
+      ...(tripInfo.num_travelers !== null &&
+        tripInfo.num_travelers !== undefined && {
+          num_travelers: tripInfo.num_travelers,
+        }),
+      ...(tripInfo.total_budget !== null &&
+        tripInfo.total_budget !== undefined && {
+          total_budget: parseFloat(tripInfo.total_budget),
+        }),
+      ...(imageUrl && { image_url: imageUrl }),
     };
 
-    if (tripInfo.destination) {
-      tripData.destination = tripInfo.destination;
-    }
-
-    if (tripInfo.start_date) {
-      tripData.start_date = tripInfo.start_date;
-    }
-    if (tripInfo.end_date) {
-      tripData.end_date = tripInfo.end_date;
-    }
-    if (tripInfo.num_travelers !== null && tripInfo.num_travelers !== undefined) {
-      tripData.num_travelers = tripInfo.num_travelers;
-    }
-    if (tripInfo.total_budget !== null && tripInfo.total_budget !== undefined) {
-      tripData.total_budget = parseFloat(tripInfo.total_budget);
-    }
-    if (imageUrl) {
-      tripData.image_url = imageUrl;
-    }
-
-    // First attempt: insert with all fields (including image_url)
-    let { data, error } = await supabase
+    const { data, error } = await supabase
       .from('trip')
       .insert([tripData])
       .select()
       .single();
 
-    // If the error is specifically about image_url not existing in the schema,
-    // retry the insert without the image_url field so that trip creation
-    // still succeeds even if the database schema is older.
-    if (error && error.message && error.message.includes('image_url')) {
-      console.warn('⚠️ trip.image_url column missing in DB schema. Retrying trip insert without image_url.');
-      const { image_url, ...tripDataWithoutImage } = tripData;
-
-      const retryResult = await supabase
-        .from('trip')
-        .insert([tripDataWithoutImage])
-        .select()
-        .single();
-
-      if (retryResult.error) {
-        console.error('Error creating trip on retry without image_url:', retryResult.error);
-        throw retryResult.error;
-      }
-
-      return retryResult.data;
-    }
-
     if (error) {
-      console.error('Error creating trip:', error);
       throw error;
     }
 

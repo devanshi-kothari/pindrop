@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams, useSearchParams, useLocation } from "react-router-dom";
 import ChatWindow from "@/components/ChatWindow";
 import { Button } from "@/components/ui/button";
@@ -29,23 +29,13 @@ const TripPlanning = () => {
   // Check if we're on the /trip/new route (tripId is undefined when route matches /trip/new exactly)
   const isNewTrip = location.pathname === "/trip/new" || tripId === "new";
 
-  // Debug logging
-  console.log('TripPlanning render:', {
-    tripId,
-    initialMessage,
-    isNewTrip,
-    pathname: location.pathname,
-    searchParamsString: searchParams.toString(),
-    allParams: Object.fromEntries(searchParams.entries())
-  });
-
   useEffect(() => {
     if (tripId && tripId !== "new") {
       loadTrip(parseInt(tripId));
     } else {
       setLoading(false);
     }
-  }, [tripId, isNewTrip]);
+  }, [tripId]);
 
   const loadTrip = async (id: number) => {
     try {
@@ -75,72 +65,6 @@ const TripPlanning = () => {
       navigate("/dashboard");
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleCreateTrip = async () => {
-    if (!initialMessage) return;
-
-    try {
-      setSaving(true);
-      const token = localStorage.getItem("token");
-      if (!token) {
-        navigate("/login");
-        return;
-      }
-
-      // Extract destination and dates from message (simple parsing)
-      // In a real implementation, the LLM would extract this
-      const destination = initialMessage.split("to")[1]?.trim() || "Unknown";
-
-      // Create trip with default dates
-      const today = new Date();
-      const startDate = new Date(today);
-      startDate.setDate(today.getDate() + 7);
-      const endDate = new Date(startDate);
-      endDate.setDate(startDate.getDate() + 5);
-
-      // Fetch image for destination
-      let imageUrl = null;
-      try {
-        const imageResponse = await fetch(getApiUrl(`api/images/destination?destination=${encodeURIComponent(destination)}`));
-        const imageResult = await imageResponse.json();
-        if (imageResult.success) {
-          imageUrl = imageResult.imageUrl;
-        }
-      } catch (e) {
-        console.error("Error fetching image:", e);
-      }
-
-      const tripData = {
-        title: `Trip to ${destination}`,
-        destination,
-        start_date: startDate.toISOString().split('T')[0],
-        end_date: endDate.toISOString().split('T')[0],
-        trip_status: "draft",
-        image_url: imageUrl,
-      };
-
-      const response = await fetch(getApiUrl("api/trips"), {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(tripData),
-      });
-
-      const result = await response.json();
-
-      if (response.ok && result.success) {
-        setTrip(result.trip);
-        // Replace URL without the message parameter
-        window.history.replaceState({}, "", `/trip/${result.trip.trip_id}`);
-      }
-    } catch (error) {
-      console.error("Error creating trip:", error);
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -181,10 +105,9 @@ const TripPlanning = () => {
     }
   };
 
-  // Note: Trip creation is now handled by the chat endpoint automatically
-  // This effect is kept for backwards compatibility but may not be needed
-
-  const currentTripId = trip ? trip.trip_id : (tripId && tripId !== "new" && !isNewTrip ? parseInt(tripId) : null);
+  const numericTripId =
+    tripId && tripId !== "new" ? parseInt(tripId) : null;
+  const currentTripId = trip ? trip.trip_id : numericTripId;
 
   return (
     <div className="min-h-screen bg-background">
