@@ -228,7 +228,10 @@ router.post('/chat', authenticateToken, async (req, res) => {
     const userId = req.user.userId;
     const { message, model, tripId } = req.body;
 
+    console.log('📨 Chat endpoint called:', { userId, message: message?.substring(0, 50), model, tripId });
+
     if (!message) {
+      console.error('❌ No message provided');
       return res.status(400).json({
         success: false,
         message: 'Message is required'
@@ -240,7 +243,9 @@ router.post('/chat', authenticateToken, async (req, res) => {
 
     // If no tripId provided, check if this is a trip creation request
     if (!parsedTripId) {
+      console.log('🔍 No tripId provided, extracting trip info from message...');
       const tripInfo = await extractTripInfo(message);
+      console.log('📋 Extracted trip info:', tripInfo);
 
       if (tripInfo.is_trip_request && tripInfo.destination) {
         // Generate image URL for destination using Unsplash Source API
@@ -248,18 +253,22 @@ router.post('/chat', authenticateToken, async (req, res) => {
 
         // Create the trip
         try {
+          console.log('🏗️ Creating trip with info:', tripInfo);
           createdTrip = await createTrip(userId, tripInfo, imageUrl);
           parsedTripId = createdTrip.trip_id;
-          console.log(`Created new trip ${parsedTripId} for user ${userId}`);
+          console.log(`✅ Created new trip ${parsedTripId} for user ${userId}`);
         } catch (tripError) {
-          console.error('Error creating trip:', tripError);
+          console.error('❌ Error creating trip:', tripError);
           // Continue with chat even if trip creation fails
         }
+      } else {
+        console.log('⚠️ Message is not a trip request or no destination found');
       }
     }
 
     // Load conversation history from database (filtered by tripId if provided)
     const conversationHistory = await loadConversationHistory(userId, parsedTripId);
+    console.log(`📚 Loaded ${conversationHistory.length} messages from history for tripId: ${parsedTripId}`);
 
     // Use provided model or default
     const chatModel = model || DEFAULT_MODEL;
@@ -280,21 +289,31 @@ router.post('/chat', authenticateToken, async (req, res) => {
       }
     ];
 
+    console.log(`📝 Built messages array with ${messages.length} total messages (including system)`);
+
     // Save user message to database (with tripId if provided or created)
     // Note: parsedTripId may have been set by trip creation above
-    console.log(`Saving user message with tripId: ${parsedTripId} for user ${userId}`);
+    console.log(`💾 Saving user message with tripId: ${parsedTripId} for user ${userId}`);
     await saveMessage(userId, 'user', message, parsedTripId);
 
     // Call Groq API
-    const completion = await groqClient.chat.completions.create({
-      model: chatModel,
-      messages: messages,
-    });
+    console.log(`🤖 Calling Groq API with model: ${chatModel}`);
+    let assistantMessage;
+    try {
+      const completion = await groqClient.chat.completions.create({
+        model: chatModel,
+        messages: messages,
+      });
 
-    const assistantMessage = completion.choices[0]?.message?.content || 'Sorry, I did not receive a response.';
+      assistantMessage = completion.choices[0]?.message?.content || 'Sorry, I did not receive a response.';
+      console.log(`✅ Received response from Groq (${assistantMessage.length} characters)`);
+    } catch (groqError) {
+      console.error('❌ Groq API error:', groqError);
+      throw groqError;
+    }
 
     // Save assistant response to database (with tripId if provided or created)
-    console.log(`Saving assistant message with tripId: ${parsedTripId} for user ${userId}`);
+    console.log(`💾 Saving assistant message with tripId: ${parsedTripId} for user ${userId}`);
     await saveMessage(userId, 'assistant', assistantMessage, parsedTripId);
 
     // Return the response with trip info if trip was created
