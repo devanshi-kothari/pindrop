@@ -303,7 +303,7 @@ const ChatWindow = ({
           </div>
           <Input
             type="text"
-            placeholder="I'd like to go on October 20th-October 30th"
+            placeholder="Type your message here..."
             value={inputMessage}
             onChange={(e) => setInputMessage(e.target.value)}
             onKeyPress={handleKeyPress}
