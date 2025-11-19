@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS app_user (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
 
+CREATE TYPE trip_status_type AS ENUM ('draft', 'planned', 'archived');
+
 CREATE TABLE IF NOT EXISTS trip (
     trip_id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL REFERENCES app_user(user_id) ON DELETE CASCADE,
@@ -21,7 +23,7 @@ CREATE TABLE IF NOT EXISTS trip (
     end_date DATE,
     total_budget DECIMAL(10, 2),
     num_travelers INT DEFAULT 1,
-    trip_status VARCHAR(50) DEFAULT 'draft',
+    trip_status trip_status_type DEFAULT 'draft',
     image_url TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
