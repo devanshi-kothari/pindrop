@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
 
-CREATE TYPE trip_status_type AS ENUM ('draft', 'planned', 'archived');
+-- CREATE TYPE trip_status_type AS ENUM ('draft', 'planned', 'archived');
 
 CREATE TABLE IF NOT EXISTS trip (
     trip_id BIGSERIAL PRIMARY KEY,
@@ -61,6 +61,36 @@ CREATE TABLE IF NOT EXISTS itinerary_activity (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
 
+-- Trip-specific preferences to guide planning and itinerary generation
+CREATE TABLE IF NOT EXISTS trip_preference (
+    trip_preference_id BIGSERIAL PRIMARY KEY,
+    trip_id BIGINT NOT NULL UNIQUE REFERENCES trip(trip_id) ON DELETE CASCADE,
+    -- Core structure
+    num_days INT,
+    start_date DATE,
+    end_date DATE,
+    -- Budget expectations per trip or per day
+    min_budget_per_day DECIMAL(10, 2),
+    max_budget_per_day DECIMAL(10, 2),
+    -- How full each day should feel: 'slow', 'balanced', 'packed'
+    pace VARCHAR(50),
+    -- Where they prefer to stay: 'hotel', 'airbnb', 'hostel', etc.
+    accommodation_type VARCHAR(50),
+    -- Multi-select activity interests for this trip
+    activity_categories TEXT[] DEFAULT '{}',
+    -- Things to avoid on this trip
+    avoid_activity_categories TEXT[] DEFAULT '{}',
+    -- Who is travelling: 'solo', 'couple', 'family', 'friends', 'girls_trip', etc.
+    group_type VARCHAR(50),
+    -- Safety and access notes (e.g. \"safe for a group of girls\")
+    safety_notes TEXT,
+    accessibility_notes TEXT,
+    -- Free-form extra requests or constraints
+    custom_requests TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+);
+
 CREATE TABLE IF NOT EXISTS chat_message (
     message_id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL REFERENCES app_user(user_id) ON DELETE CASCADE,
@@ -73,6 +103,7 @@ CREATE TABLE IF NOT EXISTS chat_message (
 CREATE INDEX IF NOT EXISTS idx_trip_user_id ON trip(user_id);
 CREATE INDEX IF NOT EXISTS idx_itinerary_trip_id ON itinerary(trip_id);
 CREATE INDEX IF NOT EXISTS idx_itinerary_activity_ids ON itinerary_activity(itinerary_id, activity_id);
+CREATE INDEX IF NOT EXISTS idx_trip_preference_trip_id ON trip_preference(trip_id);
 CREATE INDEX IF NOT EXISTS idx_chat_message_user_id ON chat_message(user_id);
 CREATE INDEX IF NOT EXISTS idx_chat_message_trip_id ON chat_message(trip_id);
 CREATE INDEX IF NOT EXISTS idx_chat_message_created_at ON chat_message(user_id, created_at);

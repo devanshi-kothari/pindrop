@@ -445,5 +445,9 @@ router.post('/chat/stream', authenticateToken, async (req, res) => {
   }
 });
 
+// Export helpers so other routes (e.g. trip itinerary generation) can
+// persist chat messages in a consistent way.
+export { saveMessage, loadConversationHistory };
+
 export default router;
 

@@ -1,9 +1,20 @@
 // backend/routes/trips.js
 import express from 'express';
+import OpenAI from 'openai';
 import supabase from '../supabaseClient.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { saveMessage } from './chat.js';
 
 const router = express.Router();
+
+// Initialize Groq client (OpenAI-compatible API) for itinerary generation
+const groqClient = new OpenAI({
+  apiKey: process.env.GROQ_API_KEY,
+  baseURL: 'https://api.groq.com/openai/v1',
+});
+
+// Default model - can be overridden via env variable
+const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
 
 // Get all trips for user, optionally filtered by status
 router.get('/', authenticateToken, async (req, res) => {
@@ -217,6 +228,381 @@ router.delete('/:tripId', authenticateToken, async (req, res) => {
       success: false,
       message: 'Failed to delete trip',
       error: error.message
+    });
+  }
+});
+
+// Get trip-specific preferences
+router.get('/:tripId/preferences', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+
+    // Ensure the trip belongs to the user
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found',
+      });
+    }
+
+    const { data: preferences, error } = await supabase
+      .from('trip_preference')
+      .select('*')
+      .eq('trip_id', tripId)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    res.status(200).json({
+      success: true,
+      preferences: preferences || null,
+    });
+  } catch (error) {
+    console.error('Error fetching trip preferences:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch trip preferences',
+      error: error.message,
+    });
+  }
+});
+
+// Create or update trip-specific preferences
+router.put('/:tripId/preferences', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+
+    const {
+      num_days,
+      start_date,
+      end_date,
+      min_budget_per_day,
+      max_budget_per_day,
+      pace,
+      accommodation_type,
+      activity_categories,
+      avoid_activity_categories,
+      group_type,
+      safety_notes,
+      accessibility_notes,
+      custom_requests,
+    } = req.body;
+
+    // Ensure the trip belongs to the user
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found',
+      });
+    }
+
+    const { data: existingPreference, error: prefError } = await supabase
+      .from('trip_preference')
+      .select('trip_preference_id')
+      .eq('trip_id', tripId)
+      .maybeSingle();
+
+    if (prefError) {
+      throw prefError;
+    }
+
+    const preferenceData = {
+      trip_id: tripId,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (num_days !== undefined) preferenceData.num_days = num_days;
+    if (start_date !== undefined) preferenceData.start_date = start_date;
+    if (end_date !== undefined) preferenceData.end_date = end_date;
+    if (min_budget_per_day !== undefined && min_budget_per_day !== null) {
+      preferenceData.min_budget_per_day = parseFloat(min_budget_per_day);
+    }
+    if (max_budget_per_day !== undefined && max_budget_per_day !== null) {
+      preferenceData.max_budget_per_day = parseFloat(max_budget_per_day);
+    }
+    if (pace !== undefined) preferenceData.pace = pace;
+    if (accommodation_type !== undefined) preferenceData.accommodation_type = accommodation_type;
+    if (activity_categories !== undefined) preferenceData.activity_categories = activity_categories;
+    if (avoid_activity_categories !== undefined)
+      preferenceData.avoid_activity_categories = avoid_activity_categories;
+    if (group_type !== undefined) preferenceData.group_type = group_type;
+    if (safety_notes !== undefined) preferenceData.safety_notes = safety_notes;
+    if (accessibility_notes !== undefined) preferenceData.accessibility_notes = accessibility_notes;
+    if (custom_requests !== undefined) preferenceData.custom_requests = custom_requests;
+
+    let result;
+
+    if (existingPreference) {
+      result = await supabase
+        .from('trip_preference')
+        .update(preferenceData)
+        .eq('trip_id', tripId)
+        .select()
+        .single();
+    } else {
+      preferenceData.created_at = new Date().toISOString();
+      result = await supabase.from('trip_preference').insert([preferenceData]).select().single();
+    }
+
+    const { data, error } = result;
+
+    if (error) {
+      throw error;
+    }
+
+    res.status(200).json({
+      success: true,
+      preferences: data,
+    });
+  } catch (error) {
+    console.error('Error saving trip preferences:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to save trip preferences',
+      error: error.message,
+    });
+  }
+});
+
+// Generate day-by-day itinerary and activities for a trip using the LLM
+router.post('/:tripId/generate-itinerary', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+
+    // Load trip and ensure it belongs to the user
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('*')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found',
+      });
+    }
+
+    // Load user profile
+    const { data: userProfile, error: userError } = await supabase
+      .from('app_user')
+      .select('user_id, name, home_location, budget_preference, travel_style, liked_tags')
+      .eq('user_id', userId)
+      .single();
+
+    if (userError || !userProfile) {
+      throw userError || new Error('User profile not found');
+    }
+
+    // Load trip-specific preferences (optional)
+    const { data: tripPreferences, error: prefError } = await supabase
+      .from('trip_preference')
+      .select('*')
+      .eq('trip_id', tripId)
+      .maybeSingle();
+
+    if (prefError) {
+      throw prefError;
+    }
+
+    // Clear existing itinerary for this trip (activities remain as a shared catalog)
+    const { error: deleteItineraryError } = await supabase
+      .from('itinerary')
+      .delete()
+      .eq('trip_id', tripId);
+
+    if (deleteItineraryError) {
+      throw deleteItineraryError;
+    }
+
+    const plannerPrompt = `You are an expert travel planner creating a realistic, safe, and fun itinerary.
+You are given structured data about:
+- the trip (destination, dates, budget, travelers)
+- the traveler's general profile and interests
+- this specific trip's preferences (pace, categories, safety notes, custom requests).
+
+Use this to generate a day-by-day itinerary that strongly respects:
+- requested activity categories and things to avoid
+- safety notes (e.g. safe for a group of girls)
+- accessibility notes and any custom constraints
+- realistic pacing (do not overload days beyond the requested "pace").
+
+Respond ONLY with valid JSON in this exact format (no markdown, no explanation):
+{
+  "days": [
+    {
+      "day_number": 1,
+      "date": "YYYY-MM-DD or null",
+      "summary": "Short overview of the day tailored to their preferences.",
+      "activities": [
+        {
+          "name": "Activity name",
+          "location": "Neighborhood or area in the destination",
+          "category": "outdoors | relaxing | cultural | music | arts | museums | food | nightlife | shopping | nature | adventure | other",
+          "duration": "Approximate duration, e.g. '2-3 hours'",
+          "cost_estimate": 0,
+          "rating": 4.5,
+          "tags": ["string", "string"]
+        }
+      ]
+    }
+  ]
+}
+
+If dates or number of days are missing, infer a reasonable number of days (3-5) for a first draft.`;
+
+    const llmInput = {
+      trip,
+      user_profile: userProfile,
+      trip_preferences: tripPreferences || null,
+    };
+
+    const completion = await groqClient.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: plannerPrompt,
+        },
+        {
+          role: 'user',
+          content: JSON.stringify(llmInput),
+        },
+      ],
+      temperature: 0.6,
+    });
+
+    const rawContent = completion.choices[0]?.message?.content || '{}';
+
+    let parsed;
+    try {
+      parsed = JSON.parse(rawContent);
+    } catch (e) {
+      const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0]);
+      } else {
+        throw new Error('Failed to parse itinerary JSON from LLM response');
+      }
+    }
+
+    const days = Array.isArray(parsed.days) ? parsed.days : [];
+
+    const createdItineraries = [];
+
+    // Insert itineraries and activities
+    for (let i = 0; i < days.length; i++) {
+      const day = days[i] || {};
+      const dayNumber = day.day_number || i + 1;
+      const date = day.date || null;
+      const summary = day.summary || `Day ${dayNumber} in ${trip.destination || 'your destination'}`;
+
+      const { data: itineraryRow, error: itineraryError } = await supabase
+        .from('itinerary')
+        .insert([
+          {
+            trip_id: tripId,
+            day_number: dayNumber,
+            date,
+            summary,
+          },
+        ])
+        .select()
+        .single();
+
+      if (itineraryError || !itineraryRow) {
+        throw itineraryError || new Error('Failed to insert itinerary day');
+      }
+
+      createdItineraries.push(itineraryRow);
+
+      const activities = Array.isArray(day.activities) ? day.activities : [];
+
+      for (let j = 0; j < activities.length; j++) {
+        const act = activities[j] || {};
+
+        const { data: activityRow, error: activityError } = await supabase
+          .from('activity')
+          .insert([
+            {
+              name: act.name || 'Activity',
+              location: act.location || trip.destination || null,
+              category: act.category || 'other',
+              duration: act.duration || null,
+              cost_estimate:
+                act.cost_estimate !== undefined && act.cost_estimate !== null
+                  ? parseFloat(act.cost_estimate)
+                  : null,
+              rating:
+                act.rating !== undefined && act.rating !== null
+                  ? parseFloat(act.rating)
+                  : null,
+              tags: Array.isArray(act.tags) ? act.tags : [],
+              source: 'llm-itinerary',
+            },
+          ])
+          .select()
+          .single();
+
+        if (activityError || !activityRow) {
+          throw activityError || new Error('Failed to insert activity');
+        }
+
+        const { error: linkError } = await supabase.from('itinerary_activity').insert([
+          {
+            itinerary_id: itineraryRow.itinerary_id,
+            activity_id: activityRow.activity_id,
+            order_index: j,
+          },
+        ]);
+
+        if (linkError) {
+          throw linkError;
+        }
+      }
+    }
+
+    const assistantSummary = days.length
+      ? `I've created a ${days.length}-day itinerary for your trip to ${
+          trip.destination || 'your destination'
+        }. You can review it in your trip details.`
+      : `I wasn't able to generate a detailed itinerary, but I've saved your preferences for this trip.`;
+
+    // Save a concise assistant message into the chat history for this trip
+    await saveMessage(userId, 'assistant', assistantSummary, tripId);
+
+    res.status(200).json({
+      success: true,
+      message: assistantSummary,
+      days_count: days.length,
+      itineraries: createdItineraries,
+    });
+  } catch (error) {
+    console.error('Error generating itinerary:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate itinerary',
+      error: error.message,
     });
   }
 });
