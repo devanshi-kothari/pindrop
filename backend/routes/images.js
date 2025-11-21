@@ -4,9 +4,48 @@ import fetch from 'node-fetch';
 
 const router = express.Router();
 
-// Get image URL for a destination using Unsplash API
-// Note: For production, you should use an Unsplash API key
-// For now, we'll use Unsplash's public endpoint
+const GOOGLE_CUSTOM_SEARCH_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
+const GOOGLE_CUSTOM_SEARCH_CX = process.env.GOOGLE_CUSTOM_SEARCH_CX || '80b87ce61302c4f86';
+
+async function fetchImageFromGoogle(destination) {
+  if (!GOOGLE_CUSTOM_SEARCH_API_KEY) {
+    console.warn('GOOGLE_CUSTOM_SEARCH_API_KEY is not set. Unable to fetch destination images.');
+    return null;
+  }
+
+  const query = `${destination} travel landscape photography`;
+
+  const params = new URLSearchParams({
+    key: GOOGLE_CUSTOM_SEARCH_API_KEY,
+    cx: GOOGLE_CUSTOM_SEARCH_CX,
+    q: query,
+    searchType: 'image',
+    num: '1',
+    safe: 'active',
+    imgType: 'photo',
+  });
+
+  const url = `https://customsearch.googleapis.com/customsearch/v1?${params.toString()}`;
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    const text = await response.text();
+    console.error('Google Custom Search API error:', response.status, text);
+    return null;
+  }
+
+  const data = await response.json();
+  const firstItem = Array.isArray(data.items) && data.items.length > 0 ? data.items[0] : null;
+
+  if (!firstItem) {
+    return null;
+  }
+
+  // Prefer the thumbnail link (more reliably an actual image URL), then fall back to main link
+  return (firstItem.image && firstItem.image.thumbnailLink) || firstItem.link || null;
+}
+
+// Get image URL for a destination using Google Custom Search JSON API
 router.get('/destination', async (req, res) => {
   try {
     const { destination } = req.query;
@@ -18,29 +57,28 @@ router.get('/destination', async (req, res) => {
       });
     }
 
-    // Use Unsplash API to get a random image for the destination
-    // Note: This is a public endpoint with rate limits
-    // For production, register at https://unsplash.com/developers and use your access key
-    const unsplashUrl = `https://api.unsplash.com/photos/random?query=${encodeURIComponent(destination)}&orientation=landscape&client_id=YOUR_UNSPLASH_ACCESS_KEY`;
-
     try {
-      // For now, use a simple placeholder service or Unsplash Source API
-      // Unsplash Source API doesn't require authentication
-      const imageUrl = `https://source.unsplash.com/800x450/?${encodeURIComponent(destination)},travel`;
+      const imageUrl = await fetchImageFromGoogle(destination);
 
-      // Alternative: Use a more reliable service like Lorem Picsum with destination tag
-      // For production, use the Unsplash API with proper authentication
+      if (!imageUrl) {
+        return res.status(200).json({
+          success: true,
+          imageUrl: null,
+          message: 'No image found for this destination.',
+        });
+      }
+
       res.status(200).json({
         success: true,
-        imageUrl: imageUrl
+        imageUrl,
       });
     } catch (error) {
-      // Fallback to a placeholder image service
-      const fallbackUrl = `https://images.unsplash.com/photo-1488646953014-85cb44e25828?w=800&q=80`;
-
+      console.error('Error calling Google Custom Search API:', error);
+      // Graceful fallback without using Unsplash
       res.status(200).json({
         success: true,
-        imageUrl: fallbackUrl
+        imageUrl: null,
+        message: 'Unable to fetch image at this time.',
       });
     }
   } catch (error) {

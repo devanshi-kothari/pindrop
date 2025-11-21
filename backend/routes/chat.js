@@ -1,6 +1,7 @@
 // backend/routes/chat.js
 import express from 'express';
 import OpenAI from 'openai';
+import fetch from 'node-fetch';
 import supabase from '../supabaseClient.js';
 import { authenticateToken } from '../middleware/auth.js';
 
@@ -14,6 +15,53 @@ const groqClient = new OpenAI({
 
 // Default model - can be overridden via env variable
 const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
+
+const GOOGLE_CUSTOM_SEARCH_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
+const GOOGLE_CUSTOM_SEARCH_CX = process.env.GOOGLE_CUSTOM_SEARCH_CX || '80b87ce61302c4f86';
+
+async function fetchDestinationImage(destination) {
+  if (!destination) return null;
+  if (!GOOGLE_CUSTOM_SEARCH_API_KEY) {
+    console.warn('GOOGLE_CUSTOM_SEARCH_API_KEY is not set. Chat-created trips will have no image_url.');
+    return null;
+  }
+
+  try {
+    const query = `${destination} travel landscape photography`;
+
+    const params = new URLSearchParams({
+      key: GOOGLE_CUSTOM_SEARCH_API_KEY,
+      cx: GOOGLE_CUSTOM_SEARCH_CX,
+      q: query,
+      searchType: 'image',
+      num: '1',
+      safe: 'active',
+      imgType: 'photo',
+    });
+
+    const url = `https://customsearch.googleapis.com/customsearch/v1?${params.toString()}`;
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      const text = await response.text();
+      console.error('Google Custom Search API error (chat):', response.status, text);
+      return null;
+    }
+
+    const data = await response.json();
+    const firstItem = Array.isArray(data.items) && data.items.length > 0 ? data.items[0] : null;
+
+    if (!firstItem) {
+      return null;
+    }
+
+  // Prefer the thumbnail link (more reliably an actual image URL), then fall back to main link
+  return (firstItem.image && firstItem.image.thumbnailLink) || firstItem.link || null;
+  } catch (error) {
+    console.error('Error fetching destination image (chat):', error);
+    return null;
+  }
+}
 
 // Helper function to load conversation history from database
 async function loadConversationHistory(userId, tripId = null) {
@@ -233,10 +281,10 @@ router.post('/chat', authenticateToken, async (req, res) => {
       const tripInfo = await extractTripInfo(message);
       console.log('📋 Extracted trip info for new trip:', tripInfo);
 
-      // Generate image URL for destination using Unsplash Source API when we have one
+      // Generate image URL for destination using Google Custom Search when we have one
       let imageUrl = null;
       if (tripInfo.destination) {
-        imageUrl = `https://source.unsplash.com/800x450/?${encodeURIComponent(tripInfo.destination)},travel`;
+        imageUrl = await fetchDestinationImage(tripInfo.destination);
       }
 
       // Always attempt to create a trip row for chat-initiated trips.
