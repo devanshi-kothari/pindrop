@@ -19,10 +19,6 @@ CREATE TABLE IF NOT EXISTS trip (
     user_id BIGINT NOT NULL REFERENCES app_user(user_id) ON DELETE CASCADE,
     title VARCHAR(255) NOT NULL,
     destination VARCHAR(255),
-    start_date DATE,
-    end_date DATE,
-    total_budget DECIMAL(10, 2),
-    num_travelers INT DEFAULT 1,
     trip_status trip_status_type DEFAULT 'draft',
     image_url TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
@@ -82,13 +78,22 @@ CREATE TABLE IF NOT EXISTS trip_preference (
     avoid_activity_categories TEXT[] DEFAULT '{}',
     -- Who is travelling: 'solo', 'couple', 'family', 'friends', 'girls_trip', etc.
     group_type VARCHAR(50),
-    -- Safety and access notes (e.g. \"safe for a group of girls\")
+    -- Safety and access notes (ex. \"safe for a group of girls\")
     safety_notes TEXT,
     accessibility_notes TEXT,
     -- Free-form extra requests or constraints
     custom_requests TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+);
+
+-- Trip-level feedback on reusable activities (for swipe-style selection)
+CREATE TABLE IF NOT EXISTS trip_activity_preference (
+    trip_activity_preference_id BIGSERIAL PRIMARY KEY,
+    trip_id BIGINT NOT NULL REFERENCES trip(trip_id) ON DELETE CASCADE,
+    activity_id BIGINT NOT NULL REFERENCES activity(activity_id) ON DELETE CASCADE,
+    preference VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (preference IN ('pending', 'liked', 'disliked', 'skipped')),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
 
 CREATE TABLE IF NOT EXISTS chat_message (
@@ -108,3 +113,4 @@ CREATE INDEX IF NOT EXISTS idx_chat_message_user_id ON chat_message(user_id);
 CREATE INDEX IF NOT EXISTS idx_chat_message_trip_id ON chat_message(trip_id);
 CREATE INDEX IF NOT EXISTS idx_chat_message_created_at ON chat_message(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_trip_status ON trip(user_id, trip_status);
+CREATE INDEX IF NOT EXISTS idx_trip_activity_preference_trip_id ON trip_activity_preference(trip_id);

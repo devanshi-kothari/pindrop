@@ -5,14 +5,18 @@ import TripCard from "@/components/TripCard";
 import ChatPrompt from "@/components/ChatPrompt";
 import { getApiUrl } from "@/lib/api";
 
+interface TripPreferenceSummary {
+  start_date: string | null;
+  end_date: string | null;
+}
+
 interface Trip {
   trip_id: number;
   title: string;
   destination: string;
-  start_date: string;
-  end_date: string;
   trip_status: string;
   image_url?: string;
+  trip_preference?: TripPreferenceSummary | null;
 }
 
 const Dashboard = () => {
@@ -78,8 +82,8 @@ const Dashboard = () => {
               title={trip.title}
               destination={trip.destination}
               imageUrl={trip.image_url}
-              startDate={trip.start_date}
-              endDate={trip.end_date}
+              startDate={trip.trip_preference?.start_date ?? ""}
+              endDate={trip.trip_preference?.end_date ?? ""}
               status={trip.trip_status}
             />
           ))}

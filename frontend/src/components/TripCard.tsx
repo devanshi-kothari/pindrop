@@ -14,13 +14,28 @@ interface TripCardProps {
 const TripCard = ({ tripId, title, destination, imageUrl, startDate, endDate, status }: TripCardProps) => {
   const navigate = useNavigate();
 
-  // Format dates for display, falling back to a placeholder when missing/invalid
+  // Format DATE-only strings from the DB without timezone shifting.
+  // We manually construct a local Date from YYYY-MM-DD to avoid the
+  // off-by-one issues that come from new Date("YYYY-MM-DD") + timezones.
   const formatDate = (dateString: string) => {
     if (!dateString) {
       return "MM/DD/YYYY";
     }
 
-    const date = new Date(dateString);
+    const parts = dateString.split("-");
+    if (parts.length !== 3) {
+      return "MM/DD/YYYY";
+    }
+
+    const year = Number(parts[0]);
+    const month = Number(parts[1]);
+    const day = Number(parts[2]);
+
+    if (!year || !month || !day) {
+      return "MM/DD/YYYY";
+    }
+
+    const date = new Date(year, month - 1, day);
     if (Number.isNaN(date.getTime()) || date.getFullYear() <= 1970) {
       return "MM/DD/YYYY";
     }

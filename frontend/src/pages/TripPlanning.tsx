@@ -24,18 +24,83 @@ const TripPlanning = () => {
   const [trip, setTrip] = useState<Trip | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [hasBootstrappedNewTrip, setHasBootstrappedNewTrip] = useState(false);
   const initialMessage = searchParams.get("message");
+  const planningMode = searchParams.get("mode") === "explore" ? "explore" : "known";
 
   // Check if we're on the /trip/new route (tripId is undefined when route matches /trip/new exactly)
   const isNewTrip = location.pathname === "/trip/new" || tripId === "new";
 
   useEffect(() => {
+    // Existing trip: load from API
     if (tripId && tripId !== "new") {
       loadTrip(parseInt(tripId));
-    } else {
+      return;
+    }
+
+    // In "help me choose" mode, we start with pure chat and no bound trip.
+    // The user can chat with the LLM to decide on a destination, then
+    // explicitly lock it in to create a trip and show the form.
+    if (planningMode === "explore") {
+      setLoading(false);
+      return;
+    }
+
+    // New trip flow (ex. from dashboard chat prompt)
+    // We create a draft trip up front so that:
+    // - the structured preferences form can load immediately
+    // - the LLM won't auto-respond to the initial message before the form is filled
+    const bootstrapNewTrip = async () => {
+      try {
+        const token = localStorage.getItem("token");
+        if (!token) {
+          navigate("/login");
+          return;
+        }
+
+        const body: Record<string, unknown> = {};
+
+        if (initialMessage && initialMessage.trim()) {
+          // Pass the free-text description to the backend so it can infer
+          // destination/title using the same extraction logic as chat
+          // (ex. "Trip to Brazil" with destination "Brazil").
+          body.raw_message = initialMessage.trim();
+        }
+
+        const response = await fetch(getApiUrl("api/trips"), {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success && result.trip) {
+          setTrip(result.trip);
+        } else {
+          console.error("Failed to create draft trip from initial message:", result.message);
+          // Fall back to showing the chat without a bound trip
+        }
+      } catch (error) {
+        console.error("Error creating draft trip:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    // Only bootstrap once when we're explicitly in the /trip/new flow.
+    // React StrictMode can run effects twice in dev, so guard with state.
+    if (isNewTrip && !hasBootstrappedNewTrip) {
+      setHasBootstrappedNewTrip(true);
+      bootstrapNewTrip();
+    } else if (!isNewTrip) {
       setLoading(false);
     }
-  }, [tripId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tripId, isNewTrip, initialMessage, hasBootstrappedNewTrip, planningMode]);
 
   const loadTrip = async (id: number) => {
     try {
@@ -169,6 +234,7 @@ const TripPlanning = () => {
                   tripId={currentTripId}
                   className="h-full"
                   initialMessage={isNewTrip ? initialMessage : null}
+                  planningMode={planningMode}
                   onTripCreated={(newTripId) => {
                     // Update URL to the new trip ID
                     window.history.replaceState({}, "", `/trip/${newTripId}`);

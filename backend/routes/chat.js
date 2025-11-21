@@ -19,6 +19,16 @@ const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
 const GOOGLE_CUSTOM_SEARCH_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
 const GOOGLE_CUSTOM_SEARCH_CX = process.env.GOOGLE_CUSTOM_SEARCH_CX || '80b87ce61302c4f86';
 
+function normalizeDestinationName(raw) {
+  if (!raw) return null;
+  const trimmed = String(raw).trim().toLowerCase();
+  if (!trimmed) return null;
+  return trimmed
+    .split(/\s+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
 async function fetchDestinationImage(destination) {
   if (!destination) return null;
   if (!GOOGLE_CUSTOM_SEARCH_API_KEY) {
@@ -145,7 +155,7 @@ async function extractTripInfo(message) {
 
 Message: "${message}"
 
-If the message is clearly about creating a new trip (e.g., "I want to go to X", "plan a trip to Y", "I'd like to visit Z"), set is_trip_request to true. Otherwise false.`;
+If the message is clearly about creating a new trip (ex., "I want to go to X", "plan a trip to Y", "I'd like to visit Z"), set is_trip_request to true. Otherwise false.`;
 
     const completion = await groqClient.chat.completions.create({
       model: DEFAULT_MODEL,
@@ -179,13 +189,17 @@ If the message is clearly about creating a new trip (e.g., "I want to go to X", 
       }
     }
 
+    if (parsed && parsed.destination) {
+      parsed.destination = normalizeDestinationName(parsed.destination);
+    }
     return parsed;
   } catch (error) {
     console.error('Error extracting trip info:', error);
     // Fallback: try to extract destination manually
     const destinationMatch = message.match(/\bto\s+([A-Za-z\s]+?)(?:\s|$|,|\.|!|\?)/i);
+    const normalized = destinationMatch ? normalizeDestinationName(destinationMatch[1]) : null;
     return {
-      destination: destinationMatch ? destinationMatch[1].trim() : null,
+      destination: normalized,
       start_date: null,
       end_date: null,
       num_travelers: null,
@@ -195,7 +209,7 @@ If the message is clearly about creating a new trip (e.g., "I want to go to X", 
   }
 }
 
-// Helper function to create a trip
+// Helper function to create a trip plus an initial preference row
 async function createTrip(userId, tripInfo, imageUrl = null) {
   try {
     const tripData = {
@@ -203,16 +217,6 @@ async function createTrip(userId, tripInfo, imageUrl = null) {
       trip_status: 'draft',
       title: tripInfo.destination ? `Trip to ${tripInfo.destination}` : 'My Trip',
       ...(tripInfo.destination && { destination: tripInfo.destination }),
-      ...(tripInfo.start_date && { start_date: tripInfo.start_date }),
-      ...(tripInfo.end_date && { end_date: tripInfo.end_date }),
-      ...(tripInfo.num_travelers !== null &&
-        tripInfo.num_travelers !== undefined && {
-          num_travelers: tripInfo.num_travelers,
-        }),
-      ...(tripInfo.total_budget !== null &&
-        tripInfo.total_budget !== undefined && {
-          total_budget: parseFloat(tripInfo.total_budget),
-        }),
       ...(imageUrl && { image_url: imageUrl }),
     };
 
@@ -224,6 +228,25 @@ async function createTrip(userId, tripInfo, imageUrl = null) {
 
     if (error) {
       throw error;
+    }
+
+    // Seed trip_preference with any structured fields we managed to extract
+    if (data?.trip_id && (tripInfo.start_date || tripInfo.end_date)) {
+      const preferenceData = {
+        trip_id: data.trip_id,
+        start_date: tripInfo.start_date || null,
+        end_date: tripInfo.end_date || null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: prefError } = await supabase
+        .from('trip_preference')
+        .insert([preferenceData]);
+
+      if (prefError) {
+        console.error('Error seeding trip_preference from chat-created trip:', prefError);
+      }
     }
 
     return data;
@@ -258,7 +281,7 @@ router.get('/history', authenticateToken, async (req, res) => {
 router.post('/chat', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-    const { message, model, tripId } = req.body;
+    const { message, model, tripId, suppressTripCreation } = req.body;
 
     console.log('📨 Chat endpoint called:', { userId, message: message?.substring(0, 50), model, tripId });
 
@@ -274,9 +297,10 @@ router.post('/chat', authenticateToken, async (req, res) => {
     let createdTrip = null;
     let tripCreationError = null;
 
-    // If no tripId provided, always create a new trip record for this chat "session"
-    // so that chat-created trips always have a corresponding row in the trip table.
-    if (!parsedTripId) {
+    // If no tripId provided and we are not explicitly in "explore" mode,
+    // create a new trip record for this chat "session" so that
+    // chat-created trips always have a corresponding row in the trip table.
+    if (!parsedTripId && !suppressTripCreation) {
       console.log('🔍 No tripId provided, extracting trip info from message to create a new trip...');
       const tripInfo = await extractTripInfo(message);
       console.log('📋 Extracted trip info for new trip:', tripInfo);
@@ -493,9 +517,9 @@ router.post('/chat/stream', authenticateToken, async (req, res) => {
   }
 });
 
-// Export helpers so other routes (e.g. trip itinerary generation) can
-// persist chat messages in a consistent way.
-export { saveMessage, loadConversationHistory };
+// Export helpers so other routes (ex. trip itinerary generation, trip creation)
+// can persist chat messages and reuse extraction logic in a consistent way.
+export { saveMessage, loadConversationHistory, extractTripInfo, fetchDestinationImage };
 
 export default router;
 

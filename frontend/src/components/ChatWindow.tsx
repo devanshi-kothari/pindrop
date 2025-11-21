@@ -28,6 +28,7 @@ interface ChatWindowProps {
   tripId?: number | null;
   initialMessage?: string | null;
   onTripCreated?: (tripId: number) => void;
+  planningMode?: "known" | "explore";
 }
 
 type ActivityCategory =
@@ -64,6 +65,7 @@ const ChatWindow = ({
   tripId = null,
   initialMessage = null,
   onTripCreated,
+  planningMode = "known",
 }: ChatWindowProps) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState("");
@@ -74,7 +76,29 @@ const ChatWindow = ({
   const [isGeneratingItinerary, setIsGeneratingItinerary] = useState(false);
   const [tripPreferences, setTripPreferences] = useState<TripPreferences | null>(null);
   const [hasLoadedPreferences, setHasLoadedPreferences] = useState(false);
+  const [activities, setActivities] = useState<
+    {
+      trip_activity_preference_id: number;
+      activity_id: number;
+      name: string;
+      location: string | null;
+      category: string | null;
+      duration: string | null;
+      cost_estimate: number | null;
+      rating: number | null;
+      tags: string[] | null;
+      source: string | null;
+      preference: "pending" | "liked" | "disliked" | "skipped";
+    }[]
+  >([]);
+  const [isGeneratingActivities, setIsGeneratingActivities] = useState(false);
+  const [isUpdatingActivityPreference, setIsUpdatingActivityPreference] = useState<
+    Record<number, boolean>
+  >({});
+  const [hasShownTripSketchPrompt, setHasShownTripSketchPrompt] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [lockDestination, setLockDestination] = useState("");
+  const [isLockingDestination, setIsLockingDestination] = useState(false);
 
   const getAuthToken = () => localStorage.getItem("token");
 
@@ -174,7 +198,11 @@ const ChatWindow = ({
       const isTripRequest = /want.*go|plan.*trip|visit|travel|to\s+[A-Za-z]/i.test(
         content
       );
-      if (!tripId && (isTripRequest || content === initialMessage)) {
+      if (
+        planningMode === "known" &&
+        !tripId &&
+        (isTripRequest || content === initialMessage)
+      ) {
         setIsCreatingTrip(true);
       }
 
@@ -194,6 +222,7 @@ const ChatWindow = ({
           body: JSON.stringify({
             message: content,
             tripId,
+            suppressTripCreation: planningMode === "explore",
           }),
         });
 
@@ -238,7 +267,7 @@ const ChatWindow = ({
         setIsCreatingTrip(false);
       }
     },
-    [inputMessage, isLoading, tripId, initialMessage, onTripCreated]
+    [inputMessage, isLoading, tripId, initialMessage, onTripCreated, planningMode]
   );
 
   // Load trip preferences once we know the tripId
@@ -277,6 +306,38 @@ const ChatWindow = ({
     loadPreferences();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tripId, hasLoadedPreferences]);
+
+  const loadActivities = useCallback(
+    async (id: number) => {
+      try {
+        const token = getAuthToken();
+        if (!token) return;
+
+        const response = await fetch(getApiUrl(`api/trips/${id}/activities`), {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success && Array.isArray(result.activities)) {
+          setActivities(result.activities);
+        }
+      } catch (error) {
+        console.error("Error loading activities:", error);
+      }
+    },
+    []
+  );
+
+  // Load any existing activity suggestions when the trip is known
+  useEffect(() => {
+    if (!tripId) return;
+    loadActivities(tripId);
+  }, [tripId, loadActivities]);
 
   const handlePreferenceChange = <K extends keyof TripPreferences>(
     key: K,
@@ -377,27 +438,112 @@ const ChatWindow = ({
     }
   };
 
+  const generateActivities = async () => {
+    if (!tripId) return;
+
+    try {
+      setIsGeneratingActivities(true);
+
+      // Save preferences first so activities can reflect latest constraints
+      if (tripPreferences) {
+        await savePreferences();
+      }
+
+      const token = getAuthToken();
+      if (!token) return;
+
+      const response = await fetch(getApiUrl(`api/trips/${tripId}/generate-activities`), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      const result = await response.json();
+
+      if (response.ok && result.success && Array.isArray(result.activities)) {
+        setActivities(result.activities);
+
+        const assistantMessage: Message = {
+          role: "assistant",
+          content:
+            result.activities.length > 0
+              ? "I pulled together a small set of activity ideas based on your preferences. Swipe through them below and tell me what you like."
+              : "I wasn’t able to find good activity ideas just yet. You can adjust your preferences or try again.",
+          timestamp: formatTime(),
+        };
+        setMessages((prev) => [...prev, assistantMessage]);
+      } else {
+        console.error("Failed to generate activities:", result.message);
+      }
+    } catch (error) {
+      console.error("Error generating activities:", error);
+    } finally {
+      setIsGeneratingActivities(false);
+    }
+  };
+
+  const updateActivityPreference = async (
+    activityId: number,
+    preference: "liked" | "disliked" | "skipped"
+  ) => {
+    if (!tripId) return;
+
+    try {
+      setIsUpdatingActivityPreference((prev) => ({ ...prev, [activityId]: true }));
+      const token = getAuthToken();
+      if (!token) return;
+
+      const response = await fetch(
+        getApiUrl(`api/trips/${tripId}/activities/${activityId}/preference`),
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ preference }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (response.ok && result.success) {
+        setActivities((prev) =>
+          prev.map((a) =>
+            a.activity_id === activityId
+              ? {
+                  ...a,
+                  preference,
+                }
+              : a
+          )
+        );
+      } else {
+        console.error("Failed to update activity preference:", result.message);
+      }
+    } catch (error) {
+      console.error("Error updating activity preference:", error);
+    } finally {
+      setIsUpdatingActivityPreference((prev) => ({ ...prev, [activityId]: false }));
+    }
+  };
+
   // Load conversation history or auto-start a new chat with the initial message
   useEffect(() => {
-    const loadHistoryOrStartNewChat = async () => {
+    const loadHistory = async () => {
       const token = getAuthToken();
       if (!token) {
         setMessages([
           {
             role: "assistant",
             content:
-              "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
+              "Hi! I'm your travel planning assistant. Fill out the above questions so we can start planning your trip!",
             timestamp: formatTime(),
           },
         ]);
         setIsLoadingHistory(false);
-        return;
-      }
-
-      // New trip started from the single-line prompt: skip history and send initial message
-      if (!tripId && initialMessage) {
-        setIsLoadingHistory(false);
-        await sendMessage(initialMessage);
         return;
       }
 
@@ -435,7 +581,7 @@ const ChatWindow = ({
               {
                 role: "assistant",
                 content:
-                  "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
+                  "Hi! I'm your travel planning assistant. Fill out the above questions so we can start planning your trip!",
                 timestamp: formatTime(),
               },
             ]);
@@ -447,7 +593,7 @@ const ChatWindow = ({
             {
               role: "assistant",
               content:
-                "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
+                "Hi! I'm your travel planning assistant. Fill out the above questions so we can start planning your trip!",
               timestamp: formatTime(),
             },
           ]);
@@ -458,7 +604,7 @@ const ChatWindow = ({
           {
             role: "assistant",
             content:
-              "Hi! I'm your travel planning assistant. Where would you like to go or what would you like to do?",
+              "Hi! I'm your travel planning assistant. Fill out the above questions so we can start planning your trip!",
             timestamp: formatTime(),
           },
         ]);
@@ -467,11 +613,9 @@ const ChatWindow = ({
       }
     };
 
-    loadHistoryOrStartNewChat();
-  // We intentionally omit sendMessage from deps to avoid double-sending
-  // the initial message when internal loading state changes.
+    loadHistory();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tripId, initialMessage]);
+  }, [tripId]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -484,6 +628,28 @@ const ChatWindow = ({
       sendMessage();
     }
   };
+
+  // Derived helpers for dates / num_days validation and UX
+  const { dateError, computedNumDays } = (() => {
+    let localError: string | null = null;
+    let localNumDays: number | null = null;
+
+    if (tripPreferences?.start_date && tripPreferences?.end_date) {
+      const start = new Date(tripPreferences.start_date);
+      const end = new Date(tripPreferences.end_date);
+
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        localError = "Please enter valid dates.";
+      } else if (end < start) {
+        localError = "End date must be on or after the start date.";
+      } else {
+        const diffMs = end.getTime() - start.getTime();
+        localNumDays = Math.round(diffMs / (1000 * 60 * 60 * 24)) + 1;
+      }
+    }
+
+    return { dateError: localError, computedNumDays: localNumDays };
+  })();
 
   return (
     <div
@@ -529,10 +695,10 @@ const ChatWindow = ({
                   <Button
                     size="sm"
                     className="bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400 disabled:opacity-60"
-                    onClick={generateItinerary}
-                    disabled={isGeneratingItinerary}
+                    onClick={generateActivities}
+                    disabled={isGeneratingActivities}
                   >
-                    {isGeneratingItinerary ? "Crafting itinerary..." : "Generate itinerary"}
+                    {isGeneratingActivities ? "Finding activities..." : "Generate activities"}
                   </Button>
                 </div>
               </div>
@@ -555,6 +721,9 @@ const ChatWindow = ({
                       className="h-8 bg-slate-950 border-slate-700 text-xs"
                     />
                   </div>
+                  {dateError && (
+                    <p className="mt-1 text-[11px] text-rose-400">{dateError}</p>
+                  )}
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-slate-200 text-xs">Rough number of days</Label>
@@ -562,16 +731,26 @@ const ChatWindow = ({
                     type="number"
                     min={1}
                     max={21}
-                    value={tripPreferences?.num_days ?? ""}
+                    value={
+                      computedNumDays !== null
+                        ? computedNumDays
+                        : tripPreferences?.num_days ?? ""
+                    }
                     onChange={(e) =>
                       handlePreferenceChange(
                         "num_days",
                         e.target.value ? parseInt(e.target.value, 10) : null
                       )
                     }
+                    disabled={computedNumDays !== null}
                     className="h-8 bg-slate-950 border-slate-700 text-xs"
-                    placeholder="e.g. 4"
+                    placeholder={computedNumDays !== null ? "" : "ex. 4"}
                   />
+                  {computedNumDays !== null && (
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      Automatically calculated from your start and end dates.
+                    </p>
+                  )}
                 </div>
                 <div className="space-y-1.5">
                   <Label className="text-slate-200 text-xs">Daily budget (USD)</Label>
@@ -641,12 +820,42 @@ const ChatWindow = ({
                       <SelectValue placeholder="Select group type" />
                     </SelectTrigger>
                     <SelectContent className="bg-slate-950 border-slate-700 text-xs">
-                      <SelectItem value="solo">Solo</SelectItem>
-                      <SelectItem value="couple">Couple</SelectItem>
-                      <SelectItem value="family">Family</SelectItem>
-                      <SelectItem value="friends">Friends</SelectItem>
-                      <SelectItem value="girls_trip">Girls' trip</SelectItem>
-                      <SelectItem value="work">Work / team trip</SelectItem>
+                      <SelectItem
+                        value="solo"
+                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                      >
+                        Solo
+                      </SelectItem>
+                      <SelectItem
+                        value="couple"
+                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                      >
+                        Couple
+                      </SelectItem>
+                      <SelectItem
+                        value="family"
+                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                      >
+                        Family
+                      </SelectItem>
+                      <SelectItem
+                        value="friends"
+                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                      >
+                        Friends
+                      </SelectItem>
+                      <SelectItem
+                        value="girls_trip"
+                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                      >
+                        Girls' trip
+                      </SelectItem>
+                      <SelectItem
+                        value="work"
+                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                      >
+                        Work / team trip
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                   <Label className="text-slate-200 text-xs mt-2">Preferred stay</Label>
@@ -658,30 +867,58 @@ const ChatWindow = ({
                       <SelectValue placeholder="Hotel, Airbnb, hostel..." />
                     </SelectTrigger>
                     <SelectContent className="bg-slate-950 border-slate-700 text-xs">
-                      <SelectItem value="hotel">Hotel</SelectItem>
-                      <SelectItem value="airbnb">Apartment / Airbnb</SelectItem>
-                      <SelectItem value="hostel">Hostel</SelectItem>
-                      <SelectItem value="boutique">Boutique stay</SelectItem>
-                      <SelectItem value="no_preference">No strong preference</SelectItem>
+                      <SelectItem
+                        value="hotel"
+                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                      >
+                        Hotel
+                      </SelectItem>
+                      <SelectItem
+                        value="airbnb"
+                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                      >
+                        Apartment / Airbnb
+                      </SelectItem>
+                      <SelectItem
+                        value="hostel"
+                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                      >
+                        Hostel
+                      </SelectItem>
+                      <SelectItem
+                        value="boutique"
+                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                      >
+                        Boutique stay
+                      </SelectItem>
+                      <SelectItem
+                        value="no_preference"
+                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                      >
+                        No strong preference
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
 
                 <div className="space-y-2">
                   <Label className="text-slate-200 text-xs">
-                    Safety / accessibility notes (optional)
+                    Safety notes (optional)
                   </Label>
                   <Textarea
                     value={tripPreferences?.safety_notes ?? ""}
                     onChange={(e) => handlePreferenceChange("safety_notes", e.target.value)}
                     className="min-h-[60px] bg-slate-950 border-slate-700 text-xs resize-none"
-                    placeholder="e.g. Safe for a group of girls, well-lit areas, avoid very late nights..."
+                    placeholder="ex. Safe for a group of girls, well-lit areas, avoid very late nights..."
                   />
+                  <Label className="text-slate-200 text-xs mt-2">
+                    Accessibility notes (optional)
+                  </Label>
                   <Textarea
                     value={tripPreferences?.accessibility_notes ?? ""}
                     onChange={(e) => handlePreferenceChange("accessibility_notes", e.target.value)}
                     className="min-h-[50px] bg-slate-950 border-slate-700 text-xs resize-none"
-                    placeholder="e.g. Limited walking, step-free access, stroller-friendly..."
+                    placeholder="ex. Limited walking, step-free access, stroller-friendly..."
                   />
                 </div>
               </div>
@@ -764,8 +1001,75 @@ const ChatWindow = ({
                   value={tripPreferences?.custom_requests ?? ""}
                   onChange={(e) => handlePreferenceChange("custom_requests", e.target.value)}
                   className="min-h-[60px] bg-slate-950 border-slate-700 text-xs resize-none"
-                  placeholder="e.g. Rooftop bars with a view, no super early mornings, vegetarian-friendly spots, kid-friendly afternoons..."
+                  placeholder="ex. Rooftop bars with a view, no super early mornings, vegetarian-friendly spots, kid-friendly afternoons..."
                 />
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Destination lock-in UI for "help me choose" mode before a trip exists */}
+      {planningMode === "explore" && !tripId && (
+        <div className="px-4 pt-3">
+          <Card className="border-slate-800 bg-slate-900/70 backdrop-blur text-slate-100">
+            <CardContent className="py-3 space-y-2 text-xs sm:text-sm">
+              <p className="text-slate-300">
+                Once you&apos;ve chatted with me and decided on a destination, lock it in here to
+                start the detailed planning form.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  type="text"
+                  value={lockDestination}
+                  onChange={(e) => setLockDestination(e.target.value)}
+                  placeholder="Where did you decide to go?"
+                  className="h-8 bg-slate-950 border-slate-700 text-xs"
+                  disabled={isLockingDestination}
+                />
+                <Button
+                  size="sm"
+                  className="bg-blue-500 hover:bg-blue-600 text-white text-xs font-semibold disabled:opacity-60"
+                  disabled={!lockDestination.trim() || isLockingDestination}
+                  onClick={async () => {
+                    const destination = lockDestination.trim();
+                    if (!destination) return;
+                    try {
+                      setIsLockingDestination(true);
+                      const token = getAuthToken();
+                      if (!token) {
+                        console.error("Not authenticated. Please log in.");
+                        return;
+                      }
+                      const response = await fetch(getApiUrl("api/trips"), {
+                        method: "POST",
+                        headers: {
+                          Authorization: `Bearer ${token}`,
+                          "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                          destination,
+                          raw_message: destination,
+                        }),
+                      });
+                      const result = await response.json();
+                      if (response.ok && result.success && result.trip) {
+                        setLockDestination("");
+                        if (onTripCreated) {
+                          onTripCreated(result.trip.trip_id);
+                        }
+                      } else {
+                        console.error("Failed to create trip from locked destination:", result.message);
+                      }
+                    } catch (error) {
+                      console.error("Error locking in destination:", error);
+                    } finally {
+                      setIsLockingDestination(false);
+                    }
+                  }}
+                >
+                  {isLockingDestination ? "Locking in..." : "Lock in & open form"}
+                </Button>
               </div>
             </CardContent>
           </Card>
@@ -781,6 +1085,71 @@ const ChatWindow = ({
               </div>
             </div>
           )}
+          {tripId && activities.length > 0 && (
+            <div className="flex justify-start">
+              <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm">
+                <p className="text-xs font-semibold text-slate-300 mb-2">
+                  Phase 3: Swipe through activities
+                </p>
+                <div className="space-y-3">
+                  {activities.map((activity) => (
+                    <div
+                      key={activity.activity_id}
+                      className="border border-slate-700 rounded-md px-3 py-2 flex flex-col gap-1 bg-slate-950/60"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-medium text-slate-50">
+                            {activity.name}
+                          </p>
+                          <p className="text-xs text-slate-400">
+                            {activity.location || "Location TBD"}
+                            {activity.category && ` • ${activity.category}`}
+                          </p>
+                        </div>
+                        <span className="text-[10px] uppercase text-slate-500">
+                          {activity.preference === "liked"
+                            ? "Liked"
+                            : activity.preference === "disliked"
+                            ? "Not for me"
+                            : activity.preference === "skipped"
+                            ? "Skipped"
+                            : "Pending"}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-end gap-2 mt-1">
+                        <Button
+                          variant="outline"
+                          className="h-6 px-2 border-slate-600 text-[11px]"
+                          disabled={isUpdatingActivityPreference[activity.activity_id]}
+                          onClick={() => updateActivityPreference(activity.activity_id, "disliked")}
+                        >
+                          Pass
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="h-6 px-2 border-slate-600 text-[11px]"
+                          disabled={isUpdatingActivityPreference[activity.activity_id]}
+                          onClick={() => updateActivityPreference(activity.activity_id, "skipped")}
+                        >
+                          Maybe
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="h-6 px-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[11px]"
+                          disabled={isUpdatingActivityPreference[activity.activity_id]}
+                          onClick={() => updateActivityPreference(activity.activity_id, "liked")}
+                        >
+                          Like
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
           {messages.map((message, index) => (
             <div
               key={index}
@@ -821,6 +1190,39 @@ const ChatWindow = ({
               </div>
             </div>
           )}
+          {tripId &&
+            activities.some((a) => a.preference === "liked") &&
+            !hasShownTripSketchPrompt && (
+              <div className="flex justify-start">
+                <div className="bg-slate-900/90 border border-slate-700 text-slate-100 rounded-lg px-4 py-3 shadow-sm max-w-[75%]">
+                  <p className="text-sm">
+                    Is there anything else you would like to chat about, or should I create the
+                    trip sketch?
+                  </p>
+                  <div className="flex gap-2 mt-3">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-slate-600 text-xs"
+                      onClick={() => setHasShownTripSketchPrompt(true)}
+                    >
+                      Keep chatting
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-xs font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400 disabled:opacity-60"
+                      disabled={isGeneratingItinerary}
+                      onClick={async () => {
+                        setHasShownTripSketchPrompt(true);
+                        await generateItinerary();
+                      }}
+                    >
+                      {isGeneratingItinerary ? "Creating trip sketch..." : "Create trip sketch"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
           <div ref={messagesEndRef} />
         </div>
       </ScrollArea>
