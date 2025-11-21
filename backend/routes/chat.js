@@ -331,6 +331,32 @@ router.post('/chat', authenticateToken, async (req, res) => {
     const conversationHistory = await loadConversationHistory(userId, parsedTripId);
     console.log(`📚 Loaded ${conversationHistory.length} messages from history for tripId: ${parsedTripId}`);
 
+    // Load user profile so the LLM can ground recommendations in their preferences
+    let userProfileContext = 'No saved profile preferences.';
+    try {
+      const { data: userProfile } = await supabase
+        .from('app_user')
+        .select('home_location, budget_preference, travel_style, liked_tags')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (userProfile) {
+        const likedTags = Array.isArray(userProfile.liked_tags)
+          ? userProfile.liked_tags.join(', ')
+          : '';
+        const budget =
+          userProfile.budget_preference !== null && userProfile.budget_preference !== undefined
+            ? `$${userProfile.budget_preference}`
+            : 'not specified';
+        const travelStyle = userProfile.travel_style || 'not specified';
+        const home = userProfile.home_location || 'not specified';
+
+        userProfileContext = `Home base: ${home}. Approximate budget preference: ${budget}. Travel style: ${travelStyle}. Saved interest tags: ${likedTags || 'none'}.`;
+      }
+    } catch (profileError) {
+      console.error('Error loading user profile for chat context:', profileError);
+    }
+
     // Use provided model or default
     const chatModel = model || DEFAULT_MODEL;
 
@@ -339,7 +365,12 @@ router.post('/chat', authenticateToken, async (req, res) => {
       // System prompt for travel assistant
       {
         role: 'system',
-        content: 'You are a helpful travel planning assistant for PinDrop. Help users plan their trips, suggest destinations, activities, and itineraries. Be friendly, informative, and provide practical travel advice.'
+        content: `You are a helpful travel planning assistant for PinDrop. Help users plan their trips, suggest destinations, activities, and itineraries. Be friendly, informative, and provide practical travel advice.
+
+Here is the user's saved profile and preferences (from the app_user table):
+${userProfileContext}
+
+When the user is exploring where to go, suggest up to three concrete destination ideas at a time (never more than three), and briefly explain *why* each one is a good fit based on this user's preferences (budget, travel style, home base, and liked tags). When you recommend activities, also explain why they fit these preferences.`,
       },
       // Add conversation history from database
       ...conversationHistory,
@@ -443,6 +474,32 @@ router.post('/chat/stream', authenticateToken, async (req, res) => {
       });
     }
 
+    // Load user profile so the LLM can ground recommendations in their preferences
+    let userProfileContext = 'No saved profile preferences.';
+    try {
+      const { data: userProfile } = await supabase
+        .from('app_user')
+        .select('home_location, budget_preference, travel_style, liked_tags')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (userProfile) {
+        const likedTags = Array.isArray(userProfile.liked_tags)
+          ? userProfile.liked_tags.join(', ')
+          : '';
+        const budget =
+          userProfile.budget_preference !== null && userProfile.budget_preference !== undefined
+            ? `$${userProfile.budget_preference}`
+            : 'not specified';
+        const travelStyle = userProfile.travel_style || 'not specified';
+        const home = userProfile.home_location || 'not specified';
+
+        userProfileContext = `Home base: ${home}. Approximate budget preference: ${budget}. Travel style: ${travelStyle}. Saved interest tags: ${likedTags || 'none'}.`;
+      }
+    } catch (profileError) {
+      console.error('Error loading user profile for chat stream context:', profileError);
+    }
+
     // Use provided model or default
     const chatModel = model || DEFAULT_MODEL;
 
@@ -450,7 +507,12 @@ router.post('/chat/stream', authenticateToken, async (req, res) => {
     const messages = [
       {
         role: 'system',
-        content: 'You are a helpful travel planning assistant for PinDrop. Help users plan their trips, suggest destinations, activities, and itineraries. Be friendly, informative, and provide practical travel advice.'
+        content: `You are a helpful travel planning assistant for PinDrop. Help users plan their trips, suggest destinations, activities, and itineraries. Be friendly, informative, and provide practical travel advice.
+
+Here is the user's saved profile and preferences (from the app_user table):
+${userProfileContext}
+
+When the user is exploring where to go, suggest up to three concrete destination ideas at a time (never more than three), and briefly explain *why* each one is a good fit based on this user's preferences (budget, travel style, home base, and liked tags). When you recommend activities, also explain why they fit these preferences.`,
       },
       ...conversationHistory,
       {

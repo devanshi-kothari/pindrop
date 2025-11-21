@@ -96,6 +96,10 @@ const ChatWindow = ({
     Record<number, boolean>
   >({});
   const [hasShownTripSketchPrompt, setHasShownTripSketchPrompt] = useState(false);
+  const [destinationCarouselIndices, setDestinationCarouselIndices] = useState<Record<number, number>>(
+    {}
+  );
+  const [hasSentInitialExploreMessage, setHasSentInitialExploreMessage] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [lockDestination, setLockDestination] = useState("");
   const [isLockingDestination, setIsLockingDestination] = useState(false);
@@ -616,6 +620,25 @@ const ChatWindow = ({
     loadHistory();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tripId]);
+
+  // In "help me choose" mode, automatically send the initial message from
+  // the dashboard as the first user message, and show the LLM's response,
+  // so the user lands in an active conversation about destinations.
+  useEffect(() => {
+    if (
+      planningMode === "explore" &&
+      !tripId &&
+      initialMessage &&
+      !hasSentInitialExploreMessage &&
+      !isLoadingHistory
+    ) {
+      setHasSentInitialExploreMessage(true);
+      sendMessage(initialMessage);
+    }
+    // We intentionally omit sendMessage from deps to avoid resending when
+    // its identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planningMode, tripId, initialMessage, hasSentInitialExploreMessage, isLoadingHistory]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -1162,7 +1185,155 @@ const ChatWindow = ({
                     : "bg-slate-900/90 border border-slate-700 text-slate-100"
                 }`}
               >
-                <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
+                <div className="text-sm whitespace-pre-wrap break-words leading-relaxed">
+                  {(() => {
+                    // Lightweight markdown-style bold (**word**) rendering
+                    const renderWithBold = (text: string) => {
+                      const parts = text.split("**");
+                      return parts.map((part, idx) =>
+                        idx % 2 === 1 ? (
+                          <strong key={idx}>{part}</strong>
+                        ) : (
+                          <span key={idx}>{part}</span>
+                        )
+                      );
+                    };
+
+                    // For assistant messages, when the LLM returns structured
+                    // "Destination Idea {number}:" sections, show:
+                    // - an intro paragraph
+                    // - a single white "card" at a time with < / > navigation
+                    // - a closing "What do you think?" prompt
+                    if (message.role === "assistant") {
+                      const parts = message.content.split(/(?=Destination Idea\s+\d+:)/i);
+                      if (parts.length > 1) {
+                        const intro = parts[0].trim();
+                        let suggestionSections = parts
+                          .slice(1)
+                          .map((p) => p.trim())
+                          .filter(Boolean)
+                          .slice(0, 3);
+
+                        // If the last suggestion block contains trailing global
+                        // notes like "Tips and Recommendations" or "What do you
+                        // girls think?", separate that tail out so it doesn't
+                        // appear inside the destination card.
+                        let globalTail: string | null = null;
+                        if (suggestionSections.length > 0) {
+                          const tailPatterns = [
+                            /Tips and Recommendations/i,
+                            /Itinerary Suggestions/i,
+                            /Tips & Recommendations/i,
+                            /What do you girls think\?/i,
+                            /What do you think\?/i,
+                          ];
+                          const lastIdx = suggestionSections.length - 1;
+                          const last = suggestionSections[lastIdx];
+                          let cutIndex = -1;
+
+                          for (const pat of tailPatterns) {
+                            const match = last.match(pat);
+                            if (match) {
+                              cutIndex = last.toLowerCase().indexOf(match[0].toLowerCase());
+                              break;
+                            }
+                          }
+
+                          if (cutIndex >= 0) {
+                            globalTail = last.slice(cutIndex).trim();
+                            suggestionSections[lastIdx] = last.slice(0, cutIndex).trim();
+                            if (!suggestionSections[lastIdx]) {
+                              suggestionSections = suggestionSections.slice(0, lastIdx);
+                            }
+                          }
+                        }
+
+                        if (suggestionSections.length > 0) {
+                          const maxIndex = suggestionSections.length - 1;
+                          const activeIndex =
+                            destinationCarouselIndices[index] !== undefined
+                              ? Math.min(destinationCarouselIndices[index], maxIndex)
+                              : 0;
+
+                          const setActiveIndex = (next: number) => {
+                            const clamped = Math.max(0, Math.min(maxIndex, next));
+                            setDestinationCarouselIndices((prev) => ({
+                              ...prev,
+                              [index]: clamped,
+                            }));
+                          };
+
+                          const current = suggestionSections[activeIndex];
+                          const [headerLine, ...restLines] = current.split("\n");
+                          const rawTitle = headerLine || "";
+                          const titleText = rawTitle.replace(
+                            /^Destination Idea\s+\d+:\s*/i,
+                            ""
+                          );
+                          const bodyText = restLines.join("\n").trim();
+
+                          return (
+                            <div className="space-y-3">
+                              {intro && (
+                                <div className="text-xs text-slate-200">
+                                  {renderWithBold(intro)}
+                                </div>
+                              )}
+
+                              <div className="rounded-lg bg-white text-slate-900 p-3 shadow-sm space-y-2">
+                                <div className="font-semibold">
+                                  {renderWithBold(titleText || rawTitle)}
+                                </div>
+                                {bodyText && (
+                                  <div className="text-xs whitespace-pre-wrap">
+                                    {renderWithBold(bodyText)}
+                                  </div>
+                                )}
+                                <div className="mt-2 flex items-center justify-between gap-2">
+                                  <button
+                                    type="button"
+                                    className="px-2 py-1 text-xs rounded-full border border-slate-300 disabled:opacity-40"
+                                    onClick={() => setActiveIndex(activeIndex - 1)}
+                                    disabled={activeIndex === 0}
+                                  >
+                                    ‹
+                                  </button>
+                                  <span className="text-[11px] text-slate-600">
+                                    Destination {activeIndex + 1} of {suggestionSections.length}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="px-2 py-1 text-xs rounded-full border border-slate-300 disabled:opacity-40"
+                                    onClick={() => setActiveIndex(activeIndex + 1)}
+                                    disabled={activeIndex === maxIndex}
+                                  >
+                                    ›
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div className="space-y-1">
+                                {globalTail ? (
+                                  <p className="text-[11px] text-slate-400 whitespace-pre-wrap">
+                                    {renderWithBold(globalTail)}
+                                  </p>
+                                ) : (
+                                  <p className="text-xs text-slate-200">
+                                    What do you think? Tell me which ideas you like, or what you&apos;d
+                                    like to change.
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        }
+                      }
+                    }
+
+                    // Fallback: render the whole message with bold support.
+                    return renderWithBold(message.content);
+                  })()}
+                </div>
                 <p className={`text-xs mt-2 ${
                   message.role === "user" ? "text-teal-100" : "text-muted-foreground"
                 }`}>
