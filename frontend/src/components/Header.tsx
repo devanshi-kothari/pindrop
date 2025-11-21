@@ -1,14 +1,25 @@
 import { Button } from "@/components/ui/button";
 import { Link } from "react-router-dom";
+import logo from "../../images/pindrop_transparent_logo.png";
 
 const Header = () => {
   return (
     <header className="w-full border-b-2 border-border/50 bg-white/95 backdrop-blur-md sticky top-0 z-50 shadow-sm">
       <div className="container mx-auto px-6 py-4">
         <nav className="flex items-center justify-between">
-          <div className="flex items-center gap-12">
-            <Link to="/" className="text-2xl font-bold text-blue-600 tracking-tight hover:opacity-80 transition-opacity">
-              /PINDROP
+          <div className="flex items-center gap-3 md:gap-4">
+            <Link
+              to="/"
+              className="flex items-center gap-2 hover:opacity-85 transition-opacity"
+            >
+              <img
+                src={logo}
+                alt="Pindrop logo"
+                className="h-8 w-8 md:h-9 md:w-9 object-contain"
+              />
+              <span className="text-2xl font-bold text-blue-600 tracking-tight">
+                pindrop
+              </span>
             </Link>
             <div className="hidden md:flex items-center gap-8">
               <Link to="/features" className="text-sm font-medium text-foreground/80 hover:text-foreground transition-colors">
