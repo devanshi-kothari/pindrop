@@ -26,7 +26,10 @@ const TripPlanning = () => {
   const [saving, setSaving] = useState(false);
   const [hasBootstrappedNewTrip, setHasBootstrappedNewTrip] = useState(false);
   const initialMessage = searchParams.get("message");
-  const planningMode = searchParams.get("mode") === "explore" ? "explore" : "known";
+  const rawModeParam = searchParams.get("mode");
+  const urlPlanningMode: "known" | "explore" | null =
+    rawModeParam === "explore" ? "explore" : rawModeParam === "known" ? "known" : null;
+  const [planningMode, setPlanningMode] = useState<"known" | "explore">(urlPlanningMode || "known");
 
   // Check if we're on the /trip/new route (tripId is undefined when route matches /trip/new exactly)
   const isNewTrip = location.pathname === "/trip/new" || tripId === "new";
@@ -118,7 +121,19 @@ const TripPlanning = () => {
       const result = await response.json();
 
       if (response.ok && result.success) {
-        setTrip(result.trip);
+        const loadedTrip = result.trip;
+        setTrip(loadedTrip);
+
+        // If no explicit planning mode was provided in the URL, infer it from
+        // the trip: drafts with no destination are treated as "explore"
+        // (help-me-choose), everything else is "known".
+        if (!urlPlanningMode) {
+          if (loadedTrip?.trip_status === "draft" && !loadedTrip?.destination) {
+            setPlanningMode("explore");
+          } else {
+            setPlanningMode("known");
+          }
+        }
       } else {
         navigate("/dashboard");
       }

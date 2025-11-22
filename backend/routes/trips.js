@@ -362,7 +362,7 @@ router.put('/:tripId', authenticateToken, async (req, res) => {
     // First verify the trip belongs to the user
     const { data: existingTrip, error: checkError } = await supabase
       .from('trip')
-      .select('trip_id')
+      .select('trip_id, user_id, destination, image_url')
       .eq('trip_id', tripId)
       .eq('user_id', userId)
       .single();
@@ -388,6 +388,19 @@ router.put('/:tripId', authenticateToken, async (req, res) => {
       updateData.destination = finalDestination;
       if (finalDestination && title === undefined) {
         updateData.title = `Trip to ${finalDestination}`;
+      }
+
+      // If we didn't explicitly get an image_url in this request and the trip
+      // doesn't already have one, try to fetch a representative destination image.
+      if ((image_url === undefined || image_url === null) && !existingTrip.image_url && finalDestination) {
+        try {
+          const fetchedImage = await fetchDestinationImage(finalDestination);
+          if (fetchedImage) {
+            updateData.image_url = fetchedImage;
+          }
+        } catch (err) {
+          console.error('Error fetching destination image on trip update:', err);
+        }
       }
     }
 
