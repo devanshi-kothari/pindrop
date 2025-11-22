@@ -26,7 +26,7 @@ const Dashboard = () => {
   const [draftTrips, setDraftTrips] = useState<Trip[]>([]);
   const [plannedTrips, setPlannedTrips] = useState<Trip[]>([]);
   const [archivedTrips, setArchivedTrips] = useState<Trip[]>([]);
-  const [activeTab, setActiveTab] = useState<"planned" | "draft" | "archived">("planned");
+  const [activeTab, setActiveTab] = useState<"planned" | "draft" | "archived">("draft");
 
   useEffect(() => {
     loadTrips();

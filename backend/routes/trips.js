@@ -20,6 +20,35 @@ const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
 const GOOGLE_CUSTOM_SEARCH_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
 const GOOGLE_CUSTOM_SEARCH_CX = process.env.GOOGLE_CUSTOM_SEARCH_CX;
 
+async function generateTripTitleFromMessage(message) {
+  if (!message || typeof message !== 'string') return null;
+  try {
+    const completion = await groqClient.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You are a concise travel assistant. Given a user message about a trip they want to plan, respond ONLY with a short, human-friendly trip title in at most 6 words. Do not include quotes or extra commentary. Never invent a destination or country that the user did not explicitly mention. If the user does not clearly name a specific place, keep the title generic (for example, "Spring Break Trip", "Summer Road Trip with Friends"). Only include a city, region, or country name in the title if it appears clearly in the user message.',
+        },
+        {
+          role: 'user',
+          content: message,
+        },
+      ],
+      temperature: 0.4,
+      max_tokens: 32,
+    });
+
+    const raw = completion.choices[0]?.message?.content || '';
+    const cleaned = String(raw).trim().replace(/^["'\s]+|["'\s]+$/g, '');
+    return cleaned || null;
+  } catch (error) {
+    console.error('Error generating trip title from message:', error);
+    return null;
+  }
+}
+
 function normalizeDestinationName(raw) {
   if (!raw) return null;
   const trimmed = String(raw).trim().toLowerCase();
@@ -225,6 +254,7 @@ router.post('/', authenticateToken, async (req, res) => {
       num_travelers,
       image_url,
       raw_message,
+      raw_title_message,
     } = req.body;
 
     // If destination is not explicitly provided but we have a free-form
@@ -266,9 +296,14 @@ router.post('/', authenticateToken, async (req, res) => {
       }
     }
 
+    let generatedTitle = null;
+    if (!title && raw_title_message && typeof raw_title_message === 'string') {
+      generatedTitle = await generateTripTitleFromMessage(raw_title_message);
+    }
+
     const tripData = {
       user_id: userId,
-      title: title || (finalDestination ? `Trip to ${finalDestination}` : 'My Trip'),
+      title: title || generatedTitle || (finalDestination ? `Trip to ${finalDestination}` : 'My Trip'),
       trip_status: 'draft',
       ...(finalDestination && { destination: finalDestination }),
       ...(finalImageUrl && { image_url: finalImageUrl }),
@@ -340,8 +375,22 @@ router.put('/:tripId', authenticateToken, async (req, res) => {
     }
 
     const updateData = {};
-    if (title !== undefined) updateData.title = title;
-    if (destination !== undefined) updateData.destination = destination;
+
+    // If a title is explicitly provided, respect it.
+    if (title !== undefined) {
+      updateData.title = title;
+    }
+
+    // Normalize destination capitalization, and if no explicit title was sent
+    // but we now have a destination, automatically set "Trip to {Destination}".
+    if (destination !== undefined) {
+      const finalDestination = normalizeDestinationName(destination);
+      updateData.destination = finalDestination;
+      if (finalDestination && title === undefined) {
+        updateData.title = `Trip to ${finalDestination}`;
+      }
+    }
+
     if (trip_status !== undefined) updateData.trip_status = trip_status;
     if (image_url !== undefined) updateData.image_url = image_url;
 

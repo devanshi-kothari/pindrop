@@ -29,6 +29,7 @@ interface ChatWindowProps {
   initialMessage?: string | null;
   onTripCreated?: (tripId: number) => void;
   planningMode?: "known" | "explore";
+  hasDestinationLocked?: boolean;
 }
 
 type ActivityCategory =
@@ -66,6 +67,7 @@ const ChatWindow = ({
   initialMessage = null,
   onTripCreated,
   planningMode = "known",
+  hasDestinationLocked = false,
 }: ChatWindowProps) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState("");
@@ -120,6 +122,13 @@ const ChatWindow = ({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [lockDestination, setLockDestination] = useState("");
   const [isLockingDestination, setIsLockingDestination] = useState(false);
+  const [hasLockedDestination, setHasLockedDestination] = useState(
+    planningMode === "known" || hasDestinationLocked
+  );
+
+  useEffect(() => {
+    setHasLockedDestination(planningMode === "known" || hasDestinationLocked);
+  }, [planningMode, hasDestinationLocked]);
 
   const getAuthToken = () => localStorage.getItem("token");
 
@@ -243,7 +252,6 @@ const ChatWindow = ({
           body: JSON.stringify({
             message: content,
             tripId,
-            suppressTripCreation: planningMode === "explore",
           }),
         });
 
@@ -593,38 +601,24 @@ const ChatWindow = ({
     }
   };
 
-  // Load conversation history (except in explore mode without a trip, where
-  // we intentionally start fresh for each new "help me choose" session).
+  // Load conversation history. In explore mode we still persist per-trip chat,
+  // but we don't inject the form-focused welcome prompt.
   useEffect(() => {
     const loadHistory = async () => {
       const token = getAuthToken();
       if (!token) {
+        if (planningMode === "explore") {
+          setMessages([]);
+        } else {
         setMessages([
           {
             role: "assistant",
             content:
-              "Hi! I'm your travel planning assistant. Fill out the above questions so we can start planning your trip!",
+                "Hi! I'm your travel planning assistant. Fill out the above questions so we can start planning your trip!",
             timestamp: formatTime(),
           },
         ]);
-        setIsLoadingHistory(false);
-        return;
       }
-
-      // In explore mode without a bound trip, start from a clean slate and do
-      // not show the form-focused welcome prompt. The conversation will begin
-      // with the user's initial message and the LLM's response.
-      if (planningMode === "explore" && !tripId) {
-        setMessages([]);
-        setIsLoadingHistory(false);
-        return;
-      }
-
-      // In "help me choose" mode with no trip yet, start with a fresh
-      // conversation (no prior history), and let the initial message +
-      // LLM response define the thread.
-      if (planningMode === "explore" && !tripId) {
-        setMessages([]);
         setIsLoadingHistory(false);
         return;
       }
@@ -659,37 +653,51 @@ const ChatWindow = ({
           );
 
           if (historyMessages.length === 0) {
+            if (planningMode === "explore") {
+              // Start with a blank canvas; the first user message + LLM reply
+              // will kick off the destination exploration.
+              setMessages([]);
+            } else {
             setMessages([
               {
                 role: "assistant",
                 content:
-                  "Hi! I'm your travel planning assistant. Fill out the above questions so we can start planning your trip!",
+                    "Hi! I'm your travel planning assistant. Fill out the above questions so we can start planning your trip!",
                 timestamp: formatTime(),
               },
             ]);
+            }
           } else {
             setMessages(historyMessages);
           }
+        } else {
+          if (planningMode === "explore") {
+            setMessages([]);
         } else {
           setMessages([
             {
               role: "assistant",
               content:
-                "Hi! I'm your travel planning assistant. Fill out the above questions so we can start planning your trip!",
+                  "Hi! I'm your travel planning assistant. Fill out the above questions so we can start planning your trip!",
               timestamp: formatTime(),
             },
           ]);
+          }
         }
       } catch (error) {
         console.error("Error loading conversation history:", error);
+        if (planningMode === "explore") {
+          setMessages([]);
+        } else {
         setMessages([
           {
             role: "assistant",
             content:
-              "Hi! I'm your travel planning assistant. Fill out the above questions so we can start planning your trip!",
+                "Hi! I'm your travel planning assistant. Fill out the above questions so we can start planning your trip!",
             timestamp: formatTime(),
           },
         ]);
+        }
       } finally {
         setIsLoadingHistory(false);
       }
@@ -705,7 +713,6 @@ const ChatWindow = ({
   useEffect(() => {
     if (
       planningMode === "explore" &&
-      !tripId &&
       initialMessage &&
       !hasSentInitialExploreMessage &&
       !isLoadingHistory
@@ -773,7 +780,7 @@ const ChatWindow = ({
       </div>
 
       {/* Structured trip preferences */}
-      {tripId && (
+      {tripId && (planningMode === "known" || hasLockedDestination) && (
         <div className="px-4 pt-4">
           <Card className="border-slate-800 bg-slate-900/70 backdrop-blur text-slate-100">
             <CardHeader className="pb-3">
@@ -1114,8 +1121,8 @@ const ChatWindow = ({
         </div>
       )}
 
-      {/* Destination lock-in UI for "help me choose" mode before a trip exists */}
-      {planningMode === "explore" && !tripId && (
+      {/* Destination lock-in UI for "help me choose" mode before a destination is chosen */}
+      {planningMode === "explore" && !hasLockedDestination && (
         <div className="px-4 pt-3">
           <Card className="border-slate-800 bg-slate-900/70 backdrop-blur text-slate-100">
             <CardContent className="py-3 space-y-2 text-xs sm:text-sm">
@@ -1146,25 +1153,51 @@ const ChatWindow = ({
                         console.error("Not authenticated. Please log in.");
                         return;
                       }
-                      const response = await fetch(getApiUrl("api/trips"), {
-                        method: "POST",
-                        headers: {
-                          Authorization: `Bearer ${token}`,
-                          "Content-Type": "application/json",
-                        },
-                        body: JSON.stringify({
-                          destination,
-                          raw_message: destination,
-                        }),
-                      });
+
+                      const payload = {
+                        destination,
+                        raw_message: destination,
+                      };
+
+                      let response: Response;
+                      if (tripId) {
+                        // Update the existing exploration trip with the chosen destination.
+                        response = await fetch(getApiUrl(`api/trips/${tripId}`), {
+                          method: "PUT",
+                          headers: {
+                            Authorization: `Bearer ${token}`,
+                            "Content-Type": "application/json",
+                          },
+                          body: JSON.stringify(payload),
+                        });
+                      } else {
+                        // Fallback: create a new trip if for some reason we don't have one yet.
+                        response = await fetch(getApiUrl("api/trips"), {
+                          method: "POST",
+                          headers: {
+                            Authorization: `Bearer ${token}`,
+                            "Content-Type": "application/json",
+                          },
+                          body: JSON.stringify(payload),
+                        });
+                      }
+
                       const result = await response.json();
-                      if (response.ok && result.success && result.trip) {
+                      if (response.ok && result.success) {
                         setLockDestination("");
-                        if (onTripCreated) {
-                          onTripCreated(result.trip.trip_id);
+                        setHasLockedDestination(true);
+
+                        const effectiveTripId =
+                          tripId ?? (result.trip && result.trip.trip_id ? result.trip.trip_id : null);
+
+                        if (effectiveTripId && onTripCreated) {
+                          onTripCreated(effectiveTripId);
                         }
                       } else {
-                        console.error("Failed to create trip from locked destination:", result.message);
+                        console.error(
+                          "Failed to lock destination on trip:",
+                          result && result.message
+                        );
                       }
                     } catch (error) {
                       console.error("Error locking in destination:", error);
@@ -1251,6 +1284,8 @@ const ChatWindow = ({
                             /Tips & Recommendations/i,
                             /What do you girls think\?/i,
                             /What do you think\?/i,
+                            /Which of these destinations sparks your interest\?/i,
+                            /Would you like me to recommend activities/i,
                           ];
                           const lastIdx = suggestionSections.length - 1;
                           const last = suggestionSections[lastIdx];

@@ -38,14 +38,6 @@ const TripPlanning = () => {
       return;
     }
 
-    // In "help me choose" mode, we start with pure chat and no bound trip.
-    // The user can chat with the LLM to decide on a destination, then
-    // explicitly lock it in to create a trip and show the form.
-    if (planningMode === "explore") {
-      setLoading(false);
-      return;
-    }
-
     // New trip flow (ex. from dashboard chat prompt)
     // We create a draft trip up front so that:
     // - the structured preferences form can load immediately
@@ -60,11 +52,16 @@ const TripPlanning = () => {
 
         const body: Record<string, unknown> = {};
 
-        if (initialMessage && initialMessage.trim()) {
-          // Pass the free-text description to the backend so it can infer
-          // destination/title using the same extraction logic as chat
-          // (ex. "Trip to Brazil" with destination "Brazil").
-          body.raw_message = initialMessage.trim();
+        const trimmedInitial = initialMessage?.trim();
+
+        if (planningMode === "explore" && trimmedInitial) {
+          // For destination exploration, let the backend's LLM summarize this
+          // message into a concise trip title (e.g., "Spring Break Girls Trip").
+          body.raw_title_message = trimmedInitial;
+        } else if (trimmedInitial) {
+          // Known-destination mode: let the backend infer destination and title
+          // from the raw message (e.g., "Trip to Brazil" with destination "Brazil").
+          body.raw_message = trimmedInitial;
         }
 
         const response = await fetch(getApiUrl("api/trips"), {
@@ -235,10 +232,11 @@ const TripPlanning = () => {
                   className="h-full"
                   initialMessage={isNewTrip ? initialMessage : null}
                   planningMode={planningMode}
+                  hasDestinationLocked={!!trip?.destination}
                   onTripCreated={(newTripId) => {
                     // Update URL to the new trip ID
                     window.history.replaceState({}, "", `/trip/${newTripId}`);
-                    // Load the trip data
+                    // Load the trip data (or refresh it if it already exists)
                     loadTrip(newTripId);
                   }}
                 />

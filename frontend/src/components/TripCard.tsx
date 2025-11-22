@@ -50,6 +50,9 @@ const TripCard = ({ tripId, title, destination, imageUrl, startDate, endDate, st
   // Default image if none provided
   const defaultImage = "https://images.unsplash.com/photo-1488646953014-85cb44e25828?w=800&q=80";
 
+  const isChoosingDestination =
+    status === "draft" && (!destination || destination.trim().length === 0);
+
   const handleClick = () => {
     navigate(`/trip/${tripId}`);
   };
@@ -72,6 +75,9 @@ const TripCard = ({ tripId, title, destination, imageUrl, startDate, endDate, st
       <CardContent className="p-4 space-y-2">
         <h3 className="font-semibold text-lg">{title}</h3>
         <p className="text-sm text-muted-foreground">{destination}</p>
+        {isChoosingDestination && (
+          <p className="text-xs font-medium text-blue-600">Choosing destination…</p>
+        )}
         <div className="space-y-1">
           <p className="text-sm font-medium">
             {formatDate(startDate)} - {formatDate(endDate)}
