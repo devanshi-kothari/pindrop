@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import DashboardHeader from "@/components/DashboardHeader";
 import DashboardSidebar from "@/components/DashboardSidebar";
 import TripCard from "@/components/TripCard";
@@ -25,6 +26,7 @@ const Dashboard = () => {
   const [draftTrips, setDraftTrips] = useState<Trip[]>([]);
   const [plannedTrips, setPlannedTrips] = useState<Trip[]>([]);
   const [archivedTrips, setArchivedTrips] = useState<Trip[]>([]);
+  const [activeTab, setActiveTab] = useState<"planned" | "draft" | "archived">("planned");
 
   useEffect(() => {
     loadTrips();
@@ -102,33 +104,70 @@ const Dashboard = () => {
             {/* Chat Prompt */}
             <ChatPrompt />
 
+            {/* Tab controls for trip sections */}
+            <div className="flex items-center justify-center gap-4 mb-4">
+              <div className="inline-flex rounded-full bg-muted p-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className={`rounded-full px-6 py-2 text-sm font-medium ${
+                    activeTab === "draft"
+                      ? "bg-blue-500 text-white"
+                      : "bg-transparent text-blue-700 hover:bg-blue-100"
+                  }`}
+                  onClick={() => setActiveTab("draft")}
+                >
+                  Drafts
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className={`rounded-full px-6 py-2 text-sm font-medium ${
+                    activeTab === "planned"
+                      ? "bg-blue-500 text-white"
+                      : "bg-transparent text-blue-700 hover:bg-blue-100"
+                  }`}
+                  onClick={() => setActiveTab("planned")}
+                >
+                  Ongoing/Upcoming
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className={`rounded-full px-6 py-2 text-sm font-medium ${
+                    activeTab === "archived"
+                      ? "bg-blue-500 text-white"
+                      : "bg-transparent text-blue-700 hover:bg-blue-100"
+                  }`}
+                  onClick={() => setActiveTab("archived")}
+                >
+                  Past Trips
+                </Button>
+              </div>
+            </div>
+
             {loading ? (
               <div className="text-center py-12">
                 <p className="text-muted-foreground">Loading your trips...</p>
               </div>
+            ) : activeTab === "planned" ? (
+              <TripSection
+                title="Ongoing/Upcoming Trips"
+                trips={plannedTrips}
+                status="planned"
+              />
+            ) : activeTab === "draft" ? (
+              <TripSection
+                title="Saved for Later"
+                trips={draftTrips}
+                status="draft"
+              />
             ) : (
-              <>
-                {/* Saved for Later (Draft) */}
-                <TripSection
-                  title="Saved for Later"
-                  trips={draftTrips}
-                  status="draft"
-                />
-
-                {/* Ongoing/Upcoming Trips (Planned) */}
-                <TripSection
-                  title="Ongoing/Upcoming Trips"
-                  trips={plannedTrips}
-                  status="planned"
-                />
-
-                {/* Archived Trips */}
-                <TripSection
-                  title="Archived Trips"
-                  trips={archivedTrips}
-                  status="archived"
-                />
-              </>
+              <TripSection
+                title="Archived Trips"
+                trips={archivedTrips}
+                status="archived"
+              />
             )}
           </div>
         </main>
