@@ -48,8 +48,8 @@ interface TripPreferences {
   num_days: number | null;
   start_date: string | null;
   end_date: string | null;
-  min_budget_per_day: number | null;
-  max_budget_per_day: number | null;
+  min_budget: number | null;
+  max_budget: number | null;
   pace: "slow" | "balanced" | "packed" | "";
   accommodation_type: string;
   activity_categories: ActivityCategory[];
@@ -88,7 +88,7 @@ const ChatWindow = ({
       rating: number | null;
       tags: string[] | null;
       source: string | null;
-      preference: "pending" | "liked" | "disliked" | "skipped";
+      preference: "pending" | "liked" | "disliked" | "maybe";
     }[]
   >([]);
   const [isGeneratingActivities, setIsGeneratingActivities] = useState(false);
@@ -96,9 +96,26 @@ const ChatWindow = ({
     Record<number, boolean>
   >({});
   const [hasShownTripSketchPrompt, setHasShownTripSketchPrompt] = useState(false);
+  const [hasConfirmedActivities, setHasConfirmedActivities] = useState(false);
   const [destinationCarouselIndices, setDestinationCarouselIndices] = useState<Record<number, number>>(
     {}
   );
+  const [itinerarySummary, setItinerarySummary] = useState<string | null>(null);
+  const [itineraryDays, setItineraryDays] = useState<
+    {
+      day_number: number;
+      date: string | null;
+      summary: string | null;
+      activities: {
+        activity_id?: number;
+        name?: string;
+        location?: string | null;
+        category?: string | null;
+        duration?: string | null;
+      }[];
+    }[]
+  >([]);
+  const [itineraryCarouselIndex, setItineraryCarouselIndex] = useState(0);
   const [hasSentInitialExploreMessage, setHasSentInitialExploreMessage] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [lockDestination, setLockDestination] = useState("");
@@ -169,8 +186,8 @@ const ChatWindow = ({
       num_days: null,
       start_date: null,
       end_date: null,
-      min_budget_per_day: null,
-      max_budget_per_day: budgetPreference || null,
+      min_budget: null,
+      max_budget: budgetPreference || null,
       pace: defaultPace,
       accommodation_type: "",
       activity_categories: initialCategories,
@@ -230,13 +247,24 @@ const ChatWindow = ({
           }),
         });
 
+        const result = await response.json().catch(() => null);
+
         if (!response.ok) {
-          throw new Error(`Backend error: ${response.status} ${response.statusText}`);
+          const backendMessage =
+            result && typeof result.message === "string"
+              ? result.message
+              : `The planning service returned an error (${response.status} ${response.statusText}).`;
+
+          const errorMessage: Message = {
+            role: "assistant",
+            content: backendMessage,
+            timestamp: formatTime(),
+          };
+          setMessages((prev) => [...prev, errorMessage]);
+          return;
         }
 
-        const result = await response.json();
-
-        if (result.success) {
+        if (result && result.success) {
           if (result.tripId && !tripId && onTripCreated) {
             onTripCreated(result.tripId);
           }
@@ -247,7 +275,7 @@ const ChatWindow = ({
             timestamp: formatTime(),
           };
           setMessages((prev) => [...prev, assistantMessage]);
-        } else {
+        } else if (result) {
           const errorMessage: Message = {
             role: "assistant",
             content:
@@ -272,6 +300,33 @@ const ChatWindow = ({
       }
     },
     [inputMessage, isLoading, tripId, initialMessage, onTripCreated, planningMode]
+  );
+
+  const loadItineraryDays = useCallback(
+    async (id: number) => {
+      try {
+        const token = getAuthToken();
+        if (!token) return;
+
+        const response = await fetch(getApiUrl(`api/trips/${id}/itinerary`), {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success && Array.isArray(result.days)) {
+          setItineraryDays(result.days);
+          setItineraryCarouselIndex(0);
+        }
+      } catch (error) {
+        console.error("Error loading itinerary days:", error);
+      }
+    },
+    []
   );
 
   // Load trip preferences once we know the tripId
@@ -308,8 +363,11 @@ const ChatWindow = ({
     };
 
     loadPreferences();
+    if (tripId) {
+      loadItineraryDays(tripId);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tripId, hasLoadedPreferences]);
+  }, [tripId, hasLoadedPreferences, loadItineraryDays]);
 
   const loadActivities = useCallback(
     async (id: number) => {
@@ -420,14 +478,15 @@ const ChatWindow = ({
 
       const result = await response.json();
 
-      const assistantMessage: Message = {
-        role: "assistant",
-        content:
+      const summaryText =
           (response.ok && result.success && result.message) ||
-          "I've saved your preferences and attempted to generate an itinerary.",
-        timestamp: formatTime(),
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
+        "I've saved your preferences and attempted to generate an itinerary.";
+
+      // Show the itinerary summary as a separate info block at the very
+      // bottom of the chat area (after activities), instead of as a
+      // regular assistant chat bubble in the main stream.
+      setItinerarySummary(summaryText);
+      await loadItineraryDays(tripId);
     } catch (error) {
       console.error("Error generating itinerary:", error);
       const errorMessage: Message = {
@@ -490,7 +549,7 @@ const ChatWindow = ({
 
   const updateActivityPreference = async (
     activityId: number,
-    preference: "liked" | "disliked" | "skipped"
+    preference: "liked" | "disliked" | "maybe"
   ) => {
     if (!tripId) return;
 
@@ -534,7 +593,8 @@ const ChatWindow = ({
     }
   };
 
-  // Load conversation history or auto-start a new chat with the initial message
+  // Load conversation history (except in explore mode without a trip, where
+  // we intentionally start fresh for each new "help me choose" session).
   useEffect(() => {
     const loadHistory = async () => {
       const token = getAuthToken();
@@ -547,6 +607,24 @@ const ChatWindow = ({
             timestamp: formatTime(),
           },
         ]);
+        setIsLoadingHistory(false);
+        return;
+      }
+
+      // In explore mode without a bound trip, start from a clean slate and do
+      // not show the form-focused welcome prompt. The conversation will begin
+      // with the user's initial message and the LLM's response.
+      if (planningMode === "explore" && !tripId) {
+        setMessages([]);
+        setIsLoadingHistory(false);
+        return;
+      }
+
+      // In "help me choose" mode with no trip yet, start with a fresh
+      // conversation (no prior history), and let the initial message +
+      // LLM response define the thread.
+      if (planningMode === "explore" && !tripId) {
+        setMessages([]);
         setIsLoadingHistory(false);
         return;
       }
@@ -619,7 +697,7 @@ const ChatWindow = ({
 
     loadHistory();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tripId]);
+  }, [tripId, planningMode]);
 
   // In "help me choose" mode, automatically send the initial message from
   // the dashboard as the first user message, and show the LLM's response,
@@ -674,6 +752,10 @@ const ChatWindow = ({
     return { dateError: localError, computedNumDays: localNumDays };
   })();
 
+  const allActivitiesAnswered =
+    activities.length > 0 && activities.every((a) => a.preference !== "pending");
+  const hasAnyLikedActivity = activities.some((a) => a.preference === "liked");
+
   return (
     <div
       className={`flex flex-col h-full bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 ${className}`}
@@ -698,7 +780,7 @@ const ChatWindow = ({
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <CardTitle className="text-base font-semibold">
-                    Trip preferences for this itinerary
+                    Phase 1: Trip preferences for this itinerary
                   </CardTitle>
                   <p className="text-xs text-slate-400 mt-1">
                     These answers help tailor a day-by-day plan. They start from your profile
@@ -776,15 +858,15 @@ const ChatWindow = ({
                   )}
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-slate-200 text-xs">Daily budget (USD)</Label>
+                  <Label className="text-slate-200 text-xs">Total trip budget (USD)</Label>
                   <div className="flex gap-2">
                     <Input
                       type="number"
                       min={0}
-                      value={tripPreferences?.min_budget_per_day ?? ""}
+                      value={tripPreferences?.min_budget ?? ""}
                       onChange={(e) =>
                         handlePreferenceChange(
-                          "min_budget_per_day",
+                          "min_budget",
                           e.target.value ? parseFloat(e.target.value) : null
                         )
                       }
@@ -794,10 +876,10 @@ const ChatWindow = ({
                     <Input
                       type="number"
                       min={0}
-                      value={tripPreferences?.max_budget_per_day ?? ""}
+                      value={tripPreferences?.max_budget ?? ""}
                       onChange={(e) =>
                         handlePreferenceChange(
-                          "max_budget_per_day",
+                          "max_budget",
                           e.target.value ? parseFloat(e.target.value) : null
                         )
                       }
@@ -1108,72 +1190,12 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {tripId && activities.length > 0 && (
-            <div className="flex justify-start">
-              <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm">
-                <p className="text-xs font-semibold text-slate-300 mb-2">
-                  Phase 3: Swipe through activities
-                </p>
-                <div className="space-y-3">
-                  {activities.map((activity) => (
-                    <div
-                      key={activity.activity_id}
-                      className="border border-slate-700 rounded-md px-3 py-2 flex flex-col gap-1 bg-slate-950/60"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div>
-                          <p className="text-sm font-medium text-slate-50">
-                            {activity.name}
-                          </p>
-                          <p className="text-xs text-slate-400">
-                            {activity.location || "Location TBD"}
-                            {activity.category && ` • ${activity.category}`}
-                          </p>
-                        </div>
-                        <span className="text-[10px] uppercase text-slate-500">
-                          {activity.preference === "liked"
-                            ? "Liked"
-                            : activity.preference === "disliked"
-                            ? "Not for me"
-                            : activity.preference === "skipped"
-                            ? "Skipped"
-                            : "Pending"}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-end gap-2 mt-1">
-                        <Button
-                          variant="outline"
-                          className="h-6 px-2 border-slate-600 text-[11px]"
-                          disabled={isUpdatingActivityPreference[activity.activity_id]}
-                          onClick={() => updateActivityPreference(activity.activity_id, "disliked")}
-                        >
-                          Pass
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className="h-6 px-2 border-slate-600 text-[11px]"
-                          disabled={isUpdatingActivityPreference[activity.activity_id]}
-                          onClick={() => updateActivityPreference(activity.activity_id, "skipped")}
-                        >
-                          Maybe
-                        </Button>
-                        <Button
-                          size="sm"
-                          className="h-6 px-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[11px]"
-                          disabled={isUpdatingActivityPreference[activity.activity_id]}
-                          onClick={() => updateActivityPreference(activity.activity_id, "liked")}
-                        >
-                          Like
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
 
-          {messages.map((message, index) => (
+          {(() => {
+            const firstAssistantIndex = messages.findIndex(
+              (m) => m.role === "assistant"
+            );
+            return messages.map((message, index) => (
             <div
               key={index}
               className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
@@ -1199,12 +1221,15 @@ const ChatWindow = ({
                       );
                     };
 
-                    // For assistant messages, when the LLM returns structured
+                    // For the *first* assistant message, when the LLM returns structured
                     // "Destination Idea {number}:" sections, show:
                     // - an intro paragraph
                     // - a single white "card" at a time with < / > navigation
                     // - a closing "What do you think?" prompt
-                    if (message.role === "assistant") {
+                    if (
+                      message.role === "assistant" &&
+                      index === firstAssistantIndex
+                    ) {
                       const parts = message.content.split(/(?=Destination Idea\s+\d+:)/i);
                       if (parts.length > 1) {
                         const intro = parts[0].trim();
@@ -1346,7 +1371,8 @@ const ChatWindow = ({
                 )}
               </div>
             </div>
-          ))}
+            ));
+          })()}
           {isCreatingTrip && (
             <div className="flex justify-start">
               <div className="bg-slate-900/90 border border-slate-700 text-slate-100 rounded-lg px-4 py-3 shadow-sm">
@@ -1361,8 +1387,207 @@ const ChatWindow = ({
               </div>
             </div>
           )}
+          {tripId && activities.length > 0 && (
+            <div className="flex justify-start">
+              <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm">
+                <p className="text-xs font-semibold text-slate-300 mb-1">
+                  Phase 2: Explore activities
+                </p>
+                <p className="text-[11px] text-slate-300 mb-2">
+                  Use Pass / Maybe / Like to tell me which activities feel right for this trip.
+                </p>
+                <div className="space-y-3">
+                  {activities.map((activity) => (
+                    <div
+                      key={activity.activity_id}
+                      className="border border-slate-700 rounded-md px-3 py-2 flex flex-col gap-1 bg-slate-950/60"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-medium text-slate-50">
+                            {activity.name}
+                          </p>
+                          <p className="text-xs text-slate-400">
+                            {activity.location || "Location TBD"}
+                            {activity.category && ` • ${activity.category}`}
+                          </p>
+                        </div>
+                        <span className="text-[10px] uppercase text-slate-500">
+                          {activity.preference === "liked"
+                            ? "Liked"
+                            : activity.preference === "disliked"
+                            ? "Not for me"
+                            : activity.preference === "maybe"
+                            ? "Maybe"
+                            : "Pending"}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-end gap-2 mt-1">
+                        <Button
+                          variant="outline"
+                          className={`h-6 px-2 text-[11px] ${
+                            activity.preference === "disliked"
+                              ? "border-2 border-rose-400 bg-transparent text-rose-200"
+                              : "border border-rose-500 bg-rose-500/90 hover:bg-rose-400 text-white"
+                          }`}
+                          disabled={isUpdatingActivityPreference[activity.activity_id]}
+                          onClick={() => updateActivityPreference(activity.activity_id, "disliked")}
+                        >
+                          Pass
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className={`h-6 px-2 text-[11px] ${
+                            activity.preference === "maybe"
+                              ? "border-2 border-yellow-300 bg-transparent text-yellow-200"
+                              : "border border-yellow-400 bg-yellow-300/90 hover:bg-yellow-200 text-slate-900"
+                          }`}
+                          disabled={isUpdatingActivityPreference[activity.activity_id]}
+                          onClick={() => updateActivityPreference(activity.activity_id, "maybe")}
+                        >
+                          Maybe
+                        </Button>
+                        <Button
+                          size="sm"
+                          className={`h-6 px-2 text-[11px] ${
+                            activity.preference === "liked"
+                              ? "border-2 border-emerald-400 bg-transparent text-emerald-300"
+                              : "bg-emerald-500 hover:bg-emerald-400 text-slate-950"
+                          }`}
+                          disabled={isUpdatingActivityPreference[activity.activity_id]}
+                          onClick={() => updateActivityPreference(activity.activity_id, "liked")}
+                        >
+                          Like
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-3 text-[11px] text-slate-300">
+                  Let me know which activities you like: tap <span className="font-semibold">Like</span> for favorites,
+                  <span className="font-semibold"> Maybe</span> if you&apos;re unsure, or <span className="font-semibold">Pass</span> to skip stuff that&apos;s not your vibe.
+                </p>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <p className="text-[11px] text-slate-400">
+                    {allActivitiesAnswered
+                      ? "You’ve reacted to all activities."
+                      : "Try to react to each activity so I know what you like."}
+                  </p>
+                  <Button
+                    size="sm"
+                    className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                    disabled={!allActivitiesAnswered}
+                    onClick={() => setHasConfirmedActivities(true)}
+                  >
+                    I&apos;m done with activities
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+          {itinerarySummary && (
+            <div className="flex justify-start">
+              <div className="bg-slate-900/90 border border-emerald-500/60 text-slate-100 rounded-lg px-4 py-3 shadow-sm max-w-[75%]">
+                <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
+                  {itinerarySummary}
+                </p>
+              </div>
+            </div>
+          )}
+          {itineraryDays.length > 0 && (
+            <div className="flex justify-start">
+              <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm space-y-3">
+                <p className="text-xs font-semibold text-slate-300">
+                  Phase 3: Day-by-day trip sketch
+                </p>
+                {(() => {
+                  const maxIndex = itineraryDays.length - 1;
+                  const currentIndex = Math.min(itineraryCarouselIndex, maxIndex);
+                  const day = itineraryDays[currentIndex];
+                  const dateLabel = day.date
+                    ? new Date(day.date).toLocaleDateString("en-US", {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })
+                    : null;
+
+                  return (
+                    <>
+                      <div className="rounded-lg bg-white text-slate-900 p-3 shadow-sm space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-semibold">
+                              Day {day.day_number}
+                              {dateLabel ? ` • ${dateLabel}` : ""}
+                            </p>
+                          </div>
+                          <span className="text-[11px] text-slate-500">
+                            Sketch {currentIndex + 1} of {itineraryDays.length}
+                          </span>
+                        </div>
+                        {day.summary && (
+                          <p className="text-xs whitespace-pre-wrap">{day.summary}</p>
+                        )}
+                        {Array.isArray(day.activities) && day.activities.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            <p className="text-[11px] font-semibold text-slate-700">
+                              Planned activities
+                            </p>
+                            <ul className="space-y-1">
+                              {day.activities.map((act, idx) => (
+                                <li key={idx} className="text-xs text-slate-800">
+                                  <span className="font-medium">
+                                    {act.name || "Activity"}
+                                  </span>
+                                  {act.location && ` • ${act.location}`}
+                                  {act.duration && ` • ${act.duration}`}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-xs border-slate-600 text-slate-100 bg-slate-900/80 hover:bg-slate-800 disabled:opacity-40"
+                          disabled={currentIndex === 0}
+                          onClick={() =>
+                            setItineraryCarouselIndex((prev) =>
+                              Math.max(0, Math.min(maxIndex, prev - 1))
+                            )
+                          }
+                        >
+                          ‹ Previous
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-xs border-slate-600 text-slate-100 bg-slate-900/80 hover:bg-slate-800 disabled:opacity-40"
+                          disabled={currentIndex === maxIndex}
+                          onClick={() =>
+                            setItineraryCarouselIndex((prev) =>
+                              Math.max(0, Math.min(maxIndex, prev + 1))
+                            )
+                          }
+                        >
+                          Next ›
+                        </Button>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+          )}
           {tripId &&
-            activities.some((a) => a.preference === "liked") &&
+            hasConfirmedActivities &&
+            allActivitiesAnswered &&
+            hasAnyLikedActivity &&
             !hasShownTripSketchPrompt && (
               <div className="flex justify-start">
                 <div className="bg-slate-900/90 border border-slate-700 text-slate-100 rounded-lg px-4 py-3 shadow-sm max-w-[75%]">
@@ -1374,7 +1599,7 @@ const ChatWindow = ({
                     <Button
                       size="sm"
                       variant="outline"
-                      className="border-slate-600 text-xs"
+                      className="border-slate-600 text-xs text-slate-100 bg-slate-900/70 hover:bg-slate-800"
                       onClick={() => setHasShownTripSketchPrompt(true)}
                     >
                       Keep chatting
@@ -1391,9 +1616,9 @@ const ChatWindow = ({
                       {isGeneratingItinerary ? "Creating trip sketch..." : "Create trip sketch"}
                     </Button>
                   </div>
-                </div>
               </div>
-            )}
+            </div>
+          )}
           <div ref={messagesEndRef} />
         </div>
       </ScrollArea>

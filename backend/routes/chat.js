@@ -327,9 +327,24 @@ router.post('/chat', authenticateToken, async (req, res) => {
       }
     }
 
-    // Load conversation history from database (filtered by tripId if provided)
-    const conversationHistory = await loadConversationHistory(userId, parsedTripId);
-    console.log(`📚 Loaded ${conversationHistory.length} messages from history for tripId: ${parsedTripId}`);
+    // Load conversation history from database (filtered by tripId if provided),
+    // unless we're in destination exploration mode (suppressTripCreation),
+    // where each session should start fresh.
+    let conversationHistory = [];
+    if (!suppressTripCreation) {
+      conversationHistory = await loadConversationHistory(userId, parsedTripId);
+    }
+    console.log(
+      `📚 Loaded ${conversationHistory.length} messages from history for tripId: ${parsedTripId} (suppressTripCreation=${!!suppressTripCreation})`
+    );
+
+    // To avoid hitting TPM / context limits on the model, only send the
+    // most recent slice of the conversation to the LLM.
+    const MAX_CONTEXT_MESSAGES = 12;
+    const trimmedHistory =
+      conversationHistory.length > MAX_CONTEXT_MESSAGES
+        ? conversationHistory.slice(-MAX_CONTEXT_MESSAGES)
+        : conversationHistory;
 
     // Load user profile so the LLM can ground recommendations in their preferences
     let userProfileContext = 'No saved profile preferences.';
@@ -370,10 +385,21 @@ router.post('/chat', authenticateToken, async (req, res) => {
 Here is the user's saved profile and preferences (from the app_user table):
 ${userProfileContext}
 
-When the user is exploring where to go, suggest up to three concrete destination ideas at a time (never more than three), and briefly explain *why* each one is a good fit based on this user's preferences (budget, travel style, home base, and liked tags). When you recommend activities, also explain why they fit these preferences.`,
+When the user is exploring where to go, suggest up to three concrete destination ideas at a time (never more than three). Present them in this exact structured format so the UI can parse them:
+
+Destination Idea 1: <short destination name>
+<one or two short sentences explaining why this destination fits their preferences>
+
+Destination Idea 2: <short destination name>
+<one or two short sentences explaining why this destination fits their preferences>
+
+Destination Idea 3: <short destination name>
+<one or two short sentences explaining why this destination fits their preferences>
+
+When you recommend activities, also explain briefly why they fit these preferences.`,
       },
       // Add conversation history from database
-      ...conversationHistory,
+      ...trimmedHistory,
       // Add current message
       {
         role: 'user',
@@ -383,10 +409,15 @@ When the user is exploring where to go, suggest up to three concrete destination
 
     console.log(`📝 Built messages array with ${messages.length} total messages (including system)`);
 
-    // Save user message to database (with tripId if provided or created)
-    // Note: parsedTripId may have been set by trip creation above
-    console.log(`💾 Saving user message with tripId: ${parsedTripId} for user ${userId}`);
-    await saveMessage(userId, 'user', message, parsedTripId);
+    // Save user message to database (with tripId if provided or created),
+    // but skip persistence in exploration-only chats so that each new
+    // destination search starts clean.
+    if (!suppressTripCreation) {
+      console.log(`💾 Saving user message with tripId: ${parsedTripId} for user ${userId}`);
+      await saveMessage(userId, 'user', message, parsedTripId);
+    } else {
+      console.log('💾 Skipping user message persistence due to suppressTripCreation=true');
+    }
 
     // Call Groq API
     console.log(`🤖 Calling Groq API with model: ${chatModel}`);
@@ -404,9 +435,14 @@ When the user is exploring where to go, suggest up to three concrete destination
       throw groqError;
     }
 
-    // Save assistant response to database (with tripId if provided or created)
-    console.log(`💾 Saving assistant message with tripId: ${parsedTripId} for user ${userId}`);
-    await saveMessage(userId, 'assistant', assistantMessage, parsedTripId);
+    // Save assistant response to database (with tripId if provided or created),
+    // again skipping in pure exploration mode.
+    if (!suppressTripCreation) {
+      console.log(`💾 Saving assistant message with tripId: ${parsedTripId} for user ${userId}`);
+      await saveMessage(userId, 'assistant', assistantMessage, parsedTripId);
+    } else {
+      console.log('💾 Skipping assistant message persistence due to suppressTripCreation=true');
+    }
 
     // Return the response with trip info if trip was created
     const response = {
@@ -500,6 +536,14 @@ router.post('/chat/stream', authenticateToken, async (req, res) => {
       console.error('Error loading user profile for chat stream context:', profileError);
     }
 
+    // To avoid hitting TPM / context limits on the model, only send the
+    // most recent slice of the conversation to the LLM.
+    const MAX_CONTEXT_MESSAGES = 12;
+    const trimmedHistory =
+      conversationHistory.length > MAX_CONTEXT_MESSAGES
+        ? conversationHistory.slice(-MAX_CONTEXT_MESSAGES)
+        : conversationHistory;
+
     // Use provided model or default
     const chatModel = model || DEFAULT_MODEL;
 
@@ -512,9 +556,20 @@ router.post('/chat/stream', authenticateToken, async (req, res) => {
 Here is the user's saved profile and preferences (from the app_user table):
 ${userProfileContext}
 
-When the user is exploring where to go, suggest up to three concrete destination ideas at a time (never more than three), and briefly explain *why* each one is a good fit based on this user's preferences (budget, travel style, home base, and liked tags). When you recommend activities, also explain why they fit these preferences.`,
+When the user is exploring where to go, suggest up to three concrete destination ideas at a time (never more than three). Present them in this exact structured format so the UI can parse them:
+
+Destination Idea 1: <short destination name>
+<one or two short sentences explaining why this destination fits their preferences>
+
+Destination Idea 2: <short destination name>
+<one or two short sentences explaining why this destination fits their preferences>
+
+Destination Idea 3: <short destination name>
+<one or two short sentences explaining why this destination fits their preferences>
+
+When you recommend activities, also explain briefly why they fit these preferences.`,
       },
-      ...conversationHistory,
+      ...trimmedHistory,
       {
         role: 'user',
         content: message

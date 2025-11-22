@@ -117,6 +117,7 @@ async function upsertReusableActivityFromSearchItem(item, destination) {
         rating: null,
         tags,
         source: 'google-search',
+        source_url: link || null,
       },
     ])
     .select()
@@ -457,8 +458,8 @@ router.put('/:tripId/preferences', authenticateToken, async (req, res) => {
       num_days,
       start_date,
       end_date,
-      min_budget_per_day,
-      max_budget_per_day,
+      min_budget,
+      max_budget,
       pace,
       accommodation_type,
       activity_categories,
@@ -530,11 +531,11 @@ router.put('/:tripId/preferences', authenticateToken, async (req, res) => {
       preferenceData.num_days = diffDays;
     }
 
-    if (min_budget_per_day !== undefined && min_budget_per_day !== null) {
-      preferenceData.min_budget_per_day = parseFloat(min_budget_per_day);
+    if (min_budget !== undefined && min_budget !== null) {
+      preferenceData.min_budget = parseFloat(min_budget);
     }
-    if (max_budget_per_day !== undefined && max_budget_per_day !== null) {
-      preferenceData.max_budget_per_day = parseFloat(max_budget_per_day);
+    if (max_budget !== undefined && max_budget !== null) {
+      preferenceData.max_budget = parseFloat(max_budget);
     }
     if (pace !== undefined) preferenceData.pace = pace;
     if (accommodation_type !== undefined) preferenceData.accommodation_type = accommodation_type;
@@ -793,7 +794,7 @@ router.post('/:tripId/activities/:activityId/preference', authenticateToken, asy
     const activityId = parseInt(req.params.activityId);
     const { preference } = req.body;
 
-    if (!['liked', 'disliked', 'skipped', 'pending'].includes(preference)) {
+    if (!['liked', 'disliked', 'maybe', 'pending'].includes(preference)) {
       return res.status(400).json({
         success: false,
         message: 'Invalid preference value.',
@@ -864,6 +865,85 @@ router.post('/:tripId/activities/:activityId/preference', authenticateToken, asy
     res.status(500).json({
       success: false,
       message: 'Failed to update activity preference',
+      error: error.message,
+    });
+  }
+});
+
+// Fetch the generated day-by-day itinerary and attached activities for a trip
+router.get('/:tripId/itinerary', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+
+    // Ensure the trip belongs to the user
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id, destination')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found',
+      });
+    }
+
+    const { data, error } = await supabase
+      .from('itinerary')
+      .select(
+        `
+        itinerary_id,
+        day_number,
+        date,
+        summary,
+        itinerary_activity (
+          order_index,
+          activity:activity (
+            activity_id,
+            name,
+            location,
+            category,
+            duration
+          )
+        )
+      `
+      )
+      .eq('trip_id', tripId)
+      .order('day_number', { ascending: true });
+
+    if (error) {
+      throw error;
+    }
+
+    const days =
+      data?.map((row) => {
+        const acts = Array.isArray(row.itinerary_activity)
+          ? row.itinerary_activity
+              .slice()
+              .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+              .map((ia) => ia.activity || {})
+          : [];
+
+        return {
+          day_number: row.day_number,
+          date: row.date,
+          summary: row.summary,
+          activities: acts,
+        };
+      }) || [];
+
+    res.status(200).json({
+      success: true,
+      days,
+    });
+  } catch (error) {
+    console.error('Error fetching itinerary:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch itinerary',
       error: error.message,
     });
   }

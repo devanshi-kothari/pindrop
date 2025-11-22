@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS activity (
     rating DECIMAL(3, 1),
     tags TEXT[] DEFAULT '{}',
     source VARCHAR(50),
+    source_url TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
 
@@ -66,8 +67,8 @@ CREATE TABLE IF NOT EXISTS trip_preference (
     start_date DATE,
     end_date DATE,
     -- Budget expectations per trip or per day
-    min_budget_per_day DECIMAL(10, 2),
-    max_budget_per_day DECIMAL(10, 2),
+    min_budget DECIMAL(10, 2),
+    max_budget DECIMAL(10, 2),
     -- How full each day should feel: 'slow', 'balanced', 'packed'
     pace VARCHAR(50),
     -- Where they prefer to stay: 'hotel', 'airbnb', 'hostel', etc.
@@ -92,7 +93,7 @@ CREATE TABLE IF NOT EXISTS trip_activity_preference (
     trip_activity_preference_id BIGSERIAL PRIMARY KEY,
     trip_id BIGINT NOT NULL REFERENCES trip(trip_id) ON DELETE CASCADE,
     activity_id BIGINT NOT NULL REFERENCES activity(activity_id) ON DELETE CASCADE,
-    preference VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (preference IN ('pending', 'liked', 'disliked', 'skipped')),
+    preference VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (preference IN ('pending', 'liked', 'disliked', 'maybe')),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
 
