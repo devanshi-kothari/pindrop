@@ -7,6 +7,8 @@ import dotenv from 'dotenv';
 import supabase from './supabaseClient.js';
 import authRoutes from './routes/auth.js';
 import chatRoutes from './routes/chat.js';
+import tripRoutes from './routes/trips.js';
+import imageRoutes from './routes/images.js';
 
 // Load environment variables
 dotenv.config();
@@ -77,6 +79,16 @@ app.get('/api', (req, res) => {
         history: 'GET /api/chat/history',
         chat: 'POST /api/chat/chat',
         chatStream: 'POST /api/chat/chat/stream'
+      },
+      trips: {
+        list: 'GET /api/trips?status=draft|planned|archived',
+        get: 'GET /api/trips/:tripId',
+        create: 'POST /api/trips',
+        update: 'PUT /api/trips/:tripId',
+        delete: 'DELETE /api/trips/:tripId'
+      },
+      images: {
+        destination: 'GET /api/images/destination?destination=...'
       }
     }
   });
@@ -87,6 +99,12 @@ app.use('/api/auth', authRoutes);
 
 // Chat/LLM routes
 app.use('/api/chat', chatRoutes);
+
+// Trip routes
+app.use('/api/trips', tripRoutes);
+
+// Image routes
+app.use('/api/images', imageRoutes);
 
 // Test endpoint to verify Supabase data
 app.get('/api/users/test', async (req, res) => {
