@@ -135,6 +135,22 @@ const ChatWindow = ({
   const formatTime = () =>
     new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+  // Helper to interpret YYYY-MM-DD strings as local dates (not UTC) so
+  // that displayed itinerary days match the dates the user actually chose.
+  const parseLocalDate = (value: string | null | undefined): Date | null => {
+    if (!value) return null;
+    const parts = value.split("-");
+    if (parts.length !== 3) return null;
+    const [yearStr, monthStr, dayStr] = parts;
+    const year = Number(yearStr);
+    const month = Number(monthStr);
+    const day = Number(dayStr);
+    if (!year || !month || !day) return null;
+    // Constructing via (year, monthIndex, day) uses the local timezone
+    // and avoids the implicit UTC interpretation of bare YYYY-MM-DD.
+    return new Date(year, month - 1, day);
+  };
+
   const getStoredUserProfile = () => {
     try {
       const raw = localStorage.getItem("user");
@@ -467,6 +483,8 @@ const ChatWindow = ({
 
     try {
       setIsGeneratingItinerary(true);
+      // Show an in-progress status while the itinerary is being generated.
+      setItinerarySummary("Generating trip sketch...");
 
       // Save preferences first if we have any unsaved changes
       if (tripPreferences) {
@@ -1540,11 +1558,16 @@ const ChatWindow = ({
                   const currentIndex = Math.min(itineraryCarouselIndex, maxIndex);
                   const day = itineraryDays[currentIndex];
                   const dateLabel = day.date
-                    ? new Date(day.date).toLocaleDateString("en-US", {
-                        month: "short",
-                        day: "numeric",
-                        year: "numeric",
-                      })
+                    ? (() => {
+                        const localDate = parseLocalDate(day.date);
+                        return localDate
+                          ? localDate.toLocaleDateString("en-US", {
+                              month: "short",
+                              day: "numeric",
+                              year: "numeric",
+                            })
+                          : null;
+                      })()
                     : null;
 
                   return (
@@ -1648,7 +1671,7 @@ const ChatWindow = ({
                         await generateItinerary();
                       }}
                     >
-                      {isGeneratingItinerary ? "Creating trip sketch..." : "Create trip sketch"}
+                      {isGeneratingItinerary ? "Generating trip sketch..." : "Create trip sketch"}
                     </Button>
                   </div>
               </div>

@@ -697,7 +697,14 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       .slice(0, 5)
       .join(' ');
 
-    const queryBase = `things to do in ${trip.destination}`;
+    // Build a Google query that explicitly anchors on the trip's destination,
+    // so we don't accidentally get results for a different place with a
+    // similar name. Wrap multi-word destinations in quotes.
+    const rawDestination = String(trip.destination).trim();
+    const destinationQuery =
+      rawDestination && rawDestination.includes(' ') ? `"${rawDestination}"` : rawDestination;
+
+    const queryBase = `things to do in ${destinationQuery}`;
     const query =
       interestPhrases.length > 0 ? `${queryBase} ${interestPhrases}` : `${queryBase} best activities`;
 
