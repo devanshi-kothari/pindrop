@@ -41,8 +41,8 @@ async function fetchImageFromGoogle(destination) {
     return null;
   }
 
-  // Prefer the thumbnail link (more reliably an actual image URL), then fall back to main link
-  return (firstItem.image && firstItem.image.thumbnailLink) || firstItem.link || null;
+  // Get the link from the first item
+  return firstItem.link || (firstItem.image && firstItem.image.thumbnailLink) || null;
 }
 
 // Get image URL for a destination using Google Custom Search JSON API
