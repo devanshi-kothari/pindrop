@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS activity (
     tags TEXT[] DEFAULT '{}',
     source VARCHAR(50),
     source_url TEXT,
+    image_url TEXT,
+    description TEXT,
+    price_range VARCHAR(50),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
 

@@ -59,7 +59,45 @@ function normalizeDestinationName(raw) {
     .join(' ');
 }
 
-async function fetchActivitySearchResults(query, num = 5) {
+async function generateRefinedSearchQuery(destination, preferences, userProfile) {
+  try {
+    const prompt = `You are a travel search expert. Generate a highly specific Google search query to find relevant activities for a trip.
+
+Destination: ${destination}
+Activity interests: ${Array.isArray(preferences?.activity_categories) ? preferences.activity_categories.join(', ') : 'none specified'}
+Things to avoid: ${Array.isArray(preferences?.avoid_activity_categories) ? preferences.avoid_activity_categories.join(', ') : 'none'}
+Group type: ${preferences?.group_type || 'not specified'}
+Travel style: ${userProfile?.travel_style || 'not specified'}
+Liked tags: ${Array.isArray(userProfile?.liked_tags) ? userProfile.liked_tags.join(', ') : 'none'}
+Custom requests: ${preferences?.custom_requests || 'none'}
+
+Generate a concise, specific Google search query (max 10 words) that will find highly relevant activities matching these preferences. Focus on the destination and key interests. Return ONLY the search query, nothing else.`;
+
+    const completion = await groqClient.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a search query optimization expert. Generate precise Google search queries.',
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+      temperature: 0.3,
+      max_tokens: 50,
+    });
+
+    const refinedQuery = completion.choices[0]?.message?.content?.trim() || '';
+    return refinedQuery.replace(/^["']|["']$/g, ''); // Remove quotes if present
+  } catch (error) {
+    console.error('Error generating refined search query:', error);
+    return null;
+  }
+}
+
+async function fetchActivitySearchResults(query, num = 10) {
   if (!GOOGLE_CUSTOM_SEARCH_API_KEY || !GOOGLE_CUSTOM_SEARCH_CX) {
     console.warn('Google Custom Search API env vars are not set. Activity generation will be disabled.');
     return [];
@@ -90,11 +128,105 @@ async function fetchActivitySearchResults(query, num = 5) {
   return data.items;
 }
 
+async function extractActivityDetails(name, snippet, link) {
+  // Extract price information from snippet
+  let priceRange = null;
+  let costEstimate = null;
+  const pricePatterns = [
+    /(\$[\d,]+(?:-\$[\d,]+)?)/, // $50-$100
+    /(free|no cost|no charge)/i,
+    /(\d+)\s*(?:usd|dollars?)/i,
+    /(budget|affordable|expensive|luxury)/i,
+  ];
+  
+  const fullText = `${name} ${snippet}`.toLowerCase();
+  for (const pattern of pricePatterns) {
+    const match = fullText.match(pattern);
+    if (match) {
+      if (match[0].includes('free') || match[0].includes('no cost')) {
+        priceRange = 'Free';
+        costEstimate = 0;
+      } else if (match[0].includes('budget') || match[0].includes('affordable')) {
+        priceRange = 'Budget-friendly';
+        costEstimate = 25;
+      } else if (match[0].includes('expensive') || match[0].includes('luxury')) {
+        priceRange = 'Expensive';
+        costEstimate = 100;
+      } else {
+        const priceMatch = match[0].match(/\$?(\d+)/);
+        if (priceMatch) {
+          const price = parseInt(priceMatch[1]);
+          if (price < 20) priceRange = 'Budget-friendly';
+          else if (price < 50) priceRange = 'Moderate';
+          else if (price < 100) priceRange = 'Expensive';
+          else priceRange = 'Luxury';
+          costEstimate = price;
+        }
+      }
+      break;
+    }
+  }
+
+  // Extract duration if mentioned
+  let duration = null;
+  const durationPatterns = [
+    /(\d+)\s*(?:hours?|hrs?)/i,
+    /(\d+)\s*(?:days?)/i,
+    /(half\s*day|full\s*day)/i,
+  ];
+  for (const pattern of durationPatterns) {
+    const match = fullText.match(pattern);
+    if (match) {
+      duration = match[0];
+      break;
+    }
+  }
+
+  return { priceRange, costEstimate, duration };
+}
+
+async function fetchActivityImage(activityName, destination) {
+  if (!GOOGLE_CUSTOM_SEARCH_API_KEY || !GOOGLE_CUSTOM_SEARCH_CX) {
+    return null;
+  }
+
+  try {
+    const imageQuery = `${activityName} ${destination} photo`;
+    const params = new URLSearchParams({
+      key: GOOGLE_CUSTOM_SEARCH_API_KEY,
+      cx: GOOGLE_CUSTOM_SEARCH_CX,
+      q: imageQuery,
+      num: '1',
+      safe: 'active',
+      searchType: 'image',
+      imgSize: 'large',
+    });
+
+    const url = `https://customsearch.googleapis.com/customsearch/v1?${params.toString()}`;
+    const response = await fetch(url);
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (Array.isArray(data.items) && data.items.length > 0) {
+        return data.items[0].link || null;
+      }
+    }
+  } catch (error) {
+    console.error('Error fetching activity image:', error);
+  }
+  
+  return null;
+}
+
 async function upsertReusableActivityFromSearchItem(item, destination) {
   const name = item.title || 'Activity';
   const location = destination || null;
   const snippet = item.snippet || '';
   const link = item.link || '';
+  const imageUrl = item.pagemap?.cse_image?.[0]?.src || item.pagemap?.metatags?.[0]?.['og:image'] || null;
+
+  // Extract additional details
+  const { priceRange, costEstimate, duration } = await extractActivityDetails(name, snippet, link);
 
   // Use a simple heuristic to infer a high-level category from text
   const lower = `${name} ${snippet}`.toLowerCase();
@@ -117,6 +249,12 @@ async function upsertReusableActivityFromSearchItem(item, destination) {
     tags.push('web');
   }
 
+  // Fetch image if not already present
+  let finalImageUrl = imageUrl;
+  if (!finalImageUrl) {
+    finalImageUrl = await fetchActivityImage(name, destination);
+  }
+
   // Try to find an existing reusable activity with the same name/location/source
   const { data: existing, error: existingError } = await supabase
     .from('activity')
@@ -131,6 +269,26 @@ async function upsertReusableActivityFromSearchItem(item, destination) {
   }
 
   if (existing) {
+    // Update existing activity with new data if available
+    const updateData = {};
+    if (finalImageUrl && !existing.image_url) updateData.image_url = finalImageUrl;
+    if (snippet && !existing.description) updateData.description = snippet;
+    if (priceRange && !existing.price_range) updateData.price_range = priceRange;
+    if (costEstimate !== null && existing.cost_estimate === null) updateData.cost_estimate = costEstimate;
+    if (duration && !existing.duration) updateData.duration = duration;
+
+    if (Object.keys(updateData).length > 0) {
+      const { data: updated, error: updateError } = await supabase
+        .from('activity')
+        .update(updateData)
+        .eq('activity_id', existing.activity_id)
+        .select()
+        .single();
+      
+      if (!updateError && updated) {
+        return updated;
+      }
+    }
     return existing;
   }
 
@@ -141,12 +299,15 @@ async function upsertReusableActivityFromSearchItem(item, destination) {
         name,
         location,
         category,
-        duration: null,
-        cost_estimate: null,
+        duration: duration || null,
+        cost_estimate: costEstimate,
         rating: null,
         tags,
         source: 'google-search',
         source_url: link || null,
+        image_url: finalImageUrl,
+        description: snippet || null,
+        price_range: priceRange,
       },
     ])
     .select()
@@ -686,29 +847,37 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       .eq('trip_id', tripId)
       .maybeSingle();
 
-    const likedTags = Array.isArray(userProfile?.liked_tags) ? userProfile.liked_tags : [];
-    const activityCategories = Array.isArray(tripPreferences?.activity_categories)
-      ? tripPreferences.activity_categories
-      : [];
+    // Use LLM to generate a refined, highly relevant search query
+    let query = null;
+    try {
+      query = await generateRefinedSearchQuery(trip.destination, tripPreferences, userProfile);
+    } catch (error) {
+      console.error('Error generating refined search query:', error);
+    }
 
-    const interestPhrases = [...likedTags, ...activityCategories]
-      .filter(Boolean)
-      .map((t) => String(t))
-      .slice(0, 5)
-      .join(' ');
+    // Fallback to basic query if LLM fails
+    if (!query || query.length < 5) {
+      const likedTags = Array.isArray(userProfile?.liked_tags) ? userProfile.liked_tags : [];
+      const activityCategories = Array.isArray(tripPreferences?.activity_categories)
+        ? tripPreferences.activity_categories
+        : [];
 
-    // Build a Google query that explicitly anchors on the trip's destination,
-    // so we don't accidentally get results for a different place with a
-    // similar name. Wrap multi-word destinations in quotes.
-    const rawDestination = String(trip.destination).trim();
-    const destinationQuery =
-      rawDestination && rawDestination.includes(' ') ? `"${rawDestination}"` : rawDestination;
+      const interestPhrases = [...likedTags, ...activityCategories]
+        .filter(Boolean)
+        .map((t) => String(t))
+        .slice(0, 5)
+        .join(' ');
 
-    const queryBase = `things to do in ${destinationQuery}`;
-    const query =
-      interestPhrases.length > 0 ? `${queryBase} ${interestPhrases}` : `${queryBase} best activities`;
+      const rawDestination = String(trip.destination).trim();
+      const destinationQuery =
+        rawDestination && rawDestination.includes(' ') ? `"${rawDestination}"` : rawDestination;
 
-    const items = await fetchActivitySearchResults(query, 5);
+      const queryBase = `things to do in ${destinationQuery}`;
+      query = interestPhrases.length > 0 ? `${queryBase} ${interestPhrases}` : `${queryBase} best activities`;
+    }
+
+    // Fetch more results to have better selection
+    const items = await fetchActivitySearchResults(query, 10);
 
     if (!items.length) {
       return res.status(200).json({
@@ -718,11 +887,19 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       });
     }
 
+    // Filter and prioritize results, then take top 8
     const suggestions = [];
+    const processedActivityIds = new Set();
 
     for (const item of items) {
       try {
         const activity = await upsertReusableActivityFromSearchItem(item, trip.destination);
+        
+        // Skip duplicates
+        if (processedActivityIds.has(activity.activity_id)) {
+          continue;
+        }
+        processedActivityIds.add(activity.activity_id);
 
         // Ensure we have a per-trip preference row (pending by default)
         const { data: existingPref, error: prefError } = await supabase
@@ -765,6 +942,11 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
           trip_activity_preference_id: prefRow.trip_activity_preference_id,
           preference: prefRow.preference,
         });
+        
+        // Limit to 8 activities for better UX
+        if (suggestions.length >= 8) {
+          break;
+        }
       } catch (innerError) {
         console.error('Error processing search item into activity:', innerError);
       }
@@ -822,7 +1004,11 @@ router.get('/:tripId/activities', authenticateToken, async (req, res) => {
           cost_estimate,
           rating,
           tags,
-          source
+          source,
+          source_url,
+          image_url,
+          description,
+          price_range
         )
       `
       )
@@ -1061,6 +1247,34 @@ router.post('/:tripId/generate-itinerary', authenticateToken, async (req, res) =
       throw prefError;
     }
 
+    // Load liked activities to incorporate into itinerary
+    const { data: activityPreferences } = await supabase
+      .from('trip_activity_preference')
+      .select(
+        `
+        activity_id,
+        preference,
+        activity:activity (
+          activity_id,
+          name,
+          location,
+          category,
+          duration,
+          cost_estimate,
+          rating,
+          tags,
+          description,
+          price_range
+        )
+      `
+      )
+      .eq('trip_id', tripId)
+      .eq('preference', 'liked');
+
+    const likedActivities = (activityPreferences || [])
+      .map((ap) => ap.activity)
+      .filter(Boolean);
+
     // Clear existing itinerary for this trip (activities remain as a shared catalog)
     const { error: deleteItineraryError } = await supabase
       .from('itinerary')
@@ -1071,7 +1285,130 @@ router.post('/:tripId/generate-itinerary', authenticateToken, async (req, res) =
       throw deleteItineraryError;
     }
 
-    const plannerPrompt = `You are an expert travel planner creating a realistic, safe, and fun itinerary.
+    // If we have liked activities, use them directly and minimize LLM usage
+    const numDays = tripPreferences?.num_days || 
+                    (tripPreferences?.start_date && tripPreferences?.end_date 
+                      ? Math.ceil((new Date(tripPreferences.end_date) - new Date(tripPreferences.start_date)) / (1000 * 60 * 60 * 24)) + 1
+                      : 3);
+
+    let days = [];
+    
+    if (likedActivities.length > 0) {
+      // Use liked activities directly - distribute them across days
+      const activitiesPerDay = Math.ceil(likedActivities.length / numDays);
+      
+      for (let i = 0; i < numDays; i++) {
+        const dayActivities = likedActivities.slice(i * activitiesPerDay, (i + 1) * activitiesPerDay);
+        if (dayActivities.length > 0) {
+          days.push({
+            day_number: i + 1,
+            date: tripPreferences?.start_date 
+              ? new Date(new Date(tripPreferences.start_date).getTime() + i * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+              : null,
+            summary: `Day ${i + 1} featuring ${dayActivities.map(a => a.name).join(', ')}`,
+            activities: dayActivities.map(a => ({
+              activity_id: a.activity_id,
+              name: a.name,
+              location: a.location,
+              category: a.category,
+              duration: a.duration,
+            })),
+          });
+        }
+      }
+
+      // Use minimal LLM to just refine day summaries and add any missing activities
+      const plannerPrompt = `You are an expert travel planner. Given a list of liked activities already selected by the user, create a day-by-day itinerary that:
+- Distributes the liked activities across the days naturally
+- Adds 1-2 complementary activities per day if needed (based on preferences)
+- Creates engaging day summaries
+- Respects pace, safety notes, and custom requests
+
+Liked activities to incorporate: ${JSON.stringify(likedActivities.map(a => ({ name: a.name, category: a.category, location: a.location })))}
+
+Respond ONLY with valid JSON in this exact format (no markdown, no explanation):
+{
+  "days": [
+    {
+      "day_number": 1,
+      "date": "YYYY-MM-DD or null",
+      "summary": "Short engaging overview",
+      "activities": [
+        {
+          "name": "Activity name (use exact names from liked activities when possible)",
+          "location": "Neighborhood or area",
+          "category": "outdoors | relaxing | cultural | music | arts | museums | food | nightlife | shopping | nature | adventure | other",
+          "duration": "Approximate duration"
+        }
+      ]
+    }
+  ]
+}`;
+
+      const llmInput = {
+        trip,
+        user_profile: userProfile,
+        trip_preferences: tripPreferences || null,
+        liked_activities: likedActivities.map(a => ({
+          name: a.name,
+          category: a.category,
+          location: a.location,
+        })),
+        preliminary_days: days,
+      };
+
+      try {
+        const completion = await groqClient.chat.completions.create({
+          model: DEFAULT_MODEL,
+          messages: [
+            {
+              role: 'system',
+              content: plannerPrompt,
+            },
+            {
+              role: 'user',
+              content: JSON.stringify(llmInput),
+            },
+          ],
+          temperature: 0.5,
+          max_tokens: 2000,
+        });
+
+        const rawContent = completion.choices[0]?.message?.content || '{}';
+        let parsed;
+        try {
+          parsed = JSON.parse(rawContent);
+        } catch (e) {
+          const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            parsed = JSON.parse(jsonMatch[0]);
+          }
+        }
+
+        if (parsed && Array.isArray(parsed.days) && parsed.days.length > 0) {
+          // Merge LLM suggestions with our liked activities
+          days = parsed.days.map((day, idx) => {
+            const existingDay = days[idx];
+            return {
+              ...day,
+              day_number: day.day_number || idx + 1,
+              date: day.date || existingDay?.date || null,
+              activities: [
+                ...(existingDay?.activities || []),
+                ...(day.activities || []).filter(a => 
+                  !existingDay?.activities?.some(ea => ea.name === a.name)
+                ),
+              ],
+            };
+          });
+        }
+      } catch (llmError) {
+        console.error('Error refining itinerary with LLM:', llmError);
+        // Continue with the basic distribution
+      }
+    } else {
+      // No liked activities - use full LLM generation (original behavior)
+      const plannerPrompt = `You are an expert travel planner creating a realistic, safe, and fun itinerary.
 You are given structured data about:
 - the trip (destination, dates, budget, travelers)
 - the traveler's general profile and interests
@@ -1107,11 +1444,43 @@ Respond ONLY with valid JSON in this exact format (no markdown, no explanation):
 
 If dates or number of days are missing, infer a reasonable number of days (3-5) for a first draft.`;
 
-    const llmInput = {
-      trip,
-      user_profile: userProfile,
-      trip_preferences: tripPreferences || null,
-    };
+      const llmInput = {
+        trip,
+        user_profile: userProfile,
+        trip_preferences: tripPreferences || null,
+      };
+
+      const completion = await groqClient.chat.completions.create({
+        model: DEFAULT_MODEL,
+        messages: [
+          {
+            role: 'system',
+            content: plannerPrompt,
+          },
+          {
+            role: 'user',
+            content: JSON.stringify(llmInput),
+          },
+        ],
+        temperature: 0.6,
+      });
+
+      const rawContent = completion.choices[0]?.message?.content || '{}';
+
+      let parsed;
+      try {
+        parsed = JSON.parse(rawContent);
+      } catch (e) {
+        const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          parsed = JSON.parse(jsonMatch[0]);
+        } else {
+          throw new Error('Failed to parse itinerary JSON from LLM response');
+        }
+      }
+
+      days = Array.isArray(parsed.days) ? parsed.days : [];
+    }
 
     const completion = await groqClient.chat.completions.create({
       model: DEFAULT_MODEL,
@@ -1127,22 +1496,6 @@ If dates or number of days are missing, infer a reasonable number of days (3-5) 
       ],
       temperature: 0.6,
     });
-
-    const rawContent = completion.choices[0]?.message?.content || '{}';
-
-    let parsed;
-    try {
-      parsed = JSON.parse(rawContent);
-    } catch (e) {
-      const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        parsed = JSON.parse(jsonMatch[0]);
-      } else {
-        throw new Error('Failed to parse itinerary JSON from LLM response');
-      }
-    }
-
-    const days = Array.isArray(parsed.days) ? parsed.days : [];
 
     const createdItineraries = [];
 
@@ -1176,32 +1529,50 @@ If dates or number of days are missing, infer a reasonable number of days (3-5) 
 
       for (let j = 0; j < activities.length; j++) {
         const act = activities[j] || {};
+        let activityRow = null;
 
-        const { data: activityRow, error: activityError } = await supabase
-          .from('activity')
-          .insert([
-            {
-              name: act.name || 'Activity',
-              location: act.location || trip.destination || null,
-              category: act.category || 'other',
-              duration: act.duration || null,
-              cost_estimate:
-                act.cost_estimate !== undefined && act.cost_estimate !== null
-                  ? parseFloat(act.cost_estimate)
-                  : null,
-              rating:
-                act.rating !== undefined && act.rating !== null
-                  ? parseFloat(act.rating)
-                  : null,
-              tags: Array.isArray(act.tags) ? act.tags : [],
-              source: 'llm-itinerary',
-            },
-          ])
-          .select()
-          .single();
+        // If this activity has an activity_id, it's a liked activity - use it directly
+        if (act.activity_id) {
+          const { data: existingActivity } = await supabase
+            .from('activity')
+            .select('*')
+            .eq('activity_id', act.activity_id)
+            .single();
+          
+          if (existingActivity) {
+            activityRow = existingActivity;
+          }
+        }
 
-        if (activityError || !activityRow) {
-          throw activityError || new Error('Failed to insert activity');
+        // If not found or no activity_id, create/insert new activity
+        if (!activityRow) {
+          const { data: newActivity, error: activityError } = await supabase
+            .from('activity')
+            .insert([
+              {
+                name: act.name || 'Activity',
+                location: act.location || trip.destination || null,
+                category: act.category || 'other',
+                duration: act.duration || null,
+                cost_estimate:
+                  act.cost_estimate !== undefined && act.cost_estimate !== null
+                    ? parseFloat(act.cost_estimate)
+                    : null,
+                rating:
+                  act.rating !== undefined && act.rating !== null
+                    ? parseFloat(act.rating)
+                    : null,
+                tags: Array.isArray(act.tags) ? act.tags : [],
+                source: 'llm-itinerary',
+              },
+            ])
+            .select()
+            .single();
+
+          if (activityError || !newActivity) {
+            throw activityError || new Error('Failed to insert activity');
+          }
+          activityRow = newActivity;
         }
 
         const { error: linkError } = await supabase.from('itinerary_activity').insert([
