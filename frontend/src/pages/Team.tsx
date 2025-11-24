@@ -3,6 +3,10 @@ import DashboardHeader from "@/components/DashboardHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Users } from "lucide-react";
+import mallikaImage from "/Users/mallikakulkarni/Desktop/pindrop-1/frontend/src/assets/mallika.png";
+import mahikaImage from "/Users/mallikakulkarni/Desktop/pindrop-1/frontend/src/assets/mahika.png";
+import nehaImage from "/Users/mallikakulkarni/Desktop/pindrop-1/frontend/src/assets/neha.png";
+
 
 interface TeamMember {
   name: string;
@@ -15,27 +19,38 @@ interface TeamMember {
 const teamMembers: TeamMember[] = [
   {
     name: "Mallika Kulkarni",
-    role: "Founder & CEO",
-    description: "Passionate about making travel planning seamless and enjoyable. Loves exploring new destinations and creating memorable experiences.",
+    role: "UPenn Engineering Class of 2026",
+    description: "Passionate about building consumer facing products, loves to thrift, cook, and read.",
+    image: mallikaImage,
     initials: "MK",
   },
   {
-    name: "Team Member 2",
-    role: "Lead Developer",
-    description: "Full-stack developer with a passion for building intuitive user experiences. Enjoys solving complex problems and creating elegant solutions.",
-    initials: "TM",
+    name: "Mahika Calyanakoti",
+    role: "UPenn Engineering Class of 2026",
+    description: "Data Science, Dance",
+    image: mahikaImage,
+    initials: "MC",
   },
   {
-    name: "Team Member 3",
-    role: "Product Designer",
-    description: "Creative designer focused on user-centered design. Believes in creating beautiful and functional interfaces that users love.",
-    initials: "TD",
+    name: "Neha Krishna",
+    role: "UPenn Engineering Class of 2026",
+    description: "CIS 2026 AI + Law, Travel, Reading",
+    image: nehaImage,
+    initials: "NK",
   },
   {
-    name: "Team Member 4",
-    role: "Travel Specialist",
-    description: "Travel enthusiast with years of experience in curating amazing trips. Expert in finding hidden gems and creating unique travel experiences.",
-    initials: "TS",
+    name: "Devanshi Kothari",
+    role: "UPenn Engineering Class of 2026",
+    description: "AI + Business, Dance, Chess.",
+    image: "",
+    initials: "DK",
+  },
+  {
+    name: "Aashika Vishwanath",
+    role: "UPenn Engineering Class of 2026",
+    description: "Data Science, ML, Dance",
+    image: "",
+    initials: "AV",
   },
 ];
 
