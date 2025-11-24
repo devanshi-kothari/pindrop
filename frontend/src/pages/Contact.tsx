@@ -13,6 +13,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import Header from "@/components/Header";
+import DashboardHeader from "@/components/DashboardHeader";
 import { getApiUrl } from "@/lib/api";
 import { useState } from "react";
 import { Mail, Send, CheckCircle2 } from "lucide-react";
@@ -37,6 +38,9 @@ const Contact = () => {
   } = useForm<ContactFormValues>({
     resolver: zodResolver(contactSchema),
   });
+
+  // Check if user is logged in
+  const isLoggedIn = !!localStorage.getItem("token");
 
   const onSubmit = async (data: ContactFormValues) => {
     setIsSubmitting(true);
@@ -73,7 +77,7 @@ const Contact = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-muted/20">
-      <Header />
+      {isLoggedIn ? <DashboardHeader /> : <Header />}
       <div className="container mx-auto px-4 sm:px-6 py-12 sm:py-16 lg:py-20">
         <div className="max-w-3xl mx-auto">
           <div className="text-center mb-12">

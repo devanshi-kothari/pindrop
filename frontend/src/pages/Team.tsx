@@ -1,4 +1,5 @@
 import Header from "@/components/Header";
+import DashboardHeader from "@/components/DashboardHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Users } from "lucide-react";
@@ -39,9 +40,12 @@ const teamMembers: TeamMember[] = [
 ];
 
 const Team = () => {
+  // Check if user is logged in
+  const isLoggedIn = !!localStorage.getItem("token");
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-background via-background to-muted/20">
-      <Header />
+      {isLoggedIn ? <DashboardHeader /> : <Header />}
       <div className="container mx-auto px-4 sm:px-6 py-12 sm:py-16 lg:py-20">
         <div className="max-w-6xl mx-auto">
           <div className="text-center mb-16">

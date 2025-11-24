@@ -41,7 +41,7 @@ const DashboardHeader = () => {
           </div>
           <Button
             onClick={handleLogout}
-            className="bg-navy hover:bg-navy/90 text-white"
+            className="bg-primary text-primary-foreground hover:bg-primary/90 px-6 shadow-sm"
           >
             Logout
           </Button>
