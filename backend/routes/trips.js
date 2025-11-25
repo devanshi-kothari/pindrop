@@ -59,26 +59,92 @@ function normalizeDestinationName(raw) {
     .join(' ');
 }
 
-async function generateRefinedSearchQuery(destination, preferences, userProfile) {
+async function generateRefinedSearchQuery(trip, preferences, userProfile, activityPreferences) {
   try {
-    const prompt = `You are a travel search expert. Generate a highly specific Google search query to find relevant activities for a trip.
+    // Build context about previously liked/disliked activities
+    let activityPatterns = '';
+    if (activityPreferences && activityPreferences.length > 0) {
+      const likedActivities = activityPreferences.filter(ap => ap.preference === 'liked').map(ap => ap.activity?.name || ap.activity?.category).filter(Boolean);
+      const dislikedActivities = activityPreferences.filter(ap => ap.preference === 'disliked').map(ap => ap.activity?.name || ap.activity?.category).filter(Boolean);
+      
+      if (likedActivities.length > 0) {
+        activityPatterns += `Previously liked activities: ${likedActivities.slice(0, 5).join(', ')}. `;
+      }
+      if (dislikedActivities.length > 0) {
+        activityPatterns += `Previously disliked activities: ${dislikedActivities.slice(0, 5).join(', ')}. `;
+      }
+    }
 
-Destination: ${destination}
-Activity interests: ${Array.isArray(preferences?.activity_categories) ? preferences.activity_categories.join(', ') : 'none specified'}
-Things to avoid: ${Array.isArray(preferences?.avoid_activity_categories) ? preferences.avoid_activity_categories.join(', ') : 'none'}
-Group type: ${preferences?.group_type || 'not specified'}
-Travel style: ${userProfile?.travel_style || 'not specified'}
-Liked tags: ${Array.isArray(userProfile?.liked_tags) ? userProfile.liked_tags.join(', ') : 'none'}
-Custom requests: ${preferences?.custom_requests || 'none'}
+    // Determine season/context from dates
+    let seasonalContext = '';
+    if (preferences?.start_date) {
+      const date = new Date(preferences.start_date);
+      const month = date.getMonth() + 1; // 1-12
+      if (month >= 12 || month <= 2) seasonalContext = 'winter';
+      else if (month >= 3 && month <= 5) seasonalContext = 'spring';
+      else if (month >= 6 && month <= 8) seasonalContext = 'summer';
+      else seasonalContext = 'fall';
+    }
 
-Generate a concise, specific Google search query (max 10 words) that will find highly relevant activities matching these preferences. Focus on the destination and key interests. Return ONLY the search query, nothing else.`;
+    // Build budget context
+    let budgetContext = '';
+    if (preferences?.min_budget || preferences?.max_budget) {
+      if (preferences.min_budget && preferences.max_budget) {
+        budgetContext = `Budget: $${preferences.min_budget}-$${preferences.max_budget}`;
+      } else if (preferences.min_budget) {
+        budgetContext = `Minimum budget: $${preferences.min_budget}`;
+      } else if (preferences.max_budget) {
+        budgetContext = `Maximum budget: $${preferences.max_budget}`;
+      }
+    } else if (userProfile?.budget_preference) {
+      budgetContext = `General budget preference: $${userProfile.budget_preference}`;
+    }
+
+    const prompt = `You are a travel search expert. Generate a highly specific Google search query to find relevant activities for a trip that are personalized to the user's preferences and context.
+
+TRIP CONTEXT:
+- Trip title: ${trip?.title || 'not specified'}
+- Destination: ${trip?.destination || 'not specified'}
+- Number of days: ${preferences?.num_days || 'not specified'}
+- Travel dates: ${preferences?.start_date ? `${preferences.start_date} to ${preferences.end_date || 'TBD'}` : 'not specified'}
+- Season: ${seasonalContext || 'not specified'}
+
+USER PROFILE:
+- Home location: ${userProfile?.home_location || 'not specified'}
+- Travel style: ${userProfile?.travel_style || 'not specified'}
+- General budget preference: ${userProfile?.budget_preference ? `$${userProfile.budget_preference}` : 'not specified'}
+- Liked tags/interests: ${Array.isArray(userProfile?.liked_tags) && userProfile.liked_tags.length > 0 ? userProfile.liked_tags.join(', ') : 'none'}
+
+TRIP PREFERENCES:
+- Activity interests: ${Array.isArray(preferences?.activity_categories) && preferences.activity_categories.length > 0 ? preferences.activity_categories.join(', ') : 'none specified'}
+- Things to avoid: ${Array.isArray(preferences?.avoid_activity_categories) && preferences.avoid_activity_categories.length > 0 ? preferences.avoid_activity_categories.join(', ') : 'none'}
+- Group type: ${preferences?.group_type || 'not specified'}
+- Pace: ${preferences?.pace || 'not specified'} (slow/balanced/packed)
+- Accommodation type: ${preferences?.accommodation_type || 'not specified'}
+- Budget constraints: ${budgetContext || 'not specified'}
+- Safety notes: ${preferences?.safety_notes || 'none'}
+- Accessibility notes: ${preferences?.accessibility_notes || 'none'}
+- Custom requests: ${preferences?.custom_requests || 'none'}
+
+ACTIVITY HISTORY:
+${activityPatterns || 'No previous activity preferences available.'}
+
+INSTRUCTIONS:
+Generate a concise Google search query (max 12 words) that will find activities matching these preferences. The query should:
+1. Include the destination name to ensure location-specific results
+2. Include key activity interests if specified
+3. Consider the group type and travel style if relevant
+4. Optionally mention seasonal context if dates are provided (e.g., "winter activities", "summer events")
+5. Keep it balanced - not too specific that it returns no results, but specific enough to be relevant
+
+The query should be natural and search-friendly. Return ONLY the search query text, nothing else. Do not include quotes or explanations.`;
 
     const completion = await groqClient.chat.completions.create({
       model: DEFAULT_MODEL,
       messages: [
         {
           role: 'system',
-          content: 'You are a search query optimization expert. Generate precise Google search queries.',
+          content: 'You are a search query optimization expert specializing in personalized travel activity discovery. Generate precise, context-aware Google search queries that incorporate all user preferences, trip details, and constraints.',
         },
         {
           role: 'user',
@@ -86,11 +152,34 @@ Generate a concise, specific Google search query (max 10 words) that will find h
         },
       ],
       temperature: 0.3,
-      max_tokens: 50,
+      max_tokens: 60,
     });
 
-    const refinedQuery = completion.choices[0]?.message?.content?.trim() || '';
-    return refinedQuery.replace(/^["']|["']$/g, ''); // Remove quotes if present
+    let refinedQuery = completion.choices[0]?.message?.content?.trim() || '';
+    refinedQuery = refinedQuery.replace(/^["']|["']$/g, ''); // Remove quotes if present
+    
+    // If query is empty or too short, create a basic fallback
+    if (!refinedQuery || refinedQuery.length < 5) {
+      if (trip?.destination) {
+        const activityInterests = Array.isArray(preferences?.activity_categories) && preferences.activity_categories.length > 0
+          ? preferences.activity_categories.slice(0, 2).join(' ')
+          : 'activities';
+        refinedQuery = `${activityInterests} ${trip.destination}`;
+      } else {
+        refinedQuery = 'travel activities';
+      }
+    } else if (trip?.destination) {
+      // Optionally ensure destination is in the query, but don't force it if the query already makes sense
+      const destinationLower = trip.destination.toLowerCase();
+      const queryLower = refinedQuery.toLowerCase();
+      // Only add destination if it's clearly missing and the query seems generic
+      const seemsGeneric = queryLower.length < 20 || !/[A-Z][a-z]+/.test(refinedQuery);
+      if (seemsGeneric && !queryLower.includes(destinationLower)) {
+        refinedQuery = `${refinedQuery} ${trip.destination}`;
+      }
+    }
+    
+    return refinedQuery;
   } catch (error) {
     console.error('Error generating refined search query:', error);
     return null;
@@ -126,6 +215,171 @@ async function fetchActivitySearchResults(query, num = 10) {
   }
 
   return data.items;
+}
+
+async function extractActivityNameFromSearchResult(item, destination, preferences, userProfile) {
+  const title = item.title || '';
+  const snippet = item.snippet || '';
+  
+  // Quick check: if title is already reasonable and not a pure list, use it directly
+  const pureListPattern = /^(top|best|\d+)\s+(things to do|activities|places|attractions|must-see|guide|list)\s*$/i;
+  if (title && !pureListPattern.test(title) && title.length > 3 && title.length < 100) {
+    // Check if it's not a URL
+    if (!/(\.com|\.org|\.net|www\.|http|https)/i.test(title)) {
+      // Use title directly - be very permissive
+      return title.trim();
+    }
+  }
+  
+  // Determine season/context from dates
+  let seasonalContext = '';
+  let dateContext = '';
+  if (preferences?.start_date) {
+    const date = new Date(preferences.start_date);
+    const month = date.getMonth() + 1; // 1-12
+    const monthName = date.toLocaleString('default', { month: 'long' });
+    if (month >= 12 || month <= 2) seasonalContext = 'winter';
+    else if (month >= 3 && month <= 5) seasonalContext = 'spring';
+    else if (month >= 6 && month <= 8) seasonalContext = 'summer';
+    else seasonalContext = 'fall';
+    dateContext = `${monthName} ${date.getFullYear()}`;
+  }
+
+  // Try LLM extraction, but be very lenient with fallbacks
+  try {
+    const prompt = `You are a travel activity extraction expert. Given a search result from Google, extract the SPECIFIC ACTIVITY NAME that is located at or near the destination, not the article title.
+
+SEARCH RESULT:
+Title: ${title}
+Snippet: ${snippet}
+Destination: ${destination || 'not specified'}
+Travel Dates: ${dateContext || 'not specified'}
+Season: ${seasonalContext || 'not specified'}
+
+USER CONTEXT:
+- Activity interests: ${Array.isArray(preferences?.activity_categories) && preferences.activity_categories.length > 0 ? preferences.activity_categories.join(', ') : 'not specified'}
+- Group type: ${preferences?.group_type || 'not specified'}
+- Travel style: ${userProfile?.travel_style || 'not specified'}
+- Liked tags: ${Array.isArray(userProfile?.liked_tags) && userProfile.liked_tags.length > 0 ? userProfile.liked_tags.join(', ') : 'none'}
+
+INSTRUCTIONS:
+1. Extract ANY activity name from the search result that could be at "${destination}"
+2. If it's a list article, extract the FIRST activity mentioned in the snippet or title
+3. If the title looks like an activity name, use it (even if it's not perfect)
+4. Be very lenient - it's better to extract something than return "SKIP"
+5. Keep it 2-10 words
+6. Only return "SKIP" if the search result is completely unrelated to activities or travel
+
+Examples of good extractions:
+- "10 Best Things to Do in Paris" → "Eiffel Tower" or "Visit the Eiffel Tower"
+- "Paris Museums Guide" → "Louvre Museum" or "Explore Paris Museums"
+- "Things to Do in Paris" → "Paris Activities" or extract first activity from snippet
+
+Return ONLY the activity name or "SKIP", nothing else. No quotes, no explanations.`;
+
+    const completion = await groqClient.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are an expert at extracting specific travel activity names from search results. Extract the actual activity name from the search result, even if it comes from a list article. Focus on finding real activities at the destination. Only return "SKIP" if absolutely no activity can be found.',
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+      temperature: 0.5,
+      max_tokens: 50,
+    });
+
+    const extractedName = completion.choices[0]?.message?.content?.trim() || '';
+    const cleaned = extractedName.replace(/^["']|["']$/g, '').trim();
+    
+    // If LLM says to skip or returns empty, try aggressive fallback extraction
+    if (cleaned === 'SKIP' || !cleaned || cleaned.length < 3) {
+      // Try to extract from snippet using multiple patterns (from most specific to most general)
+      const activityPatterns = [
+        // Pattern 1: Action verb + "the" + capitalized place name
+        /(?:visit|explore|see|tour|experience|check out|go to|walk|hike|climb|swim|sail|ride|enjoy|discover)\s+(?:the\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/i,
+        // Pattern 2: "the" + capitalized name
+        /(?:the|a|an)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/,
+        // Pattern 3: Any capitalized phrase (2-5 words) - most lenient fallback
+        /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})\b/,
+      ];
+      
+      // Try snippet first, then title
+      const textsToSearch = [snippet, title];
+      for (const text of textsToSearch) {
+        if (!text) continue;
+        for (const pattern of activityPatterns) {
+          const match = text.match(pattern);
+          if (match && match[1]) {
+            const extracted = match[1].trim();
+            // Verify it's a reasonable length
+            if (extracted.length > 2 && extracted.length < 80) {
+              return extracted;
+            }
+          }
+        }
+      }
+      
+      // Aggressive fallback: clean the title and use it
+      if (title && title.length > 3 && title.length < 100) {
+        // Remove list indicators and common prefixes
+        let cleanedTitle = title
+          .replace(/^(top|best|\d+|the|a|an)\s+/i, '')
+          .replace(/\s+(in|at|near|around|guide|list|article|blog|website|click|read|more|here|now)\s*$/i, '')
+          .trim();
+        
+        // If we have something reasonable, use it
+        if (cleanedTitle.length > 3 && cleanedTitle.length < 80) {
+          return cleanedTitle;
+        }
+        // Even if cleaning didn't help much, use the original title if it's not obviously bad
+        if (!pureListPattern.test(title) && !/(\.com|\.org|\.net|www\.|http|https)/i.test(title)) {
+          return title.trim();
+        }
+      }
+      
+      // Last resort: use destination + generic activity
+      if (destination) {
+        return `Activities in ${destination}`;
+      }
+      
+      // Final fallback: just use a cleaned version of the title
+      return title.trim() || 'Activity';
+    }
+    
+    // Very lenient validation - only filter out the most obvious non-activities
+    // Allow most things through
+    const urlPattern = /(\.com|\.org|\.net|www\.|http|https)/i;
+    if (urlPattern.test(cleaned)) {
+      // If it's a URL, try to extract something from the title instead
+      if (title && title.length > 3) {
+        const cleanedTitle = title.replace(/^(top|best|\d+)\s+/i, '').trim();
+        if (cleanedTitle.length > 3) {
+          return cleanedTitle;
+        }
+      }
+      return null; // Skip URLs only if we can't extract anything
+    }
+    
+    // Only filter out if it's clearly just "Top X Things to Do" with nothing else
+    const pureListPattern = /^(top|best|\d+)\s+(things to do|activities|places|attractions|must-see|guide|list)\s*$/i;
+    if (pureListPattern.test(cleaned)) {
+      // Try to extract from snippet or use a generic name
+      if (destination) {
+        return `Activities in ${destination}`;
+      }
+      return null; // Skip pure list titles only as last resort
+    }
+    
+    return cleaned;
+  } catch (error) {
+    console.error('Error extracting activity name from search result:', error);
+    return null;
+  }
 }
 
 async function extractActivityDetails(name, snippet, link) {
@@ -191,15 +445,25 @@ async function fetchActivityImage(activityName, destination) {
   }
 
   try {
-    const imageQuery = `${activityName} ${destination} photo`;
+    // Create a more specific image query that combines activity name and destination
+    // Remove common verbs to make the query more image-search friendly
+    const cleanActivityName = activityName
+      .replace(/^(visit|explore|see|tour|experience|go to|check out)\s+/i, '')
+      .trim();
+    
+    const imageQuery = destination 
+      ? `${cleanActivityName} ${destination}`
+      : cleanActivityName;
+    
     const params = new URLSearchParams({
       key: GOOGLE_CUSTOM_SEARCH_API_KEY,
       cx: GOOGLE_CUSTOM_SEARCH_CX,
       q: imageQuery,
-      num: '1',
+      num: '3', // Get a few results to find the best one
       safe: 'active',
       searchType: 'image',
       imgSize: 'large',
+      imgType: 'photo', // Prefer photos over illustrations
     });
 
     const url = `https://customsearch.googleapis.com/customsearch/v1?${params.toString()}`;
@@ -208,6 +472,7 @@ async function fetchActivityImage(activityName, destination) {
     if (response.ok) {
       const data = await response.json();
       if (Array.isArray(data.items) && data.items.length > 0) {
+        // Return the first result (Google usually ranks best images first)
         return data.items[0].link || null;
       }
     }
@@ -218,12 +483,41 @@ async function fetchActivityImage(activityName, destination) {
   return null;
 }
 
-async function upsertReusableActivityFromSearchItem(item, destination) {
-  const name = item.title || 'Activity';
+async function upsertReusableActivityFromSearchItem(item, destination, preferences = null, userProfile = null) {
   const location = destination || null;
   const snippet = item.snippet || '';
   const link = item.link || '';
-  const imageUrl = item.pagemap?.cse_image?.[0]?.src || item.pagemap?.metatags?.[0]?.['og:image'] || null;
+
+  // Extract the actual activity name from the search result (not just the article title)
+  const name = await extractActivityNameFromSearchResult(item, destination, preferences, userProfile);
+  
+  // Skip if we couldn't extract a valid activity name
+  if (!name || name === 'SKIP') {
+    return null;
+  }
+
+  // Very lenient validation - only filter out the most obvious non-activities
+  // Filter out website URLs
+  const urlPattern = /(\.com|\.org|\.net|www\.|http|https)/i;
+  if (urlPattern.test(name)) {
+    // If name contains URL, try to clean it or use destination
+    if (destination) {
+      return `Activities in ${destination}`;
+    }
+    return null;
+  }
+  
+  // Only filter out if it's clearly just "Top X Things to Do" with nothing else
+  const pureListPattern = /^(top|best|\d+)\s+(things to do|activities|places|attractions|must-see|guide|list)\s*$/i;
+  if (pureListPattern.test(name)) {
+    // Even for pure list titles, try to create something useful
+    if (destination) {
+      return `Activities in ${destination}`;
+    }
+    return null; // Skip pure list titles only as last resort
+  }
+  
+  // Allow everything else through - be very permissive
 
   // Extract additional details
   const { priceRange, costEstimate, duration } = await extractActivityDetails(name, snippet, link);
@@ -249,10 +543,13 @@ async function upsertReusableActivityFromSearchItem(item, destination) {
     tags.push('web');
   }
 
-  // Fetch image if not already present
-  let finalImageUrl = imageUrl;
+  // Always fetch a new image based on the extracted activity name (not the search result)
+  // This ensures we get a good image for the actual activity
+  let finalImageUrl = await fetchActivityImage(name, destination);
+  
+  // Fallback to search result image only if we couldn't get one from activity name
   if (!finalImageUrl) {
-    finalImageUrl = await fetchActivityImage(name, destination);
+    finalImageUrl = item.pagemap?.cse_image?.[0]?.src || item.pagemap?.metatags?.[0]?.['og:image'] || null;
   }
 
   // Try to find an existing reusable activity with the same name/location/source
@@ -837,7 +1134,7 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
     // Load user profile & trip preferences to enrich the search query
     const { data: userProfile } = await supabase
       .from('app_user')
-      .select('budget_preference, travel_style, liked_tags')
+      .select('home_location, budget_preference, travel_style, liked_tags')
       .eq('user_id', userId)
       .maybeSingle();
 
@@ -847,10 +1144,25 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       .eq('trip_id', tripId)
       .maybeSingle();
 
+    // Load previously liked/disliked activities for this trip to understand patterns
+    const { data: activityPreferences } = await supabase
+      .from('trip_activity_preference')
+      .select(`
+        preference,
+        activity:activity (
+          activity_id,
+          name,
+          category,
+          tags
+        )
+      `)
+      .eq('trip_id', tripId)
+      .in('preference', ['liked', 'disliked']);
+
     // Use LLM to generate a refined, highly relevant search query
     let query = null;
     try {
-      query = await generateRefinedSearchQuery(trip.destination, tripPreferences, userProfile);
+      query = await generateRefinedSearchQuery(trip, tripPreferences, userProfile, activityPreferences || []);
     } catch (error) {
       console.error('Error generating refined search query:', error);
     }
@@ -872,12 +1184,22 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       const destinationQuery =
         rawDestination && rawDestination.includes(' ') ? `"${rawDestination}"` : rawDestination;
 
-      const queryBase = `things to do in ${destinationQuery}`;
-      query = interestPhrases.length > 0 ? `${queryBase} ${interestPhrases}` : `${queryBase} best activities`;
+      // Build a more contextual fallback query
+      let queryParts = [`things to do in ${destinationQuery}`];
+      
+      if (interestPhrases) {
+        queryParts.push(interestPhrases);
+      }
+      
+      if (tripPreferences?.group_type) {
+        queryParts.push(`for ${tripPreferences.group_type}`);
+      }
+      
+      query = queryParts.join(' ');
     }
 
-    // Fetch more results to have better selection
-    const items = await fetchActivitySearchResults(query, 10);
+    // Fetch more results to have better selection (fetch more since we'll filter out invalid ones)
+    const items = await fetchActivitySearchResults(query, 15);
 
     if (!items.length) {
       return res.status(200).json({
@@ -891,9 +1213,19 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
     const suggestions = [];
     const processedActivityIds = new Set();
 
+    console.log(`Processing ${items.length} search results for destination: ${trip.destination}`);
+    
     for (const item of items) {
       try {
-        const activity = await upsertReusableActivityFromSearchItem(item, trip.destination);
+        const activity = await upsertReusableActivityFromSearchItem(item, trip.destination, tripPreferences, userProfile);
+        
+        // Skip if activity extraction failed or returned null
+        if (!activity) {
+          console.log(`Skipped activity from: ${item.title?.substring(0, 50)}`);
+          continue;
+        }
+        
+        console.log(`Successfully extracted activity: ${activity.name}`);
         
         // Skip duplicates
         if (processedActivityIds.has(activity.activity_id)) {
