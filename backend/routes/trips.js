@@ -518,10 +518,12 @@ async function upsertReusableActivityFromSearchItem(item, destination, preferenc
         .single();
       
       if (!updateError && updated) {
-        return updated;
+        // Attach the runtime image URL (from the article or Google Images) for the client,
+        // without relying on a DB column.
+        return { ...updated, image_url: finalImageUrl || null };
       }
     }
-    return existing;
+    return { ...existing, image_url: finalImageUrl || null };
   }
 
   const { data, error } = await supabase
@@ -547,7 +549,9 @@ async function upsertReusableActivityFromSearchItem(item, destination, preferenc
     throw error;
   }
 
-  return data;
+  // Attach the runtime image URL (from the article or Google Images) for the client,
+  // without relying on a DB column.
+  return { ...data, image_url: finalImageUrl || null };
 }
 
 // Get all trips for user, optionally filtered by status
