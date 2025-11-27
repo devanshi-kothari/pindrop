@@ -10,6 +10,7 @@ import chatRoutes from './routes/chat.js';
 import tripRoutes from './routes/trips.js';
 import imageRoutes from './routes/images.js';
 import flightRoutes from './routes/flights.js';
+import hotelRoutes from './routes/hotels.js';
 
 // Load environment variables
 dotenv.config();
@@ -109,6 +110,9 @@ app.use('/api/images', imageRoutes);
 
 // Flight routes
 app.use('/api/flights', flightRoutes);
+
+// Hotel routes
+app.use('/api/hotels', hotelRoutes);
 
 // Test endpoint to verify Supabase data
 app.get('/api/users/test', async (req, res) => {

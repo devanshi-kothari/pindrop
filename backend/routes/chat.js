@@ -634,6 +634,54 @@ When you recommend activities, also explain briefly why they fit these preferenc
   }
 });
 
+// Silent airport code lookup - doesn't save to chat history
+router.post('/airport-code', authenticateToken, async (req, res) => {
+  try {
+    const { location } = req.body;
+    const userId = req.user.userId;
+
+    if (!location) {
+      return res.status(400).json({
+        success: false,
+        message: 'Location is required'
+      });
+    }
+
+    const prompt = `I need the uppercase 3-letter IATA airport code for the airport closest to "${location}". 
+Please respond with ONLY the 3-letter airport code in uppercase (e.g., "JFK", "LAX", "CDG"). 
+If you cannot determine the airport code, respond with "UNKNOWN".`;
+
+    const completion = await groqClient.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages: [
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+      temperature: 0.3,
+      max_tokens: 10,
+    });
+
+    const response = completion.choices[0]?.message?.content || '';
+    const codeMatch = response.match(/\b([A-Z]{3})\b/);
+    const airportCode = codeMatch && codeMatch[1] !== "UNKNOWN" ? codeMatch[1] : null;
+
+    res.status(200).json({
+      success: true,
+      airport_code: airportCode,
+      message: airportCode || "Could not determine airport code"
+    });
+  } catch (error) {
+    console.error('Error getting airport code:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get airport code',
+      error: error.message
+    });
+  }
+});
+
 // Export helpers so other routes (ex. trip itinerary generation, trip creation)
 // can persist chat messages and reuse extraction logic in a consistent way.
 export { saveMessage, loadConversationHistory, extractTripInfo, fetchDestinationImage };

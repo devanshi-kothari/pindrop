@@ -115,6 +115,11 @@ const ChatWindow = ({
   const [selectedReturnIndex, setSelectedReturnIndex] = useState<number | null>(null);
   const [expandedLayovers, setExpandedLayovers] = useState<Record<number, boolean>>({});
   const [hasConfirmedFlights, setHasConfirmedFlights] = useState(false);
+  const [hasStartedHotels, setHasStartedHotels] = useState(false);
+  const [hotels, setHotels] = useState<any[]>([]);
+  const [isFetchingHotels, setIsFetchingHotels] = useState(false);
+  const [selectedHotelIndex, setSelectedHotelIndex] = useState<number | null>(null);
+  const [hasConfirmedHotels, setHasConfirmedHotels] = useState(false);
   const [destinationCarouselIndices, setDestinationCarouselIndices] = useState<Record<number, number>>(
     {}
   );
@@ -829,38 +834,96 @@ const ChatWindow = ({
     }
   };
 
-  // Query LLM to get airport code for a location
-  const getAirportCode = async (location: string, isDeparture: boolean): Promise<string | null> => {
-    if (!tripId) return null;
+  // Fetch hotels from SerpAPI
+  const fetchHotels = async () => {
+    if (!tripId || !tripPreferences?.start_date || !tripPreferences?.end_date) {
+      return;
+    }
 
+    // Get hotel location from day 1 of itinerary
+    const hotelLocation = getArrivalLocation();
+    if (!hotelLocation) {
+      const errorMessage: Message = {
+        role: "assistant",
+        content: "Could not determine hotel location from your trip sketch. Please ensure your trip has location information.",
+        timestamp: formatTime(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+      return;
+    }
+
+    try {
+      setIsFetchingHotels(true);
+      const token = getAuthToken();
+      if (!token) return;
+
+      const params = new URLSearchParams({
+        location: hotelLocation,
+        check_in_date: tripPreferences.start_date,
+        check_out_date: tripPreferences.end_date,
+      });
+
+      console.log("Fetching hotels with params:", {
+        location: hotelLocation,
+        check_in_date: tripPreferences.start_date,
+        check_out_date: tripPreferences.end_date,
+      });
+
+      const response = await fetch(getApiUrl(`api/hotels/search?${params.toString()}`), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      const result = await response.json();
+      console.log("Hotels API result:", result);
+
+      if (response.ok && result.success && Array.isArray(result.properties)) {
+        setHotels(result.properties);
+      } else {
+        const errorMessage: Message = {
+          role: "assistant",
+          content: result.message || "Failed to fetch hotel options. Please try again.",
+          timestamp: formatTime(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+      }
+    } catch (error) {
+      console.error("Error fetching hotels:", error);
+      const errorMessage: Message = {
+        role: "assistant",
+        content: "I encountered an error while fetching hotels. Please try again.",
+        timestamp: formatTime(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setIsFetchingHotels(false);
+    }
+  };
+
+  // Query LLM to get airport code for a location (silent - doesn't save to chat history)
+  const getAirportCode = async (location: string, isDeparture: boolean): Promise<string | null> => {
     try {
       const token = getAuthToken();
       if (!token) return null;
 
-      const prompt = `I need the uppercase 3-letter IATA airport code for the airport closest to "${location}". 
-Please respond with ONLY the 3-letter airport code in uppercase (e.g., "JFK", "LAX", "CDG"). 
-If you cannot determine the airport code, respond with "UNKNOWN".`;
-
-      const response = await fetch(getApiUrl("api/chat/chat"), {
+      const response = await fetch(getApiUrl("api/chat/airport-code"), {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          message: prompt,
-          tripId,
+          location: location,
         }),
       });
 
       const result = await response.json();
 
-      if (response.ok && result.success && result.message) {
-        // Extract the airport code from the response
-        const codeMatch = result.message.match(/\b([A-Z]{3})\b/);
-        if (codeMatch && codeMatch[1] !== "UNKNOWN") {
-          return codeMatch[1];
-        }
+      if (response.ok && result.success && result.airport_code) {
+        return result.airport_code;
       }
       
       return null;
@@ -1906,7 +1969,7 @@ If you cannot determine the airport code, respond with "UNKNOWN".`;
             <div className="flex justify-start">
               <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm space-y-3">
                 <p className="text-xs font-semibold text-slate-300">
-                  Phase 4: Plan your flights
+                  Phase 4 Part 1: Plan your flights
                 </p>
                 
                 {/* Departure Location */}
@@ -2290,9 +2353,12 @@ If you cannot determine the airport code, respond with "UNKNOWN".`;
                         <Button
                           size="sm"
                           className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                          onClick={() => setHasConfirmedFlights(true)}
+                          onClick={() => {
+                            setHasConfirmedFlights(true);
+                            setHasStartedHotels(true);
+                          }}
                         >
-                          I&apos;m done planning flights
+                          I&apos;m done planning flights. Now let&apos;s move on to hotels
                         </Button>
                       </div>
                     )}
@@ -2301,7 +2367,147 @@ If you cannot determine the airport code, respond with "UNKNOWN".`;
               </div>
             </div>
           )}
-          {hasConfirmedFlights && (
+          {hasStartedHotels && (
+            <div className="flex justify-start">
+              <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm space-y-3">
+                <p className="text-xs font-semibold text-slate-300">
+                  Phase 4 Part 2: Book your hotels
+                </p>
+
+                {/* Hotel Location and Dates Info */}
+                {(() => {
+                  const hotelLocation = getArrivalLocation();
+                  return (
+                    <div className="space-y-2">
+                      <div className="text-[11px] text-slate-400 space-y-1">
+                        <p>Location: <span className="text-slate-200">{hotelLocation || "Extracting from trip..."}</span></p>
+                        {tripPreferences?.start_date && tripPreferences?.end_date && (
+                          <>
+                            <p>Check-in: <span className="text-slate-200">{tripPreferences.start_date}</span></p>
+                            <p>Check-out: <span className="text-slate-200">{tripPreferences.end_date}</span></p>
+                          </>
+                        )}
+                      </div>
+                      <Button
+                        size="sm"
+                        className="w-full h-8 bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-xs font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400 disabled:opacity-60"
+                        disabled={isFetchingHotels || !hotelLocation}
+                        onClick={fetchHotels}
+                      >
+                        {isFetchingHotels ? "Searching for hotels..." : "Search for hotels"}
+                      </Button>
+                    </div>
+                  );
+                })()}
+
+                {/* Loading Indicator */}
+                {isFetchingHotels && (
+                  <div className="space-y-2 pt-2 border-t border-slate-700">
+                    <p className="text-xs text-slate-400">Searching for hotels...</p>
+                  </div>
+                )}
+
+                {/* Hotel Results */}
+                {hotels.length > 0 && (
+                  <div className="space-y-3 pt-2 border-t border-slate-700">
+                    <p className="text-xs font-semibold text-slate-300">Available hotels</p>
+                    <div className="space-y-3">
+                      {hotels.map((hotel, index) => {
+                        const isSelected = selectedHotelIndex === index;
+                        const hotelImage = hotel.images && hotel.images.length > 0 
+                          ? hotel.images[0].original_image || hotel.images[0].thumbnail 
+                          : null;
+                        const price = hotel.total_rate?.lowest || hotel.rate_per_night?.lowest || "Price not available";
+                        const rating = hotel.overall_rating ? `${hotel.overall_rating.toFixed(1)} ⭐` : null;
+                        const reviews = hotel.reviews ? `${hotel.reviews.toLocaleString()} reviews` : null;
+
+                        return (
+                          <div
+                            key={index}
+                            className={`border rounded-lg p-3 cursor-pointer transition-colors ${
+                              isSelected
+                                ? "border-blue-500 bg-blue-500/10"
+                                : "border-slate-700 bg-slate-950/60 hover:border-slate-600"
+                            }`}
+                            onClick={() => setSelectedHotelIndex(index)}
+                          >
+                            <div className="flex gap-3">
+                              {/* Hotel Image */}
+                              {hotelImage && (
+                                <div className="flex-shrink-0">
+                                  <img
+                                    src={hotelImage}
+                                    alt={hotel.name}
+                                    className="w-24 h-24 object-cover rounded-md"
+                                    onError={(e) => {
+                                      (e.target as HTMLImageElement).style.display = 'none';
+                                    }}
+                                  />
+                                </div>
+                              )}
+                              
+                              {/* Hotel Info */}
+                              <div className="flex-1 space-y-2">
+                                <div>
+                                  <p className="text-sm font-semibold text-slate-200">{hotel.name}</p>
+                                  {hotel.hotel_class && (
+                                    <p className="text-[11px] text-slate-400">{hotel.hotel_class}</p>
+                                  )}
+                                </div>
+                                
+                                {hotel.description && (
+                                  <p className="text-[11px] text-slate-400 line-clamp-2">{hotel.description}</p>
+                                )}
+
+                                <div className="flex items-center gap-3 text-[11px] text-slate-400">
+                                  {rating && <span>{rating}</span>}
+                                  {reviews && <span>{reviews}</span>}
+                                </div>
+
+                                {hotel.amenities && hotel.amenities.length > 0 && (
+                                  <div className="flex flex-wrap gap-1">
+                                    {hotel.amenities.slice(0, 3).map((amenity: string, amenityIdx: number) => (
+                                      <span key={amenityIdx} className="text-[10px] px-2 py-0.5 bg-slate-800 rounded text-slate-300">
+                                        {amenity}
+                                      </span>
+                                    ))}
+                                    {hotel.amenities.length > 3 && (
+                                      <span className="text-[10px] text-slate-500">+{hotel.amenities.length - 3} more</span>
+                                    )}
+                                  </div>
+                                )}
+
+                                <div className="flex items-center justify-between pt-2 border-t border-slate-700">
+                                  <p className="text-sm font-semibold text-emerald-400">{price}</p>
+                                  {isSelected && (
+                                    <span className="text-xs text-blue-400">✓ Selected</span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Done Button */}
+                    {selectedHotelIndex !== null && (
+                      <div className="pt-2 flex justify-end">
+                        <Button
+                          size="sm"
+                          className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                          onClick={() => setHasConfirmedHotels(true)}
+                        >
+                          I&apos;m done planning hotels
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {hasConfirmedHotels && (
             <div className="flex justify-start">
               <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm space-y-3">
                 <p className="text-xs font-semibold text-slate-300">
