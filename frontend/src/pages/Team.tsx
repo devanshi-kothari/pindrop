@@ -3,9 +3,9 @@ import DashboardHeader from "@/components/DashboardHeader";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Users } from "lucide-react";
-import mallikaImage from "/Users/mallikakulkarni/Desktop/pindrop-1/frontend/src/assets/mallika.png";
-import mahikaImage from "/Users/mallikakulkarni/Desktop/pindrop-1/frontend/src/assets/mahika.png";
-import nehaImage from "/Users/mallikakulkarni/Desktop/pindrop-1/frontend/src/assets/neha.png";
+import mallikaImage from "../assets/mallika.png";
+import mahikaImage from "../assets/mahika.png";
+import nehaImage from "../assets/neha.png";
 
 
 interface TeamMember {
