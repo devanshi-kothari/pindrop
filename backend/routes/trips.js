@@ -1768,21 +1768,6 @@ If dates or number of days are missing, infer a reasonable number of days (3-5) 
       days = Array.isArray(parsed.days) ? parsed.days : [];
     }
 
-    const completion = await groqClient.chat.completions.create({
-      model: DEFAULT_MODEL,
-      messages: [
-        {
-          role: 'system',
-          content: plannerPrompt,
-        },
-        {
-          role: 'user',
-          content: JSON.stringify(llmInput),
-        },
-      ],
-      temperature: 0.6,
-    });
-
     const createdItineraries = [];
 
     // Insert itineraries and activities
