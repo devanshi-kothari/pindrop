@@ -157,6 +157,24 @@ const ChatWindow = ({
   const formatTime = () =>
     new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+  // Format price for display (handles numbers, strings with currency symbols, etc.)
+  const formatPrice = (price: any): string => {
+    if (!price) return '';
+    if (typeof price === 'number') {
+      return price.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    }
+    if (typeof price === 'string') {
+      // Remove currency symbols and extract number
+      const numStr = price.replace(/[^0-9.]/g, '');
+      const num = parseFloat(numStr);
+      if (!isNaN(num)) {
+        return num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+      }
+      return price;
+    }
+    return String(price);
+  };
+
   // Helper to interpret YYYY-MM-DD strings as local dates (not UTC) so
   // that displayed itinerary days match the dates the user actually chose.
   const parseLocalDate = (value: string | null | undefined): Date | null => {
@@ -2464,7 +2482,14 @@ const ChatWindow = ({
                         const hotelImage = hotel.images && hotel.images.length > 0 
                           ? hotel.images[0].original_image || hotel.images[0].thumbnail 
                           : null;
-                        const price = hotel.total_rate?.lowest || hotel.rate_per_night?.lowest || "Price not available";
+                        
+                        // Extract rate per night - prioritize rate_per_night over total_rate
+                        // Use extracted_lowest (Float) first, then fall back to lowest (String with currency)
+                        const ratePerNight = 
+                          (hotel.rate_per_night?.extracted_lowest !== undefined && hotel.rate_per_night?.extracted_lowest !== null)
+                            ? hotel.rate_per_night.extracted_lowest
+                            : hotel.rate_per_night?.lowest || null;
+                        
                         const rating = hotel.overall_rating ? `${hotel.overall_rating.toFixed(1)} ⭐` : null;
                         const reviews = hotel.reviews ? `${hotel.reviews.toLocaleString()} reviews` : null;
 
@@ -2525,7 +2550,15 @@ const ChatWindow = ({
                                 )}
 
                                 <div className="flex items-center justify-between pt-2 border-t border-slate-700">
-                                  <p className="text-sm font-semibold text-emerald-400">{price}</p>
+                                  <div className="flex flex-col">
+                                    {ratePerNight ? (
+                                      <p className="text-sm font-semibold text-emerald-400">
+                                        ${formatPrice(ratePerNight)} / night
+                                      </p>
+                                    ) : (
+                                      <p className="text-sm font-semibold text-slate-500">Price not available</p>
+                                    )}
+                                  </div>
                                   {isSelected && (
                                     <span className="text-xs text-blue-400">✓ Selected</span>
                                   )}
