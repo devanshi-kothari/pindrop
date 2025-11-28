@@ -16,6 +16,7 @@ import {
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getApiUrl } from "@/lib/api";
+import ActivitySwipeCard from "./ActivitySwipeCard";
 
 interface Message {
   role: "user" | "assistant";
@@ -91,12 +92,17 @@ const ChatWindow = ({
       tags: string[] | null;
       source: string | null;
       preference: "pending" | "liked" | "disliked" | "maybe";
+      image_url?: string | null;
+      description?: string | null;
+      price_range?: string | null;
+      source_url?: string | null;
     }[]
   >([]);
   const [isGeneratingActivities, setIsGeneratingActivities] = useState(false);
   const [isUpdatingActivityPreference, setIsUpdatingActivityPreference] = useState<
     Record<number, boolean>
   >({});
+  const [currentActivityIndex, setCurrentActivityIndex] = useState(0);
   const [hasShownTripSketchPrompt, setHasShownTripSketchPrompt] = useState(false);
   const [hasConfirmedActivities, setHasConfirmedActivities] = useState(false);
   const [destinationCarouselIndices, setDestinationCarouselIndices] = useState<Record<number, number>>(
@@ -1442,89 +1448,86 @@ const ChatWindow = ({
           )}
           {tripId && activities.length > 0 && (
             <div className="flex justify-start">
-              <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm">
+              <div className="w-full max-w-md bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-6 shadow-sm">
                 <p className="text-xs font-semibold text-slate-300 mb-1">
                   Phase 2: Explore activities
                 </p>
-                <p className="text-[11px] text-slate-300 mb-2">
-                  Use Pass / Maybe / Like to tell me which activities feel right for this trip.
+                <p className="text-[11px] text-slate-300 mb-4">
+                  Swipe right to like, left to pass, or use the buttons below. Swipe up for maybe.
                 </p>
-                <div className="space-y-3">
-                  {activities.map((activity) => (
-                    <div
-                      key={activity.activity_id}
-                      className="border border-slate-700 rounded-md px-3 py-2 flex flex-col gap-1 bg-slate-950/60"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div>
-                          <p className="text-sm font-medium text-slate-50">
-                            {activity.name}
-                          </p>
-                          <p className="text-xs text-slate-400">
-                            {activity.location || "Location TBD"}
-                            {activity.category && ` • ${activity.category}`}
-                          </p>
-                        </div>
-                        <span className="text-[10px] uppercase text-slate-500">
-                          {activity.preference === "liked"
-                            ? "Liked"
-                            : activity.preference === "disliked"
-                            ? "Not for me"
-                            : activity.preference === "maybe"
-                            ? "Maybe"
-                            : "Pending"}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-end gap-2 mt-1">
-                        <Button
-                          variant="outline"
-                          className={`h-6 px-2 text-[11px] ${
-                            activity.preference === "disliked"
-                              ? "border-2 border-rose-400 bg-transparent text-rose-200"
-                              : "border border-rose-500 bg-rose-500/90 hover:bg-rose-400 text-white"
-                          }`}
-                          disabled={isUpdatingActivityPreference[activity.activity_id]}
-                          onClick={() => updateActivityPreference(activity.activity_id, "disliked")}
-                        >
-                          Pass
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className={`h-6 px-2 text-[11px] ${
-                            activity.preference === "maybe"
-                              ? "border-2 border-yellow-300 bg-transparent text-yellow-200"
-                              : "border border-yellow-400 bg-yellow-300/90 hover:bg-yellow-200 text-slate-900"
-                          }`}
-                          disabled={isUpdatingActivityPreference[activity.activity_id]}
-                          onClick={() => updateActivityPreference(activity.activity_id, "maybe")}
-                        >
-                          Maybe
-                        </Button>
-                        <Button
-                          size="sm"
-                          className={`h-6 px-2 text-[11px] ${
-                            activity.preference === "liked"
-                              ? "border-2 border-emerald-400 bg-transparent text-emerald-300"
-                              : "bg-emerald-500 hover:bg-emerald-400 text-slate-950"
-                          }`}
-                          disabled={isUpdatingActivityPreference[activity.activity_id]}
-                          onClick={() => updateActivityPreference(activity.activity_id, "liked")}
-                        >
-                          Like
-                        </Button>
+                
+                {/* Swipe Card Stack */}
+                <div className="relative h-[600px] w-full">
+                  {activities
+                    .filter((a) => a.preference === "pending")
+                    .slice(0, 3)
+                    .map((activity, idx) => {
+                      const actualIndex = activities
+                        .filter((a) => a.preference === "pending")
+                        .indexOf(activity);
+                      return (
+                        <ActivitySwipeCard
+                          key={activity.activity_id}
+                          activity={activity}
+                          index={idx}
+                          total={Math.min(3, activities.filter((a) => a.preference === "pending").length)}
+                          onSwipe={(direction) => {
+                            if (direction === "left") {
+                              updateActivityPreference(activity.activity_id, "disliked");
+                            } else if (direction === "right") {
+                              updateActivityPreference(activity.activity_id, "liked");
+                            } else if (direction === "up") {
+                              updateActivityPreference(activity.activity_id, "maybe");
+                            }
+                            // Auto-advance to next card after a short delay
+                            setTimeout(() => {
+                              setCurrentActivityIndex((prev) => prev + 1);
+                            }, 300);
+                          }}
+                          onLike={() => {
+                            updateActivityPreference(activity.activity_id, "liked");
+                            setTimeout(() => {
+                              setCurrentActivityIndex((prev) => prev + 1);
+                            }, 300);
+                          }}
+                          onPass={() => {
+                            updateActivityPreference(activity.activity_id, "disliked");
+                            setTimeout(() => {
+                              setCurrentActivityIndex((prev) => prev + 1);
+                            }, 300);
+                          }}
+                          onMaybe={() => {
+                            updateActivityPreference(activity.activity_id, "maybe");
+                            setTimeout(() => {
+                              setCurrentActivityIndex((prev) => prev + 1);
+                            }, 300);
+                          }}
+                          isUpdating={isUpdatingActivityPreference[activity.activity_id]}
+                        />
+                      );
+                    })}
+                  
+                  {/* Empty state when all activities are reviewed */}
+                  {activities.filter((a) => a.preference === "pending").length === 0 && (
+                    <div className="flex h-full items-center justify-center">
+                      <div className="text-center">
+                        <p className="text-sm font-semibold text-slate-300 mb-2">
+                          All activities reviewed! 🎉
+                        </p>
+                        <p className="text-xs text-slate-400">
+                          You've reacted to all {activities.length} activities.
+                        </p>
                       </div>
                     </div>
-                  ))}
+                  )}
                 </div>
-                <p className="mt-3 text-[11px] text-slate-300">
-                  Let me know which activities you like: tap <span className="font-semibold">Like</span> for favorites,
-                  <span className="font-semibold"> Maybe</span> if you&apos;re unsure, or <span className="font-semibold">Pass</span> to skip stuff that&apos;s not your vibe.
-                </p>
-                <div className="mt-2 flex items-center justify-between gap-2">
+
+                {/* Progress indicator */}
+                <div className="mt-4 flex items-center justify-between">
                   <p className="text-[11px] text-slate-400">
-                    {allActivitiesAnswered
-                      ? "You’ve reacted to all activities."
-                      : "Try to react to each activity so I know what you like."}
+                    {activities.filter((a) => a.preference === "pending").length === 0
+                      ? "All done!"
+                      : `${activities.filter((a) => a.preference === "pending").length} remaining`}
                   </p>
                   <Button
                     size="sm"
