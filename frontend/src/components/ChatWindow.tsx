@@ -111,6 +111,7 @@ const ChatWindow = ({
   const [isFetchingFlights, setIsFetchingFlights] = useState(false);
   const [selectedOutboundIndex, setSelectedOutboundIndex] = useState<number | null>(null);
   const [returnFlights, setReturnFlights] = useState<any[]>([]);
+  const [returnFlightsCache, setReturnFlightsCache] = useState<Record<string, any[]>>({}); // Cache return flights by departure_token
   const [isFetchingReturnFlights, setIsFetchingReturnFlights] = useState(false);
   const [selectedReturnIndex, setSelectedReturnIndex] = useState<number | null>(null);
   const [expandedLayovers, setExpandedLayovers] = useState<Record<number, boolean>>({});
@@ -772,6 +773,13 @@ const ChatWindow = ({
       return;
     }
 
+    // Check if we already have return flights cached for this departure_token
+    if (returnFlightsCache[departureToken]) {
+      console.log("Using cached return flights for departure_token:", departureToken);
+      setReturnFlights(returnFlightsCache[departureToken]);
+      return;
+    }
+
     try {
       setIsFetchingReturnFlights(true);
       const token = getAuthToken();
@@ -801,10 +809,20 @@ const ChatWindow = ({
       console.log("Return flights API result:", result);
 
       if (response.ok && result.success) {
+        let flightsToSet: any[] = [];
         if (Array.isArray(result.best_flights) && result.best_flights.length > 0) {
-          setReturnFlights(result.best_flights);
+          flightsToSet = result.best_flights;
         } else if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
-          setReturnFlights(result.other_flights);
+          flightsToSet = result.other_flights;
+        }
+        
+        if (flightsToSet.length > 0) {
+          // Cache the return flights by departure_token
+          setReturnFlightsCache(prev => ({
+            ...prev,
+            [departureToken]: flightsToSet
+          }));
+          setReturnFlights(flightsToSet);
         } else {
           const errorMessage: Message = {
             role: "assistant",
@@ -2111,7 +2129,7 @@ const ChatWindow = ({
                 )}
 
                 {/* Flight Results - Step 1: Select Outbound */}
-                {bestFlights.length > 0 && selectedOutboundIndex === null && (
+                {bestFlights.length > 0 && returnFlights.length === 0 && (
                   <div className="space-y-3 pt-2 border-t border-slate-700">
                     <p className="text-xs font-semibold text-slate-300">Step 1: Select your outbound flight</p>
                     <div className="space-y-3">
@@ -2137,18 +2155,8 @@ const ChatWindow = ({
                                 ? "border-blue-500 bg-blue-500/10"
                                 : "border-slate-700 bg-slate-950/60 hover:border-slate-600"
                             }`}
-                            onClick={async () => {
+                            onClick={() => {
                               setSelectedOutboundIndex(index);
-                              if (flightOption.departure_token) {
-                                await fetchReturnFlights(flightOption.departure_token);
-                              } else {
-                                const errorMessage: Message = {
-                                  role: "assistant",
-                                  content: "This flight option doesn't have a departure token. Please select a different option.",
-                                  timestamp: formatTime(),
-                                };
-                                setMessages((prev) => [...prev, errorMessage]);
-                              }
                             }}
                           >
                             <div className="space-y-2">
@@ -2192,6 +2200,32 @@ const ChatWindow = ({
                         );
                       })}
                     </div>
+                    
+                    {/* Choose Return Flight Button */}
+                    {selectedOutboundIndex !== null && bestFlights[selectedOutboundIndex] && (
+                      <div className="pt-2 flex justify-end">
+                        <Button
+                          size="sm"
+                          className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                          disabled={isFetchingReturnFlights || !bestFlights[selectedOutboundIndex]?.departure_token}
+                          onClick={async () => {
+                            const selectedFlight = bestFlights[selectedOutboundIndex];
+                            if (selectedFlight?.departure_token) {
+                              await fetchReturnFlights(selectedFlight.departure_token);
+                            } else {
+                              const errorMessage: Message = {
+                                role: "assistant",
+                                content: "This flight option doesn't have a departure token. Please select a different option.",
+                                timestamp: formatTime(),
+                              };
+                              setMessages((prev) => [...prev, errorMessage]);
+                            }
+                          }}
+                        >
+                          {isFetchingReturnFlights ? "Loading return flights..." : "Choose return flight"}
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -2205,7 +2239,20 @@ const ChatWindow = ({
                 {/* Step 2: Select Return Flight */}
                 {selectedOutboundIndex !== null && returnFlights.length > 0 && (
                   <div className="space-y-3 pt-2 border-t border-slate-700">
-                    <p className="text-xs font-semibold text-slate-300">Step 2: Select your return flight</p>
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-semibold text-slate-300">Step 2: Select your return flight</p>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-3 text-[10px] border-slate-600 text-slate-300 bg-slate-800/50 hover:bg-slate-700"
+                        onClick={() => {
+                          setReturnFlights([]);
+                          setSelectedReturnIndex(null);
+                        }}
+                      >
+                        ← Back to outbound flights
+                      </Button>
+                    </div>
                     
                     {/* Show Selected Outbound */}
                     {bestFlights[selectedOutboundIndex] && (() => {
