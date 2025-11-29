@@ -15,7 +15,10 @@ import {
 } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { ChevronDown } from "lucide-react";
 import { getApiUrl } from "@/lib/api";
+import ActivitySwipeCard from "./ActivitySwipeCard";
 
 interface Message {
   role: "user" | "assistant";
@@ -91,14 +94,42 @@ const ChatWindow = ({
       tags: string[] | null;
       source: string | null;
       preference: "pending" | "liked" | "disliked" | "maybe";
+      image_url?: string | null;
+      description?: string | null;
+      price_range?: string | null;
+      source_url?: string | null;
     }[]
   >([]);
   const [isGeneratingActivities, setIsGeneratingActivities] = useState(false);
   const [isUpdatingActivityPreference, setIsUpdatingActivityPreference] = useState<
     Record<number, boolean>
   >({});
+  const [currentActivityIndex, setCurrentActivityIndex] = useState(0);
   const [hasShownTripSketchPrompt, setHasShownTripSketchPrompt] = useState(false);
   const [hasConfirmedActivities, setHasConfirmedActivities] = useState(false);
+  const [hasConfirmedTripSketch, setHasConfirmedTripSketch] = useState(false);
+  const [departureLocation, setDepartureLocation] = useState("");
+  const [departureId, setDepartureId] = useState<string | null>(null);
+  const [arrivalId, setArrivalId] = useState<string | null>(null);
+  const [isFetchingDepartureCode, setIsFetchingDepartureCode] = useState(false);
+  const [isFetchingArrivalCode, setIsFetchingArrivalCode] = useState(false);
+  const [bestFlights, setBestFlights] = useState<any[]>([]);
+  const [isFetchingFlights, setIsFetchingFlights] = useState(false);
+  const [selectedOutboundIndex, setSelectedOutboundIndex] = useState<number | null>(null);
+  const [returnFlights, setReturnFlights] = useState<any[]>([]);
+  const [returnFlightsCache, setReturnFlightsCache] = useState<Record<string, any[]>>({}); // Cache return flights by departure_token
+  const [isFetchingReturnFlights, setIsFetchingReturnFlights] = useState(false);
+  const [selectedReturnIndex, setSelectedReturnIndex] = useState<number | null>(null);
+  const [expandedLayovers, setExpandedLayovers] = useState<Record<number, boolean>>({});
+  const [hasConfirmedFlights, setHasConfirmedFlights] = useState(false);
+  const [hasStartedHotels, setHasStartedHotels] = useState(false);
+  const [hotels, setHotels] = useState<any[]>([]);
+  const [isFetchingHotels, setIsFetchingHotels] = useState(false);
+  const [selectedHotelIndex, setSelectedHotelIndex] = useState<number | null>(null);
+  const [hasConfirmedHotels, setHasConfirmedHotels] = useState(false);
+  const [propertyDetails, setPropertyDetails] = useState<Record<number, any>>({});
+  const [isFetchingPropertyDetails, setIsFetchingPropertyDetails] = useState<Record<number, boolean>>({});
+  const [expandedBookingOptions, setExpandedBookingOptions] = useState<Record<number, boolean>>({});
   const [destinationCarouselIndices, setDestinationCarouselIndices] = useState<Record<number, number>>(
     {}
   );
@@ -134,6 +165,24 @@ const ChatWindow = ({
 
   const formatTime = () =>
     new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  // Format price for display (handles numbers, strings with currency symbols, etc.)
+  const formatPrice = (price: any): string => {
+    if (!price) return '';
+    if (typeof price === 'number') {
+      return price.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    }
+    if (typeof price === 'string') {
+      // Remove currency symbols and extract number
+      const numStr = price.replace(/[^0-9.]/g, '');
+      const num = parseFloat(numStr);
+      if (!isNaN(num)) {
+        return num.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+      }
+      return price;
+    }
+    return String(price);
+  };
 
   // Helper to interpret YYYY-MM-DD strings as local dates (not UTC) so
   // that displayed itinerary days match the dates the user actually chose.
@@ -616,6 +665,358 @@ const ChatWindow = ({
       console.error("Error updating activity preference:", error);
     } finally {
       setIsUpdatingActivityPreference((prev) => ({ ...prev, [activityId]: false }));
+    }
+  };
+
+  // Extract arrival location from day 1 of the itinerary
+  const getArrivalLocation = (): string | null => {
+    if (itineraryDays.length === 0) return null;
+    
+    // Find day 1 (could be day_number === 1 or the first day in the array)
+    const day1 = itineraryDays.find((day) => day.day_number === 1) || itineraryDays[0];
+    
+    if (!day1) return null;
+    
+    // Try to get location from activities
+    if (Array.isArray(day1.activities) && day1.activities.length > 0) {
+      const firstActivity = day1.activities[0];
+      if (firstActivity.location) {
+        return firstActivity.location;
+      }
+    }
+    
+    // Try to extract location from summary
+    if (day1.summary) {
+      // Look for common location patterns in the summary
+      const locationMatch = day1.summary.match(/(?:in|at|to|from)\s+([A-Z][a-zA-Z\s]+(?:,\s*[A-Z][a-zA-Z\s]+)?)/);
+      if (locationMatch) {
+        return locationMatch[1].trim();
+      }
+    }
+    
+    // Fallback: use trip destination if available
+    return null;
+  };
+
+  // Fetch flights from SerpAPI
+  const fetchFlights = async () => {
+    console.log("fetchFlights called", { tripId, departureId, arrivalId, tripPreferences });
+    
+    if (!tripId || !departureId || !arrivalId) {
+      const errorMessage: Message = {
+        role: "assistant",
+        content: "Please set both departure and arrival airport codes before searching for flights.",
+        timestamp: formatTime(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+      return;
+    }
+
+    if (!tripPreferences?.start_date || !tripPreferences?.end_date) {
+      const errorMessage: Message = {
+        role: "assistant",
+        content: "Please set your trip dates in Phase 1 before searching for flights.",
+        timestamp: formatTime(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+      return;
+    }
+
+    try {
+      setIsFetchingFlights(true);
+      const token = getAuthToken();
+      if (!token) return;
+
+      const params = new URLSearchParams({
+        departure_id: departureId,
+        arrival_id: arrivalId,
+        outbound_date: tripPreferences.start_date,
+        return_date: tripPreferences.end_date,
+      });
+
+      console.log("Fetching flights with params:", {
+        departure_id: departureId,
+        arrival_id: arrivalId,
+        outbound_date: tripPreferences.start_date,
+        return_date: tripPreferences.end_date,
+      });
+
+      const response = await fetch(getApiUrl(`api/flights/search?${params.toString()}`), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      console.log("Flight API response status:", response.status);
+
+      const result = await response.json();
+      console.log("Flight API result:", result);
+
+      if (response.ok && result.success) {
+        if (Array.isArray(result.best_flights) && result.best_flights.length > 0) {
+          console.log("Setting best flights:", result.best_flights);
+          setBestFlights(result.best_flights);
+        } else {
+          console.log("No best_flights found in response, checking other_flights");
+          // If best_flights is empty, try other_flights
+          if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
+            setBestFlights(result.other_flights);
+          } else {
+            const errorMessage: Message = {
+              role: "assistant",
+              content: "No flight options found for your search. Please try different dates or airports.",
+              timestamp: formatTime(),
+            };
+            setMessages((prev) => [...prev, errorMessage]);
+          }
+        }
+      } else {
+        console.error("Flight API error:", result);
+        const errorMessage: Message = {
+          role: "assistant",
+          content: result.message || "Failed to fetch flight options. Please try again.",
+          timestamp: formatTime(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+      }
+    } catch (error) {
+      console.error("Error fetching flights:", error);
+      const errorMessage: Message = {
+        role: "assistant",
+        content: "I encountered an error while fetching flights. Please check the console for details.",
+        timestamp: formatTime(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setIsFetchingFlights(false);
+    }
+  };
+
+  // Fetch return flights using departure_token from selected outbound flight
+  const fetchReturnFlights = async (departureToken: string) => {
+    if (!tripId || !departureId || !arrivalId || !tripPreferences?.start_date || !tripPreferences?.end_date) {
+      return;
+    }
+
+    // Check if we already have return flights cached for this departure_token
+    if (returnFlightsCache[departureToken]) {
+      console.log("Using cached return flights for departure_token:", departureToken);
+      setReturnFlights(returnFlightsCache[departureToken]);
+      return;
+    }
+
+    try {
+      setIsFetchingReturnFlights(true);
+      const token = getAuthToken();
+      if (!token) return;
+
+      // For return flights, use the same departure_id and arrival_id as the original search
+      // The departure_token tells SerpAPI which outbound flight was selected and returns matching return flights
+      const params = new URLSearchParams({
+        departure_id: departureId,
+        arrival_id: arrivalId,
+        outbound_date: tripPreferences.start_date,
+        return_date: tripPreferences.end_date,
+        departure_token: departureToken,
+      });
+
+      console.log("Fetching return flights with token:", departureToken);
+
+      const response = await fetch(getApiUrl(`api/flights/return?${params.toString()}`), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      const result = await response.json();
+      console.log("Return flights API result:", result);
+
+      if (response.ok && result.success) {
+        let flightsToSet: any[] = [];
+        if (Array.isArray(result.best_flights) && result.best_flights.length > 0) {
+          flightsToSet = result.best_flights;
+        } else if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
+          flightsToSet = result.other_flights;
+        }
+        
+        if (flightsToSet.length > 0) {
+          // Cache the return flights by departure_token
+          setReturnFlightsCache(prev => ({
+            ...prev,
+            [departureToken]: flightsToSet
+          }));
+          setReturnFlights(flightsToSet);
+        } else {
+          const errorMessage: Message = {
+            role: "assistant",
+            content: "No return flight options found. Please try selecting a different outbound flight.",
+            timestamp: formatTime(),
+          };
+          setMessages((prev) => [...prev, errorMessage]);
+        }
+      } else {
+        const errorMessage: Message = {
+          role: "assistant",
+          content: result.message || "Failed to fetch return flight options. Please try again.",
+          timestamp: formatTime(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+      }
+    } catch (error) {
+      console.error("Error fetching return flights:", error);
+      const errorMessage: Message = {
+        role: "assistant",
+        content: "I encountered an error while fetching return flights. Please try again.",
+        timestamp: formatTime(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setIsFetchingReturnFlights(false);
+    }
+  };
+
+  // Fetch hotels from SerpAPI
+  const fetchHotels = async () => {
+    if (!tripId || !tripPreferences?.start_date || !tripPreferences?.end_date) {
+      return;
+    }
+
+    // Get hotel location from day 1 of itinerary
+    const hotelLocation = getArrivalLocation();
+    if (!hotelLocation) {
+      const errorMessage: Message = {
+        role: "assistant",
+        content: "Could not determine hotel location from your trip sketch. Please ensure your trip has location information.",
+        timestamp: formatTime(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+      return;
+    }
+
+    try {
+      setIsFetchingHotels(true);
+      const token = getAuthToken();
+      if (!token) return;
+
+      const params = new URLSearchParams({
+        location: hotelLocation,
+        check_in_date: tripPreferences.start_date,
+        check_out_date: tripPreferences.end_date,
+      });
+
+      console.log("Fetching hotels with params:", {
+        location: hotelLocation,
+        check_in_date: tripPreferences.start_date,
+        check_out_date: tripPreferences.end_date,
+      });
+
+      const response = await fetch(getApiUrl(`api/hotels/search?${params.toString()}`), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      const result = await response.json();
+      console.log("Hotels API result:", result);
+
+      if (response.ok && result.success && Array.isArray(result.properties)) {
+        setHotels(result.properties);
+      } else {
+        const errorMessage: Message = {
+          role: "assistant",
+          content: result.message || "Failed to fetch hotel options. Please try again.",
+          timestamp: formatTime(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+      }
+    } catch (error) {
+      console.error("Error fetching hotels:", error);
+      const errorMessage: Message = {
+        role: "assistant",
+        content: "I encountered an error while fetching hotels. Please try again.",
+        timestamp: formatTime(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setIsFetchingHotels(false);
+    }
+  };
+
+  // Fetch property details for booking options
+  const fetchPropertyDetails = async (serpapiLink: string, hotelIndex: number) => {
+    if (!serpapiLink) {
+      console.error("No serpapi_property_details_link provided");
+      return;
+    }
+
+    try {
+      setIsFetchingPropertyDetails({ ...isFetchingPropertyDetails, [hotelIndex]: true });
+      const token = getAuthToken();
+      if (!token) return;
+
+      // Use the serpapi_property_details_link from the hotel response
+      const params = new URLSearchParams({
+        serpapi_link: serpapiLink,
+      });
+
+      console.log("Fetching property details with serpapi_link:", serpapiLink);
+
+      const response = await fetch(getApiUrl(`api/hotels/details?${params.toString()}`), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      const result = await response.json();
+      console.log("Property details API result:", result);
+
+      if (response.ok && result.success && result.property) {
+        setPropertyDetails({ ...propertyDetails, [hotelIndex]: result.property });
+      } else {
+        console.error("Property details API error:", result);
+      }
+    } catch (error) {
+      console.error("Error fetching property details:", error);
+    } finally {
+      setIsFetchingPropertyDetails({ ...isFetchingPropertyDetails, [hotelIndex]: false });
+    }
+  };
+
+  // Query LLM to get airport code for a location (silent - doesn't save to chat history)
+  const getAirportCode = async (location: string, isDeparture: boolean): Promise<string | null> => {
+    try {
+      const token = getAuthToken();
+      if (!token) return null;
+
+      const response = await fetch(getApiUrl("api/chat/airport-code"), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          location: location,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (response.ok && result.success && result.airport_code) {
+        return result.airport_code;
+      }
+      
+      return null;
+    } catch (error) {
+      console.error(`Error fetching ${isDeparture ? "departure" : "arrival"} airport code:`, error);
+      return null;
     }
   };
 
@@ -1442,89 +1843,86 @@ const ChatWindow = ({
           )}
           {tripId && activities.length > 0 && (
             <div className="flex justify-start">
-              <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm">
+              <div className="w-full max-w-md bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-6 shadow-sm">
                 <p className="text-xs font-semibold text-slate-300 mb-1">
                   Phase 2: Explore activities
                 </p>
-                <p className="text-[11px] text-slate-300 mb-2">
-                  Use Pass / Maybe / Like to tell me which activities feel right for this trip.
+                <p className="text-[11px] text-slate-300 mb-4">
+                  Swipe right to like, left to pass, or use the buttons below. Swipe up for maybe.
                 </p>
-                <div className="space-y-3">
-                  {activities.map((activity) => (
-                    <div
-                      key={activity.activity_id}
-                      className="border border-slate-700 rounded-md px-3 py-2 flex flex-col gap-1 bg-slate-950/60"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div>
-                          <p className="text-sm font-medium text-slate-50">
-                            {activity.name}
-                          </p>
-                          <p className="text-xs text-slate-400">
-                            {activity.location || "Location TBD"}
-                            {activity.category && ` • ${activity.category}`}
-                          </p>
-                        </div>
-                        <span className="text-[10px] uppercase text-slate-500">
-                          {activity.preference === "liked"
-                            ? "Liked"
-                            : activity.preference === "disliked"
-                            ? "Not for me"
-                            : activity.preference === "maybe"
-                            ? "Maybe"
-                            : "Pending"}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-end gap-2 mt-1">
-                        <Button
-                          variant="outline"
-                          className={`h-6 px-2 text-[11px] ${
-                            activity.preference === "disliked"
-                              ? "border-2 border-rose-400 bg-transparent text-rose-200"
-                              : "border border-rose-500 bg-rose-500/90 hover:bg-rose-400 text-white"
-                          }`}
-                          disabled={isUpdatingActivityPreference[activity.activity_id]}
-                          onClick={() => updateActivityPreference(activity.activity_id, "disliked")}
-                        >
-                          Pass
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className={`h-6 px-2 text-[11px] ${
-                            activity.preference === "maybe"
-                              ? "border-2 border-yellow-300 bg-transparent text-yellow-200"
-                              : "border border-yellow-400 bg-yellow-300/90 hover:bg-yellow-200 text-slate-900"
-                          }`}
-                          disabled={isUpdatingActivityPreference[activity.activity_id]}
-                          onClick={() => updateActivityPreference(activity.activity_id, "maybe")}
-                        >
-                          Maybe
-                        </Button>
-                        <Button
-                          size="sm"
-                          className={`h-6 px-2 text-[11px] ${
-                            activity.preference === "liked"
-                              ? "border-2 border-emerald-400 bg-transparent text-emerald-300"
-                              : "bg-emerald-500 hover:bg-emerald-400 text-slate-950"
-                          }`}
-                          disabled={isUpdatingActivityPreference[activity.activity_id]}
-                          onClick={() => updateActivityPreference(activity.activity_id, "liked")}
-                        >
-                          Like
-                        </Button>
+                
+                {/* Swipe Card Stack */}
+                <div className="relative h-[600px] w-full">
+                  {activities
+                    .filter((a) => a.preference === "pending")
+                    .slice(0, 3)
+                    .map((activity, idx) => {
+                      const actualIndex = activities
+                        .filter((a) => a.preference === "pending")
+                        .indexOf(activity);
+                      return (
+                        <ActivitySwipeCard
+                          key={activity.activity_id}
+                          activity={activity}
+                          index={idx}
+                          total={Math.min(3, activities.filter((a) => a.preference === "pending").length)}
+                          onSwipe={(direction) => {
+                            if (direction === "left") {
+                              updateActivityPreference(activity.activity_id, "disliked");
+                            } else if (direction === "right") {
+                              updateActivityPreference(activity.activity_id, "liked");
+                            } else if (direction === "up") {
+                              updateActivityPreference(activity.activity_id, "maybe");
+                            }
+                            // Auto-advance to next card after a short delay
+                            setTimeout(() => {
+                              setCurrentActivityIndex((prev) => prev + 1);
+                            }, 300);
+                          }}
+                          onLike={() => {
+                            updateActivityPreference(activity.activity_id, "liked");
+                            setTimeout(() => {
+                              setCurrentActivityIndex((prev) => prev + 1);
+                            }, 300);
+                          }}
+                          onPass={() => {
+                            updateActivityPreference(activity.activity_id, "disliked");
+                            setTimeout(() => {
+                              setCurrentActivityIndex((prev) => prev + 1);
+                            }, 300);
+                          }}
+                          onMaybe={() => {
+                            updateActivityPreference(activity.activity_id, "maybe");
+                            setTimeout(() => {
+                              setCurrentActivityIndex((prev) => prev + 1);
+                            }, 300);
+                          }}
+                          isUpdating={isUpdatingActivityPreference[activity.activity_id]}
+                        />
+                      );
+                    })}
+                  
+                  {/* Empty state when all activities are reviewed */}
+                  {activities.filter((a) => a.preference === "pending").length === 0 && (
+                    <div className="flex h-full items-center justify-center">
+                      <div className="text-center">
+                        <p className="text-sm font-semibold text-slate-300 mb-2">
+                          All activities reviewed! 🎉
+                        </p>
+                        <p className="text-xs text-slate-400">
+                          You've reacted to all {activities.length} activities.
+                        </p>
                       </div>
                     </div>
-                  ))}
+                  )}
                 </div>
-                <p className="mt-3 text-[11px] text-slate-300">
-                  Let me know which activities you like: tap <span className="font-semibold">Like</span> for favorites,
-                  <span className="font-semibold"> Maybe</span> if you&apos;re unsure, or <span className="font-semibold">Pass</span> to skip stuff that&apos;s not your vibe.
-                </p>
-                <div className="mt-2 flex items-center justify-between gap-2">
+
+                {/* Progress indicator */}
+                <div className="mt-4 flex items-center justify-between">
                   <p className="text-[11px] text-slate-400">
-                    {allActivitiesAnswered
-                      ? "You’ve reacted to all activities."
-                      : "Try to react to each activity so I know what you like."}
+                    {activities.filter((a) => a.preference === "pending").length === 0
+                      ? "All done!"
+                      : `${activities.filter((a) => a.preference === "pending").length} remaining`}
                   </p>
                   <Button
                     size="sm"
@@ -1639,6 +2037,687 @@ const ChatWindow = ({
                     </>
                   );
                 })()}
+                <div className="mt-3 flex items-center justify-end">
+                  <Button
+                    size="sm"
+                    className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                    onClick={() => setHasConfirmedTripSketch(true)}
+                  >
+                    I&apos;m happy with my trip sketch
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+          {hasConfirmedTripSketch && (
+            <div className="flex justify-start">
+              <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm space-y-3">
+                <p className="text-xs font-semibold text-slate-300">
+                  Phase 4 Part 1: Plan your flights
+                </p>
+                
+                {/* Departure Location */}
+                <div className="space-y-2">
+                  <Label className="text-slate-200 text-xs">Departure location (your home town)</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      type="text"
+                      value={departureLocation}
+                      onChange={(e) => setDepartureLocation(e.target.value)}
+                      placeholder="e.g., New York, NY or Austin, TX"
+                      className="h-8 bg-slate-950 border-slate-700 text-xs text-slate-100"
+                      disabled={isFetchingDepartureCode || !!departureId}
+                    />
+                    <Button
+                      size="sm"
+                      className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                      disabled={!departureLocation.trim() || isFetchingDepartureCode || !!departureId}
+                      onClick={async () => {
+                        setIsFetchingDepartureCode(true);
+                        const code = await getAirportCode(departureLocation.trim(), true);
+                        if (code) {
+                          setDepartureId(code);
+                        } else {
+                          // Show error message
+                          const errorMessage: Message = {
+                            role: "assistant",
+                            content: "I couldn't find an airport code for that location. Please try a more specific location (e.g., 'New York, NY' or 'Austin, TX').",
+                            timestamp: formatTime(),
+                          };
+                          setMessages((prev) => [...prev, errorMessage]);
+                        }
+                        setIsFetchingDepartureCode(false);
+                      }}
+                    >
+                      {isFetchingDepartureCode ? "Finding..." : departureId ? departureId : "Find airport code"}
+                    </Button>
+                  </div>
+                  {departureId && (
+                    <p className="text-[11px] text-emerald-400">
+                      Departure airport code: <span className="font-semibold">{departureId}</span>
+                    </p>
+                  )}
+                </div>
+
+                {/* Arrival Location */}
+                <div className="space-y-2">
+                  <Label className="text-slate-200 text-xs">Arrival location (from day 1 of your trip)</Label>
+                  {(() => {
+                    const arrivalLocation = getArrivalLocation();
+                    return (
+                      <>
+                        {arrivalLocation ? (
+                          <>
+                            <div className="flex gap-2">
+                              <Input
+                                type="text"
+                                value={arrivalLocation}
+                                disabled
+                                className="h-8 bg-slate-950 border-slate-700 text-xs text-slate-400"
+                              />
+                              <Button
+                                size="sm"
+                                className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                                disabled={isFetchingArrivalCode || !!arrivalId}
+                                onClick={async () => {
+                                  setIsFetchingArrivalCode(true);
+                                  const code = await getAirportCode(arrivalLocation, false);
+                                  if (code) {
+                                    setArrivalId(code);
+                                  } else {
+                                    // Show error message
+                                    const errorMessage: Message = {
+                                      role: "assistant",
+                                      content: "I couldn't find an airport code for that location. Please check your trip sketch.",
+                                      timestamp: formatTime(),
+                                    };
+                                    setMessages((prev) => [...prev, errorMessage]);
+                                  }
+                                  setIsFetchingArrivalCode(false);
+                                }}
+                              >
+                                {isFetchingArrivalCode ? "Finding..." : arrivalId ? arrivalId : "Find airport code"}
+                              </Button>
+                            </div>
+                            {arrivalId && (
+                              <p className="text-[11px] text-emerald-400">
+                                Arrival airport code: <span className="font-semibold">{arrivalId}</span>
+                              </p>
+                            )}
+                          </>
+                        ) : (
+                          <p className="text-[11px] text-slate-400">
+                            Could not extract arrival location from day 1. Please ensure your trip sketch has location information.
+                          </p>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
+
+                {/* Flight Dates Summary */}
+                {tripPreferences?.start_date && tripPreferences?.end_date && (
+                  <div className="space-y-2 pt-2 border-t border-slate-700">
+                    <p className="text-xs font-semibold text-slate-300">Flight dates</p>
+                    <div className="text-[11px] text-slate-400 space-y-1">
+                      <p>Outbound date: <span className="text-slate-200">{tripPreferences.start_date}</span></p>
+                      <p>Return date: <span className="text-slate-200">{tripPreferences.end_date}</span></p>
+                      <p>Trip type: <span className="text-slate-200">Round trip (type: 1)</span></p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Search Flights Button */}
+                {departureId && arrivalId && (
+                  <div className="space-y-2 pt-2 border-t border-slate-700">
+                    {!tripPreferences?.start_date || !tripPreferences?.end_date ? (
+                      <p className="text-[11px] text-rose-400">
+                        Please set your trip dates in Phase 1 to search for flights.
+                      </p>
+                    ) : (
+                      <Button
+                        size="sm"
+                        className="w-full h-8 bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-xs font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400 disabled:opacity-60"
+                        disabled={isFetchingFlights}
+                        onClick={fetchFlights}
+                      >
+                        {isFetchingFlights ? "Searching for flights..." : "Search for flights"}
+                      </Button>
+                    )}
+                  </div>
+                )}
+
+                {/* Loading Indicator */}
+                {isFetchingFlights && (
+                  <div className="space-y-2 pt-2 border-t border-slate-700">
+                    <p className="text-xs text-slate-400">Searching for flights...</p>
+                  </div>
+                )}
+
+                {/* Flight Results - Step 1: Select Outbound */}
+                {bestFlights.length > 0 && returnFlights.length === 0 && (
+                  <div className="space-y-3 pt-2 border-t border-slate-700">
+                    <p className="text-xs font-semibold text-slate-300">Step 1: Select your outbound flight</p>
+                    <div className="space-y-3">
+                      {bestFlights.map((flightOption, index) => {
+                        const outboundFlights = flightOption.flights || [];
+                        const outboundLayovers = flightOption.layovers || [];
+                        const firstOutbound = outboundFlights[0];
+                        const lastOutbound = outboundFlights[outboundFlights.length - 1];
+                        const isSelected = selectedOutboundIndex === index;
+                        const isLayoversExpanded = expandedLayovers[index] || false;
+
+                        const formatDuration = (minutes: number) => {
+                          const hours = Math.floor(minutes / 60);
+                          const mins = minutes % 60;
+                          return `${hours}h ${mins}m`;
+                        };
+
+                        return (
+                          <div
+                            key={index}
+                            className={`border rounded-lg p-3 cursor-pointer transition-colors ${
+                              isSelected
+                                ? "border-blue-500 bg-blue-500/10"
+                                : "border-slate-700 bg-slate-950/60 hover:border-slate-600"
+                            }`}
+                            onClick={() => {
+                              setSelectedOutboundIndex(index);
+                            }}
+                          >
+                            <div className="space-y-2">
+                              <div className="space-y-1">
+                                <p className="text-xs text-slate-200">
+                                  <span className="font-semibold">{firstOutbound?.departure_airport?.name || firstOutbound?.departure_airport?.id}</span>
+                                  {" → "}
+                                  <span className="font-semibold">{lastOutbound?.arrival_airport?.name || lastOutbound?.arrival_airport?.id}</span>
+                                </p>
+                                <p className="text-[11px] text-slate-400">
+                                  {firstOutbound?.departure_airport?.time} → {lastOutbound?.arrival_airport?.time}
+                                </p>
+                                <p className="text-[11px] text-slate-400">
+                                  {firstOutbound?.airline || "Multiple airlines"}
+                                </p>
+                                <p className="text-[11px] text-slate-400">
+                                  Duration: {formatDuration(flightOption.total_duration || 0)}
+                                </p>
+                                <p className="text-xs font-semibold text-emerald-400">
+                                  Outbound price: ${flightOption.price?.toLocaleString() || "N/A"}
+                                </p>
+                              </div>
+                              {outboundLayovers.length > 0 && (
+                                <Collapsible open={isLayoversExpanded} onOpenChange={(open) => setExpandedLayovers({ ...expandedLayovers, [index]: open })}>
+                                  <CollapsibleTrigger className="flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300">
+                                    <ChevronDown className={`h-3 w-3 transition-transform ${isLayoversExpanded ? "rotate-180" : ""}`} />
+                                    {outboundLayovers.length} layover{outboundLayovers.length > 1 ? "s" : ""}
+                                  </CollapsibleTrigger>
+                                  <CollapsibleContent className="mt-2 space-y-1">
+                                    {outboundLayovers.map((layover: any, layoverIdx: number) => (
+                                      <div key={layoverIdx} className="text-[11px] text-slate-400 pl-4">
+                                        {layover.name} ({layover.id}) - {formatDuration(layover.duration)}
+                                        {layover.overnight && " (overnight)"}
+                                      </div>
+                                    ))}
+                                  </CollapsibleContent>
+                                </Collapsible>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    
+                    {/* Choose Return Flight Button */}
+                    {selectedOutboundIndex !== null && bestFlights[selectedOutboundIndex] && (
+                      <div className="pt-2 flex justify-end">
+                        <Button
+                          size="sm"
+                          className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                          disabled={isFetchingReturnFlights || !bestFlights[selectedOutboundIndex]?.departure_token}
+                          onClick={async () => {
+                            const selectedFlight = bestFlights[selectedOutboundIndex];
+                            if (selectedFlight?.departure_token) {
+                              await fetchReturnFlights(selectedFlight.departure_token);
+                            } else {
+                              const errorMessage: Message = {
+                                role: "assistant",
+                                content: "This flight option doesn't have a departure token. Please select a different option.",
+                                timestamp: formatTime(),
+                              };
+                              setMessages((prev) => [...prev, errorMessage]);
+                            }
+                          }}
+                        >
+                          {isFetchingReturnFlights ? "Loading return flights..." : "Choose return flight"}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Loading Return Flights */}
+                {selectedOutboundIndex !== null && isFetchingReturnFlights && (
+                  <div className="space-y-2 pt-2 border-t border-slate-700">
+                    <p className="text-xs text-slate-400">Loading return flight options...</p>
+                  </div>
+                )}
+
+                {/* Step 2: Select Return Flight */}
+                {selectedOutboundIndex !== null && returnFlights.length > 0 && (
+                  <div className="space-y-3 pt-2 border-t border-slate-700">
+                    <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-slate-300">Step 2: Select your return flight</p>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-3 text-[10px] border-slate-600 text-slate-300 bg-slate-800/50 hover:bg-slate-700"
+                        onClick={() => {
+                          setReturnFlights([]);
+                          setSelectedReturnIndex(null);
+                        }}
+                      >
+                        ← Back to outbound flights
+                      </Button>
+                    </div>
+                    
+                    {/* Show Selected Outbound */}
+                    {bestFlights[selectedOutboundIndex] && (() => {
+                      const selectedOutbound = bestFlights[selectedOutboundIndex];
+                      const outboundFlights = selectedOutbound.flights || [];
+                      const firstOutbound = outboundFlights[0];
+                      const lastOutbound = outboundFlights[outboundFlights.length - 1];
+                      const formatDuration = (minutes: number) => {
+                        const hours = Math.floor(minutes / 60);
+                        const mins = minutes % 60;
+                        return `${hours}h ${mins}m`;
+                      };
+
+                      return (
+                        <div className="mb-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                          <p className="text-[11px] font-semibold text-blue-400 mb-2">Selected Outbound:</p>
+                          <p className="text-xs text-slate-200">
+                            {firstOutbound?.departure_airport?.name || firstOutbound?.departure_airport?.id} → {lastOutbound?.arrival_airport?.name || lastOutbound?.arrival_airport?.id}
+                          </p>
+                          <p className="text-[11px] text-slate-400">
+                            {firstOutbound?.departure_airport?.time} → {lastOutbound?.arrival_airport?.time}
+                          </p>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Return Flight Options */}
+                    <div className="space-y-3">
+                      {returnFlights.map((flightOption, index) => {
+                        const returnFlightLegs = flightOption.flights || [];
+                        const returnLayovers = flightOption.layovers || [];
+                        const firstReturn = returnFlightLegs[0];
+                        const lastReturn = returnFlightLegs[returnFlightLegs.length - 1];
+                        const isSelected = selectedReturnIndex === index;
+                        const isLayoversExpanded = expandedLayovers[`return-${index}`] || false;
+
+                        const formatDuration = (minutes: number) => {
+                          const hours = Math.floor(minutes / 60);
+                          const mins = minutes % 60;
+                          return `${hours}h ${mins}m`;
+                        };
+
+                        return (
+                          <div
+                            key={index}
+                            className={`border rounded-lg p-3 cursor-pointer transition-colors ${
+                              isSelected
+                                ? "border-blue-500 bg-blue-500/10"
+                                : "border-slate-700 bg-slate-950/60 hover:border-slate-600"
+                            }`}
+                            onClick={() => setSelectedReturnIndex(index)}
+                          >
+                            <div className="space-y-2">
+                              <div className="space-y-1">
+                                <p className="text-xs text-slate-200">
+                                  <span className="font-semibold">{firstReturn?.departure_airport?.name || firstReturn?.departure_airport?.id}</span>
+                                  {" → "}
+                                  <span className="font-semibold">{lastReturn?.arrival_airport?.name || lastReturn?.arrival_airport?.id}</span>
+                                </p>
+                                <p className="text-[11px] text-slate-400">
+                                  {firstReturn?.departure_airport?.time} → {lastReturn?.arrival_airport?.time}
+                                </p>
+                                <p className="text-[11px] text-slate-400">
+                                  {firstReturn?.airline || "Multiple airlines"}
+                                </p>
+                                <p className="text-[11px] text-slate-400">
+                                  Duration: {formatDuration(flightOption.total_duration || 0)}
+                                </p>
+                                <p className="text-xs font-semibold text-emerald-400">
+                                  Return price: ${flightOption.price?.toLocaleString() || "N/A"}
+                                </p>
+                              </div>
+                              {returnLayovers.length > 0 && (
+                                <Collapsible open={isLayoversExpanded} onOpenChange={(open) => setExpandedLayovers({ ...expandedLayovers, [`return-${index}`]: open })}>
+                                  <CollapsibleTrigger className="flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300">
+                                    <ChevronDown className={`h-3 w-3 transition-transform ${isLayoversExpanded ? "rotate-180" : ""}`} />
+                                    {returnLayovers.length} layover{returnLayovers.length > 1 ? "s" : ""}
+                                  </CollapsibleTrigger>
+                                  <CollapsibleContent className="mt-2 space-y-1">
+                                    {returnLayovers.map((layover: any, layoverIdx: number) => (
+                                      <div key={layoverIdx} className="text-[11px] text-slate-400 pl-4">
+                                        {layover.name} ({layover.id}) - {formatDuration(layover.duration)}
+                                        {layover.overnight && " (overnight)"}
+                                      </div>
+                                    ))}
+                                  </CollapsibleContent>
+                                </Collapsible>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Complete Round Trip Summary */}
+                    {selectedOutboundIndex !== null && selectedReturnIndex !== null && (
+                      <div className="mt-4 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg">
+                        <p className="text-xs font-semibold text-emerald-400 mb-2">Complete Round Trip:</p>
+                        <div className="grid grid-cols-2 gap-4 text-xs">
+                          <div>
+                            <p className="text-slate-300 font-semibold mb-1">Outbound</p>
+                            {(() => {
+                              const outbound = bestFlights[selectedOutboundIndex];
+                              const outboundFlights = outbound.flights || [];
+                              const first = outboundFlights[0];
+                              const last = outboundFlights[outboundFlights.length - 1];
+                              return (
+                                <>
+                                  <p className="text-slate-200">{first?.departure_airport?.id} → {last?.arrival_airport?.id}</p>
+                                  <p className="text-[11px] text-slate-400">${outbound.price?.toLocaleString()}</p>
+                                </>
+                              );
+                            })()}
+                          </div>
+                          <div>
+                            <p className="text-slate-300 font-semibold mb-1">Return</p>
+                            {(() => {
+                              const returnFlight = returnFlights[selectedReturnIndex];
+                              const returnFlightLegs = returnFlight.flights || [];
+                              const first = returnFlightLegs[0];
+                              const last = returnFlightLegs[returnFlightLegs.length - 1];
+                              return (
+                                <>
+                                  <p className="text-slate-200">{first?.departure_airport?.id} → {last?.arrival_airport?.id}</p>
+                                  <p className="text-[11px] text-slate-400">${returnFlight.price?.toLocaleString()}</p>
+                                </>
+                              );
+                            })()}
+                          </div>
+                        </div>
+                        <div className="mt-3 pt-3 border-t border-emerald-500/30">
+                          <p className="text-sm font-semibold text-emerald-400">
+                            Total: ${(
+                              (bestFlights[selectedOutboundIndex]?.price || 0) + 
+                              (returnFlights[selectedReturnIndex]?.price || 0)
+                            ).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Done Button */}
+                    {selectedOutboundIndex !== null && selectedReturnIndex !== null && (
+                      <div className="pt-2 flex justify-end">
+                        <Button
+                          size="sm"
+                          className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                          onClick={() => {
+                            setHasConfirmedFlights(true);
+                            setHasStartedHotels(true);
+                          }}
+                        >
+                          I&apos;m done planning flights. Now let&apos;s move on to hotels
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {hasStartedHotels && (
+            <div className="flex justify-start">
+              <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm space-y-3">
+                <p className="text-xs font-semibold text-slate-300">
+                  Phase 4 Part 2: Book your hotels
+                </p>
+
+                {/* Hotel Location and Dates Info */}
+                {(() => {
+                  const hotelLocation = getArrivalLocation();
+                  return (
+                    <div className="space-y-2">
+                      <div className="text-[11px] text-slate-400 space-y-1">
+                        <p>Location: <span className="text-slate-200">{hotelLocation || "Extracting from trip..."}</span></p>
+                        {tripPreferences?.start_date && tripPreferences?.end_date && (
+                          <>
+                            <p>Check-in: <span className="text-slate-200">{tripPreferences.start_date}</span></p>
+                            <p>Check-out: <span className="text-slate-200">{tripPreferences.end_date}</span></p>
+                          </>
+                        )}
+                      </div>
+                      <Button
+                        size="sm"
+                        className="w-full h-8 bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-xs font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400 disabled:opacity-60"
+                        disabled={isFetchingHotels || !hotelLocation}
+                        onClick={fetchHotels}
+                      >
+                        {isFetchingHotels ? "Searching for hotels..." : "Search for hotels"}
+                      </Button>
+                    </div>
+                  );
+                })()}
+
+                {/* Loading Indicator */}
+                {isFetchingHotels && (
+                  <div className="space-y-2 pt-2 border-t border-slate-700">
+                    <p className="text-xs text-slate-400">Searching for hotels...</p>
+                  </div>
+                )}
+
+                {/* Hotel Results */}
+                {hotels.length > 0 && (
+                  <div className="space-y-3 pt-2 border-t border-slate-700">
+                    <p className="text-xs font-semibold text-slate-300">Available hotels</p>
+                    <div className="space-y-3">
+                      {hotels.map((hotel, index) => {
+                        const isSelected = selectedHotelIndex === index;
+                        const hotelImage = hotel.images && hotel.images.length > 0 
+                          ? hotel.images[0].original_image || hotel.images[0].thumbnail 
+                          : null;
+                        
+                        // Extract rate per night - prioritize rate_per_night over total_rate
+                        // Use extracted_lowest (Float) first, then fall back to lowest (String with currency)
+                        const ratePerNight = 
+                          (hotel.rate_per_night?.extracted_lowest !== undefined && hotel.rate_per_night?.extracted_lowest !== null)
+                            ? hotel.rate_per_night.extracted_lowest
+                            : hotel.rate_per_night?.lowest || null;
+                        
+                        const rating = hotel.overall_rating ? `${hotel.overall_rating.toFixed(1)} ⭐` : null;
+                        const reviews = hotel.reviews ? `${hotel.reviews.toLocaleString()} reviews` : null;
+
+                        return (
+                          <div
+                            key={index}
+                            className={`border rounded-lg p-3 cursor-pointer transition-colors ${
+                              isSelected
+                                ? "border-blue-500 bg-blue-500/10"
+                                : "border-slate-700 bg-slate-950/60 hover:border-slate-600"
+                            }`}
+                            onClick={() => setSelectedHotelIndex(index)}
+                          >
+                            <div className="flex gap-3">
+                              {/* Hotel Image */}
+                              {hotelImage && (
+                                <div className="flex-shrink-0">
+                                  <img
+                                    src={hotelImage}
+                                    alt={hotel.name}
+                                    className="w-24 h-24 object-cover rounded-md"
+                                    onError={(e) => {
+                                      (e.target as HTMLImageElement).style.display = 'none';
+                                    }}
+                                  />
+                                </div>
+                              )}
+                              
+                              {/* Hotel Info */}
+                              <div className="flex-1 space-y-2">
+                                <div>
+                                  <p className="text-sm font-semibold text-slate-200">{hotel.name}</p>
+                                  {hotel.hotel_class && (
+                                    <p className="text-[11px] text-slate-400">{hotel.hotel_class}</p>
+                                  )}
+                                </div>
+                                
+                                {hotel.description && (
+                                  <p className="text-[11px] text-slate-400 line-clamp-2">{hotel.description}</p>
+                                )}
+
+                                <div className="flex items-center gap-3 text-[11px] text-slate-400">
+                                  {rating && <span>{rating}</span>}
+                                  {reviews && <span>{reviews}</span>}
+                                </div>
+
+                                {hotel.amenities && hotel.amenities.length > 0 && (
+                                  <div className="flex flex-wrap gap-1">
+                                    {hotel.amenities.slice(0, 3).map((amenity: string, amenityIdx: number) => (
+                                      <span key={amenityIdx} className="text-[10px] px-2 py-0.5 bg-slate-800 rounded text-slate-300">
+                                        {amenity}
+                                      </span>
+                                    ))}
+                                    {hotel.amenities.length > 3 && (
+                                      <span className="text-[10px] text-slate-500">+{hotel.amenities.length - 3} more</span>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Booking Options Dropdown */}
+                                {hotel.serpapi_property_details_link && (
+                                  <div className="pt-2" onClick={(e) => e.stopPropagation()}>
+                                    <Collapsible
+                                      open={expandedBookingOptions[index] || false}
+                                      onOpenChange={(open) => {
+                                        setExpandedBookingOptions({ ...expandedBookingOptions, [index]: open });
+                                        if (open && hotel.serpapi_property_details_link && !propertyDetails[index] && !isFetchingPropertyDetails[index]) {
+                                          fetchPropertyDetails(hotel.serpapi_property_details_link, index);
+                                        }
+                                      }}
+                                    >
+                                      <CollapsibleTrigger className="flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300 w-full">
+                                        <ChevronDown className={`h-3 w-3 transition-transform ${expandedBookingOptions[index] ? "rotate-180" : ""}`} />
+                                        Booking options
+                                      </CollapsibleTrigger>
+                                      <CollapsibleContent className="mt-2 space-y-2">
+                                        {isFetchingPropertyDetails[index] ? (
+                                          <p className="text-[11px] text-slate-400">Loading booking options...</p>
+                                        ) : propertyDetails[index] ? (
+                                          (() => {
+                                            const details = propertyDetails[index];
+                                            // Extract booking options only from featured_prices array
+                                            const bookingOptions = details.featured_prices && Array.isArray(details.featured_prices) 
+                                              ? details.featured_prices 
+                                              : [];
+                                            
+                                            if (bookingOptions.length === 0) {
+                                              return (
+                                                <p className="text-[11px] text-slate-400">No booking options available</p>
+                                              );
+                                            }
+
+                                            return (
+                                              <div className="space-y-2">
+                                                {bookingOptions.map((option: any, optionIdx: number) => {
+                                                  const source = option.source || 'Booking site';
+                                                  const price = option.rate_per_night?.lowest || null;
+                                                  const link = option.link || option.url || null;
+                                                  
+                                                  return (
+                                                    <div key={optionIdx} className="flex items-center justify-between p-2 bg-slate-800 rounded border border-slate-700">
+                                                      <div className="flex-1 min-w-0">
+                                                        <p className="text-[11px] font-semibold text-slate-200 truncate">{source}</p>
+                                                        {price && (
+                                                          <p className="text-[10px] text-emerald-400">{price} / night</p>
+                                                        )}
+                                                      </div>
+                                                      {link && (
+                                                        <Button
+                                                          size="sm"
+                                                          className="h-6 px-3 text-[10px] bg-blue-500 hover:bg-blue-600 text-white flex-shrink-0 ml-2"
+                                                          onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            window.open(link, '_blank', 'noopener,noreferrer');
+                                                          }}
+                                                        >
+                                                          Book
+                                                        </Button>
+                                                      )}
+                                                    </div>
+                                                  );
+                                                })}
+                                              </div>
+                                            );
+                                          })()
+                                        ) : (
+                                          <p className="text-[11px] text-slate-400">Click to load booking options</p>
+                                        )}
+                                      </CollapsibleContent>
+                                    </Collapsible>
+                                  </div>
+                                )}
+
+                                <div className="flex items-center justify-between pt-2 border-t border-slate-700">
+                                  <div className="flex flex-col">
+                                    {ratePerNight ? (
+                                      <p className="text-sm font-semibold text-emerald-400">
+                                        ${formatPrice(ratePerNight)} / night
+                                      </p>
+                                    ) : (
+                                      <p className="text-sm font-semibold text-slate-500">Price not available</p>
+                                    )}
+                                  </div>
+                                  {isSelected && (
+                                    <span className="text-xs text-blue-400">✓ Selected</span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Done Button */}
+                    {selectedHotelIndex !== null && (
+                      <div className="pt-2 flex justify-end">
+                        <Button
+                          size="sm"
+                          className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                          onClick={() => setHasConfirmedHotels(true)}
+                        >
+                          I&apos;m done planning hotels
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {hasConfirmedHotels && (
+            <div className="flex justify-start">
+              <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm space-y-3">
+                <p className="text-xs font-semibold text-slate-300">
+                  Phase 5: Final itinerary
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  Final itinerary UI will be implemented here.
+                </p>
               </div>
             </div>
           )}
