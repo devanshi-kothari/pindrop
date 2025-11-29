@@ -6,6 +6,7 @@ import { Users } from "lucide-react";
 import mallikaImage from "../assets/mallika.png";
 import mahikaImage from "../assets/mahika.png";
 import nehaImage from "../assets/neha.png";
+import devanshiImage from "../assets/devanshi.jpeg";
 
 
 interface TeamMember {
@@ -42,7 +43,7 @@ const teamMembers: TeamMember[] = [
     name: "Devanshi Kothari",
     role: "UPenn Engineering Class of 2026",
     description: "AI + Business, Dance, Chess.",
-    image: "",
+    image: devanshiImage,
     initials: "DK",
   },
   {
