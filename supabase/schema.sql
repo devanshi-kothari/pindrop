@@ -109,6 +109,60 @@ CREATE TABLE IF NOT EXISTS chat_message (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
 
+-- Individual flight options (similar to activity table)
+-- Each row represents one flight option (either outbound or return)
+CREATE TABLE IF NOT EXISTS flight (
+    flight_id BIGSERIAL PRIMARY KEY,
+    flight_type VARCHAR(20) NOT NULL CHECK (flight_type IN ('outbound', 'return')),
+    -- Extracted from flight_data JSONB
+    price DECIMAL(10, 2),
+    departure_token VARCHAR(255), -- Used to fetch return flights for this outbound flight
+    total_duration INT, -- Duration in minutes
+    -- Complex nested structures stored as JSONB
+    flights JSONB, -- Array of flight legs
+    layovers JSONB, -- Array of layover information
+    -- Additional flight data that doesn't fit in columns
+    additional_data JSONB, -- For any other flight data fields
+    -- Extracted from search_params JSONB
+    departure_id VARCHAR(100), -- Airport code for departure
+    arrival_id VARCHAR(100), -- Airport code for arrival
+    outbound_date DATE,
+    return_date DATE,
+    currency VARCHAR(10) DEFAULT 'USD',
+    -- Additional search parameters that don't fit in columns
+    additional_search_params JSONB, -- For any other search parameters
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+);
+
+-- Maps flights to trips (similar to itinerary_activity or trip_activity_preference)
+-- Tracks which flights are associated with which trips and their selection status
+CREATE TABLE IF NOT EXISTS trip_flight (
+    trip_id BIGINT NOT NULL REFERENCES trip(trip_id) ON DELETE CASCADE,
+    flight_id BIGINT NOT NULL REFERENCES flight(flight_id) ON DELETE CASCADE,
+    -- Whether this flight is selected for the trip (only one outbound and one return should be selected per trip)
+    is_selected BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+    -- Composite primary key
+    PRIMARY KEY (trip_id, flight_id)
+);
+
+-- Maps departing flights to their available return flights
+-- When a departing flight is selected, return flights are fetched via API using departure_token
+-- This table stores which return flights are available for which departing flight within a specific trip
+-- Note: Application logic should ensure departing_flight_id references an 'outbound' flight
+-- and return_flight_id references a 'return' flight
+CREATE TABLE IF NOT EXISTS flight_return_mapping (
+    trip_id BIGINT NOT NULL REFERENCES trip(trip_id) ON DELETE CASCADE,
+    departing_flight_id BIGINT NOT NULL REFERENCES flight(flight_id) ON DELETE CASCADE,
+    return_flight_id BIGINT NOT NULL REFERENCES flight(flight_id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+    -- Composite primary key ensures uniqueness per trip
+    PRIMARY KEY (trip_id, departing_flight_id, return_flight_id),
+    -- Prevent a flight from being mapped to itself
+    CONSTRAINT check_different_flights CHECK (departing_flight_id != return_flight_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_trip_user_id ON trip(user_id);
 CREATE INDEX IF NOT EXISTS idx_itinerary_trip_id ON itinerary(trip_id);
 CREATE INDEX IF NOT EXISTS idx_itinerary_activity_ids ON itinerary_activity(itinerary_id, activity_id);
@@ -118,3 +172,14 @@ CREATE INDEX IF NOT EXISTS idx_chat_message_trip_id ON chat_message(trip_id);
 CREATE INDEX IF NOT EXISTS idx_chat_message_created_at ON chat_message(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_trip_status ON trip(user_id, trip_status);
 CREATE INDEX IF NOT EXISTS idx_trip_activity_preference_trip_id ON trip_activity_preference(trip_id);
+CREATE INDEX IF NOT EXISTS idx_flight_type ON flight(flight_type);
+CREATE INDEX IF NOT EXISTS idx_flight_departure_token ON flight(departure_token) WHERE departure_token IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_trip_flight_trip_id ON trip_flight(trip_id);
+CREATE INDEX IF NOT EXISTS idx_trip_flight_flight_id ON trip_flight(flight_id);
+-- Note: Application logic should ensure only one selected outbound and one selected return flight per trip
+-- This can be enforced via a trigger or application-level checks
+CREATE INDEX IF NOT EXISTS idx_trip_flight_selected ON trip_flight(trip_id, is_selected) WHERE is_selected = TRUE;
+CREATE INDEX IF NOT EXISTS idx_flight_return_mapping_trip_id ON flight_return_mapping(trip_id);
+CREATE INDEX IF NOT EXISTS idx_flight_return_mapping_departing ON flight_return_mapping(departing_flight_id);
+CREATE INDEX IF NOT EXISTS idx_flight_return_mapping_return ON flight_return_mapping(return_flight_id);
+CREATE INDEX IF NOT EXISTS idx_flight_return_mapping_trip_departing ON flight_return_mapping(trip_id, departing_flight_id);
