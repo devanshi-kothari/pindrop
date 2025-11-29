@@ -114,9 +114,11 @@ const ChatWindow = ({
   const [isFetchingDepartureCode, setIsFetchingDepartureCode] = useState(false);
   const [isFetchingArrivalCode, setIsFetchingArrivalCode] = useState(false);
   const [bestFlights, setBestFlights] = useState<any[]>([]);
+  const [outboundFlightIds, setOutboundFlightIds] = useState<Record<number, number>>({}); // Map index to flight_id
   const [isFetchingFlights, setIsFetchingFlights] = useState(false);
   const [selectedOutboundIndex, setSelectedOutboundIndex] = useState<number | null>(null);
   const [returnFlights, setReturnFlights] = useState<any[]>([]);
+  const [returnFlightIds, setReturnFlightIds] = useState<Record<number, number>>({}); // Map index to flight_id
   const [returnFlightsCache, setReturnFlightsCache] = useState<Record<string, any[]>>({}); // Cache return flights by departure_token
   const [isFetchingReturnFlights, setIsFetchingReturnFlights] = useState(false);
   const [selectedReturnIndex, setSelectedReturnIndex] = useState<number | null>(null);
@@ -755,22 +757,68 @@ const ChatWindow = ({
       console.log("Flight API result:", result);
 
       if (response.ok && result.success) {
+        let flightsToSet: any[] = [];
         if (Array.isArray(result.best_flights) && result.best_flights.length > 0) {
-          console.log("Setting best flights:", result.best_flights);
-          setBestFlights(result.best_flights);
-        } else {
-          console.log("No best_flights found in response, checking other_flights");
-          // If best_flights is empty, try other_flights
-          if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
-            setBestFlights(result.other_flights);
-          } else {
-            const errorMessage: Message = {
-              role: "assistant",
-              content: "No flight options found for your search. Please try different dates or airports.",
-              timestamp: formatTime(),
-            };
-            setMessages((prev) => [...prev, errorMessage]);
+          flightsToSet = result.best_flights;
+        } else if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
+          flightsToSet = result.other_flights;
+        }
+
+        if (flightsToSet.length > 0) {
+          console.log(`Setting ${flightsToSet.length} best flights:`, flightsToSet);
+          setBestFlights(flightsToSet);
+
+          // Save flights to database - save ALL flights returned from API
+          try {
+            console.log(`Saving ${flightsToSet.length} outbound flights to database...`);
+            const saveResponse = await fetch(getApiUrl("api/flights/save-outbound"), {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                trip_id: tripId,
+                flights: flightsToSet, // Send all flights
+                search_params: {
+                  departure_id: departureId,
+                  arrival_id: arrivalId,
+                  outbound_date: tripPreferences.start_date,
+                  return_date: tripPreferences.end_date,
+                  currency: "USD",
+                },
+              }),
+            });
+
+            const saveResult = await saveResponse.json();
+            if (saveResult.success && saveResult.flight_ids) {
+              console.log(`Saved ${saveResult.saved_count || saveResult.flight_ids.length} outbound flights to database (out of ${saveResult.total_flights || flightsToSet.length} total):`, saveResult);
+              // Map flight indices to flight_ids
+              const flightIdMap: Record<number, number> = {};
+              saveResult.flight_ids.forEach((flightId: number, idx: number) => {
+                if (idx < flightsToSet.length) {
+                  flightIdMap[idx] = flightId;
+                }
+              });
+              setOutboundFlightIds(flightIdMap);
+              
+              if (saveResult.saved_count < flightsToSet.length) {
+                console.warn(`Warning: Only ${saveResult.saved_count} out of ${flightsToSet.length} flights were saved successfully`);
+              }
+            } else {
+              console.error("Failed to save outbound flights:", saveResult);
+            }
+          } catch (saveError) {
+            console.error("Error saving outbound flights:", saveError);
+            // Don't show error to user, just log it
           }
+        } else {
+          const errorMessage: Message = {
+            role: "assistant",
+            content: "No flight options found for your search. Please try different dates or airports.",
+            timestamp: formatTime(),
+          };
+          setMessages((prev) => [...prev, errorMessage]);
         }
       } else {
         console.error("Flight API error:", result);
@@ -850,6 +898,51 @@ const ChatWindow = ({
             [departureToken]: flightsToSet
           }));
           setReturnFlights(flightsToSet);
+
+          // Save return flights to database
+          if (selectedOutboundIndex !== null && bestFlights[selectedOutboundIndex]) {
+            try {
+              const selectedOutbound = bestFlights[selectedOutboundIndex];
+              const saveResponse = await fetch(getApiUrl("api/flights/save-return"), {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  trip_id: tripId,
+                  departing_flight_id: outboundFlightIds[selectedOutboundIndex] || null,
+                  departure_token: selectedOutbound.departure_token || null,
+                  flights: flightsToSet,
+                  search_params: {
+                    departure_id: departureId,
+                    arrival_id: arrivalId,
+                    outbound_date: tripPreferences.start_date,
+                    return_date: tripPreferences.end_date,
+                    currency: "USD",
+                  },
+                }),
+              });
+
+              const saveResult = await saveResponse.json();
+              if (saveResult.success && saveResult.flight_ids) {
+                console.log("Saved return flights to database:", saveResult);
+                // Map return flight indices to flight_ids
+                const returnFlightIdMap: Record<number, number> = {};
+                saveResult.flight_ids.forEach((flightId: number, idx: number) => {
+                  if (idx < flightsToSet.length) {
+                    returnFlightIdMap[idx] = flightId;
+                  }
+                });
+                setReturnFlightIds(returnFlightIdMap);
+              } else {
+                console.error("Failed to save return flights:", saveResult);
+              }
+            } catch (saveError) {
+              console.error("Error saving return flights:", saveError);
+              // Don't show error to user, just log it
+            }
+          }
         } else {
           const errorMessage: Message = {
             role: "assistant",
@@ -2221,8 +2314,88 @@ const ChatWindow = ({
                                 ? "border-blue-500 bg-blue-500/10"
                                 : "border-slate-700 bg-slate-950/60 hover:border-slate-600"
                             }`}
-                            onClick={() => {
+                            onClick={async () => {
+                              // If selecting a different outbound flight, clear return flight selection
+                              if (selectedOutboundIndex !== index && selectedOutboundIndex !== null) {
+                                setSelectedReturnIndex(null);
+                                setReturnFlights([]);
+                              }
+                              
                               setSelectedOutboundIndex(index);
+                              // Update selection in database
+                              // Wait a bit for flight_id to be available if save is still in progress
+                              const token = getAuthToken();
+                              if (!token || !tripId) return;
+
+                              let flightId = outboundFlightIds[index];
+                              
+                              // If flight_id not available yet, wait a moment and check again
+                              if (!flightId) {
+                                await new Promise(resolve => setTimeout(resolve, 500));
+                                flightId = outboundFlightIds[index];
+                              }
+
+                              // Try to save selection - if flight_id is available
+                              if (flightId) {
+                                try {
+                                  const response = await fetch(getApiUrl("api/flights/select"), {
+                                    method: "PUT",
+                                    headers: {
+                                      Authorization: `Bearer ${token}`,
+                                      "Content-Type": "application/json",
+                                    },
+                                    body: JSON.stringify({
+                                      trip_id: tripId,
+                                      flight_id: flightId,
+                                      is_selected: true,
+                                    }),
+                                  });
+                                  
+                                  const result = await response.json();
+                                  if (result.success) {
+                                    console.log("Successfully updated outbound flight selection");
+                                    // Backend will automatically unselect return flights, but clear UI state
+                                    if (selectedReturnIndex !== null) {
+                                      setSelectedReturnIndex(null);
+                                    }
+                                  }
+                                } catch (error) {
+                                  console.error("Error updating flight selection:", error);
+                                }
+                              } else {
+                                // If still no flight_id, try using departure_token to find it
+                                const selectedFlight = bestFlights[index];
+                                if (selectedFlight?.departure_token) {
+                                  // The backend can look up by departure_token if needed
+                                  // For now, we'll retry after a delay
+                                  setTimeout(async () => {
+                                    const retryFlightId = outboundFlightIds[index];
+                                    if (retryFlightId) {
+                                      try {
+                                        const response = await fetch(getApiUrl("api/flights/select"), {
+                                          method: "PUT",
+                                          headers: {
+                                            Authorization: `Bearer ${token}`,
+                                            "Content-Type": "application/json",
+                                          },
+                                          body: JSON.stringify({
+                                            trip_id: tripId,
+                                            flight_id: retryFlightId,
+                                            is_selected: true,
+                                          }),
+                                        });
+                                        
+                                        const result = await response.json();
+                                        if (result.success && selectedReturnIndex !== null) {
+                                          setSelectedReturnIndex(null);
+                                        }
+                                      } catch (error) {
+                                        console.error("Error updating flight selection (retry):", error);
+                                      }
+                                    }
+                                  }, 1000);
+                                }
+                              }
                             }}
                           >
                             <div className="space-y-2">
@@ -2369,7 +2542,63 @@ const ChatWindow = ({
                                 ? "border-blue-500 bg-blue-500/10"
                                 : "border-slate-700 bg-slate-950/60 hover:border-slate-600"
                             }`}
-                            onClick={() => setSelectedReturnIndex(index)}
+                            onClick={async () => {
+                              setSelectedReturnIndex(index);
+                              // Update selection in database
+                              const token = getAuthToken();
+                              if (!token || !tripId) return;
+
+                              let flightId = returnFlightIds[index];
+                              
+                              // If flight_id not available yet, wait a moment and check again
+                              if (!flightId) {
+                                await new Promise(resolve => setTimeout(resolve, 500));
+                                flightId = returnFlightIds[index];
+                              }
+
+                              // Try to save selection - if flight_id is available
+                              if (flightId) {
+                                try {
+                                  await fetch(getApiUrl("api/flights/select"), {
+                                    method: "PUT",
+                                    headers: {
+                                      Authorization: `Bearer ${token}`,
+                                      "Content-Type": "application/json",
+                                    },
+                                    body: JSON.stringify({
+                                      trip_id: tripId,
+                                      flight_id: flightId,
+                                      is_selected: true,
+                                    }),
+                                  });
+                                } catch (error) {
+                                  console.error("Error updating return flight selection:", error);
+                                }
+                              } else {
+                                // Retry after a delay if flight_id becomes available
+                                setTimeout(async () => {
+                                  const retryFlightId = returnFlightIds[index];
+                                  if (retryFlightId) {
+                                    try {
+                                      await fetch(getApiUrl("api/flights/select"), {
+                                        method: "PUT",
+                                        headers: {
+                                          Authorization: `Bearer ${token}`,
+                                          "Content-Type": "application/json",
+                                        },
+                                        body: JSON.stringify({
+                                          trip_id: tripId,
+                                          flight_id: retryFlightId,
+                                          is_selected: true,
+                                        }),
+                                      });
+                                    } catch (error) {
+                                      console.error("Error updating return flight selection (retry):", error);
+                                    }
+                                  }
+                                }, 1000);
+                              }
+                            }}
                           >
                             <div className="space-y-2">
                               <div className="space-y-1">
