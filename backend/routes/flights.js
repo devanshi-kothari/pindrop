@@ -619,5 +619,179 @@ router.put('/select', authenticateToken, async (req, res) => {
   }
 });
 
+// Load all flights for a trip (for restoring state when user returns)
+router.get('/trip/:tripId', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+
+    if (!tripId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid trip_id'
+      });
+    }
+
+    // Verify trip belongs to user
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found'
+      });
+    }
+
+    // Get all flights associated with this trip
+    const { data: tripFlights, error: tripFlightsError } = await supabase
+      .from('trip_flight')
+      .select(`
+        flight_id,
+        is_selected,
+        flight:flight(*)
+      `)
+      .eq('trip_id', tripId)
+      .order('created_at', { ascending: true });
+
+    if (tripFlightsError) {
+      throw tripFlightsError;
+    }
+
+    // Separate outbound and return flights
+    const outboundFlights = [];
+    const returnFlights = [];
+    const outboundFlightIdMap = {}; // Map original index to flight_id
+    const returnFlightIdMap = {};
+    let outboundIndex = 0;
+    let returnIndex = 0;
+    let selectedOutboundFlightId = null;
+    let selectedReturnFlightId = null;
+
+    tripFlights?.forEach((tf) => {
+      if (tf.flight && tf.flight.flight_type === 'outbound') {
+        // Reconstruct flight option from database columns
+        const flightOption = {
+          price: tf.flight.price,
+          departure_token: tf.flight.departure_token,
+          total_duration: tf.flight.total_duration,
+          flights: tf.flight.flights,
+          layovers: tf.flight.layovers,
+          ...(tf.flight.additional_data || {})
+        };
+        console.log(`Reconstructed outbound flight ${outboundIndex}:`, {
+          flight_id: tf.flight_id,
+          has_departure_token: !!flightOption.departure_token,
+          departure_token: flightOption.departure_token,
+          price: flightOption.price
+        });
+        outboundFlights.push(flightOption);
+        outboundFlightIdMap[outboundIndex] = tf.flight_id;
+        if (tf.is_selected) {
+          selectedOutboundFlightId = tf.flight_id;
+        }
+        outboundIndex++;
+      } else if (tf.flight && tf.flight.flight_type === 'return') {
+        // Reconstruct return flight option from database columns
+        const flightOption = {
+          price: tf.flight.price,
+          total_duration: tf.flight.total_duration,
+          flights: tf.flight.flights,
+          layovers: tf.flight.layovers,
+          ...(tf.flight.additional_data || {})
+        };
+        returnFlights.push(flightOption);
+        returnFlightIdMap[returnIndex] = tf.flight_id;
+        if (tf.is_selected) {
+          selectedReturnFlightId = tf.flight_id;
+        }
+        returnIndex++;
+      }
+    });
+
+    // Find selected indices
+    let selectedOutboundIndex = null;
+    let selectedReturnIndex = null;
+
+    if (selectedOutboundFlightId) {
+      Object.entries(outboundFlightIdMap).forEach(([index, flightId]) => {
+        if (flightId === selectedOutboundFlightId) {
+          selectedOutboundIndex = parseInt(index);
+        }
+      });
+    }
+
+    if (selectedReturnFlightId) {
+      Object.entries(returnFlightIdMap).forEach(([index, flightId]) => {
+        if (flightId === selectedReturnFlightId) {
+          selectedReturnIndex = parseInt(index);
+        }
+      });
+    }
+
+    // Get return flight mappings to know which return flights belong to which outbound flight
+    const { data: returnMappings, error: mappingsError } = await supabase
+      .from('flight_return_mapping')
+      .select('departing_flight_id, return_flight_id')
+      .eq('trip_id', tripId);
+
+    const returnFlightMappings = {}; // Map departing_flight_id to return_flight_ids
+    returnMappings?.forEach((mapping) => {
+      if (!returnFlightMappings[mapping.departing_flight_id]) {
+        returnFlightMappings[mapping.departing_flight_id] = [];
+      }
+      returnFlightMappings[mapping.departing_flight_id].push(mapping.return_flight_id);
+    });
+
+    // Filter return flights to only show those mapped to the selected departing flight
+    let filteredReturnFlights = [];
+    let filteredReturnFlightIds = {};
+    let filteredSelectedReturnIndex = null;
+
+    if (selectedOutboundFlightId && returnFlightMappings[selectedOutboundFlightId]) {
+      // Only include return flights that are mapped to the selected departing flight
+      const mappedReturnFlightIds = returnFlightMappings[selectedOutboundFlightId];
+      let filteredIndex = 0;
+      
+      // Iterate through return flights using the returnFlightIdMap to get flight_ids
+      Object.entries(returnFlightIdMap).forEach(([originalIndexStr, returnFlightId]) => {
+        const originalIndex = parseInt(originalIndexStr);
+        // Check if this return flight is mapped to the selected departing flight
+        if (mappedReturnFlightIds.includes(returnFlightId) && returnFlights[originalIndex]) {
+          filteredReturnFlights.push(returnFlights[originalIndex]);
+          filteredReturnFlightIds[filteredIndex] = returnFlightId;
+          if (returnFlightId === selectedReturnFlightId) {
+            filteredSelectedReturnIndex = filteredIndex;
+          }
+          filteredIndex++;
+        }
+      });
+    }
+    // If no selected departing flight, filteredReturnFlights will be empty array
+
+    res.status(200).json({
+      success: true,
+      outbound_flights: outboundFlights,
+      return_flights: filteredReturnFlights.length > 0 ? filteredReturnFlights : returnFlights, // Use filtered if available
+      outbound_flight_ids: outboundFlightIdMap,
+      return_flight_ids: Object.keys(filteredReturnFlightIds).length > 0 ? filteredReturnFlightIds : returnFlightIdMap, // Use filtered if available
+      selected_outbound_index: selectedOutboundIndex,
+      selected_return_index: filteredSelectedReturnIndex !== null ? filteredSelectedReturnIndex : selectedReturnIndex,
+      return_flight_mappings: returnFlightMappings
+    });
+  } catch (error) {
+    console.error('Error loading flights for trip:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while loading flights',
+      error: error.message
+    });
+  }
+});
+
 export default router;
 

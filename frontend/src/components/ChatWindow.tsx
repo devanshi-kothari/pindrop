@@ -1219,6 +1219,107 @@ const ChatWindow = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tripId, planningMode]);
 
+  // Load persisted data (itinerary, flights, hotels) when component mounts or tripId changes
+  useEffect(() => {
+    const loadPersistedData = async () => {
+      if (!tripId || isLoadingHistory) return;
+
+      const token = getAuthToken();
+      if (!token) return;
+
+      try {
+        // Load itinerary to restore trip sketch state
+        await loadItineraryDays(tripId);
+        
+        // Check if itinerary exists - if so, user has confirmed trip sketch
+        const itineraryResponse = await fetch(getApiUrl(`api/trips/${tripId}/itinerary`), {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        const itineraryResult = await itineraryResponse.json();
+        if (itineraryResponse.ok && itineraryResult.success && Array.isArray(itineraryResult.days) && itineraryResult.days.length > 0) {
+          setHasConfirmedTripSketch(true);
+          // Generate summary from days if needed
+          if (itineraryResult.days.length > 0) {
+            const summary = `Your ${itineraryResult.days.length}-day trip itinerary has been generated.`;
+            setItinerarySummary(summary);
+          }
+        }
+
+        // Load flights
+        const flightsResponse = await fetch(getApiUrl(`api/flights/trip/${tripId}`), {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        const flightsResult = await flightsResponse.json();
+        if (flightsResponse.ok && flightsResult.success) {
+          // Restore outbound flights
+          if (flightsResult.outbound_flights && flightsResult.outbound_flights.length > 0) {
+            console.log("Restoring outbound flights from database:", flightsResult.outbound_flights);
+            setBestFlights(flightsResult.outbound_flights);
+            setOutboundFlightIds(flightsResult.outbound_flight_ids || {});
+            
+            // Restore selected outbound flight
+            if (flightsResult.selected_outbound_index !== null && flightsResult.selected_outbound_index !== undefined) {
+              setSelectedOutboundIndex(flightsResult.selected_outbound_index);
+              const selectedOutbound = flightsResult.outbound_flights[flightsResult.selected_outbound_index];
+              console.log("Restored selected outbound flight:", selectedOutbound);
+              console.log("Departure token in restored flight:", selectedOutbound?.departure_token);
+            }
+
+            // If there's a selected outbound flight, load its return flights
+            if (flightsResult.selected_outbound_index !== null && flightsResult.selected_outbound_index !== undefined) {
+              const selectedOutbound = flightsResult.outbound_flights[flightsResult.selected_outbound_index];
+              if (selectedOutbound?.departure_token) {
+                // Load return flights for this departing flight
+                const returnFlightsForDeparture = flightsResult.return_flights || [];
+                if (returnFlightsForDeparture.length > 0) {
+                  console.log("Restoring return flights from database:", returnFlightsForDeparture.length, "flights");
+                  setReturnFlights(returnFlightsForDeparture);
+                  setReturnFlightIds(flightsResult.return_flight_ids || {});
+                  
+                  // Restore selected return flight
+                  if (flightsResult.selected_return_index !== null && flightsResult.selected_return_index !== undefined) {
+                    setSelectedReturnIndex(flightsResult.selected_return_index);
+                  }
+                } else {
+                  // No return flights loaded yet - user can click "Choose return flight" button
+                  console.log("No return flights found in database for this departing flight");
+                }
+              } else {
+                console.warn("Selected outbound flight does not have departure_token:", selectedOutbound);
+              }
+            }
+
+            // If flights exist, user has confirmed trip sketch and started flights phase
+            setHasConfirmedTripSketch(true);
+            if (flightsResult.selected_outbound_index !== null || flightsResult.selected_return_index !== null) {
+              setHasConfirmedFlights(true);
+              setHasStartedHotels(true);
+            } else if (flightsResult.outbound_flights.length > 0) {
+              // Flights were fetched but not selected yet
+              setHasConfirmedTripSketch(true);
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error loading persisted data:", error);
+        // Don't show error to user, just log it
+      }
+    };
+
+    loadPersistedData();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tripId, isLoadingHistory, loadItineraryDays]);
+
   // In "help me choose" mode, automatically send the initial message from
   // the dashboard as the first user message, and show the LLM's response,
   // so the user lands in an active conversation about destinations.
@@ -2440,8 +2541,8 @@ const ChatWindow = ({
                       })}
                     </div>
                     
-                    {/* Choose Return Flight Button */}
-                    {selectedOutboundIndex !== null && bestFlights[selectedOutboundIndex] && (
+                    {/* Choose Return Flight Button - Show when return flights are NOT loaded or when user wants to refresh */}
+                    {selectedOutboundIndex !== null && bestFlights[selectedOutboundIndex] && returnFlights.length === 0 && (
                       <div className="pt-2 flex justify-end">
                         <Button
                           size="sm"
@@ -2449,6 +2550,8 @@ const ChatWindow = ({
                           disabled={isFetchingReturnFlights || !bestFlights[selectedOutboundIndex]?.departure_token}
                           onClick={async () => {
                             const selectedFlight = bestFlights[selectedOutboundIndex];
+                            console.log("Choose return flight clicked. Selected flight:", selectedFlight);
+                            console.log("Departure token:", selectedFlight?.departure_token);
                             if (selectedFlight?.departure_token) {
                               await fetchReturnFlights(selectedFlight.departure_token);
                             } else {
@@ -2480,17 +2583,39 @@ const ChatWindow = ({
                   <div className="space-y-3 pt-2 border-t border-slate-700">
                     <div className="flex items-center justify-between">
                     <p className="text-xs font-semibold text-slate-300">Step 2: Select your return flight</p>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-6 px-3 text-[10px] border-slate-600 text-slate-300 bg-slate-800/50 hover:bg-slate-700"
-                        onClick={() => {
-                          setReturnFlights([]);
-                          setSelectedReturnIndex(null);
-                        }}
-                      >
-                        ← Back to outbound flights
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-3 text-[10px] border-slate-600 text-slate-300 bg-slate-800/50 hover:bg-slate-700 disabled:opacity-60"
+                          disabled={isFetchingReturnFlights || !bestFlights[selectedOutboundIndex]?.departure_token}
+                          onClick={async () => {
+                            const selectedFlight = bestFlights[selectedOutboundIndex];
+                            if (selectedFlight?.departure_token) {
+                              // Clear cache for this departure_token to force a new API call
+                              setReturnFlightsCache(prev => {
+                                const newCache = { ...prev };
+                                delete newCache[selectedFlight.departure_token];
+                                return newCache;
+                              });
+                              await fetchReturnFlights(selectedFlight.departure_token);
+                            }
+                          }}
+                        >
+                          {isFetchingReturnFlights ? "Refreshing..." : "Refresh return flights"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-3 text-[10px] border-slate-600 text-slate-300 bg-slate-800/50 hover:bg-slate-700"
+                          onClick={() => {
+                            setReturnFlights([]);
+                            setSelectedReturnIndex(null);
+                          }}
+                        >
+                          ← Back to outbound flights
+                        </Button>
+                      </div>
                     </div>
                     
                     {/* Show Selected Outbound */}
