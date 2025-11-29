@@ -1,8 +1,18 @@
 import { Button } from "@/components/ui/button";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import logo from "../../images/pindrop_transparent_icon.png";
 
 const Header = () => {
+  const navigate = useNavigate();
+
+  const handleSignUp = () => {
+    navigate("/signup");
+  };
+
+  const handleLogin = () => {
+    navigate("/login");
+  };
+
   return (
     <header className="bg-white border-b border-border sticky top-0 z-50">
       <div className="container mx-auto px-6 py-4">
@@ -33,12 +43,19 @@ const Header = () => {
               </Link>
             </nav>
           </div>
-          <div className="flex items-center gap-4">
-            <Button variant="ghost" className="text-foreground hover:bg-muted/50" asChild>
-              <Link to="/signup">Sign Up</Link>
+          <div className="flex items-center gap-4 shrink-0">
+            <Button 
+              variant="ghost" 
+              className="text-foreground hover:bg-muted/50 h-10 !outline-none focus-visible:ring-0 focus-visible:ring-offset-0 active:scale-100" 
+              onClick={handleSignUp}
+            >
+              Sign Up
             </Button>
-            <Button className="bg-primary text-primary-foreground hover:bg-primary/90 px-6 shadow-sm" asChild>
-              <Link to="/login">Log in</Link>
+            <Button 
+              className="bg-primary text-primary-foreground hover:bg-primary/90 px-6 shadow-sm h-10 !outline-none focus-visible:ring-0 focus-visible:ring-offset-0 active:shadow-sm active:scale-100" 
+              onClick={handleLogin}
+            >
+              Log in
             </Button>
           </div>
         </div>
