@@ -1,37 +1,37 @@
 import { Button } from "@/components/ui/button";
 import { Link } from "react-router-dom";
-import logo from "../../images/pindrop_transparent_logo.png";
+import logo from "../../images/pindrop_transparent_icon.png";
 
 const Header = () => {
   return (
-    <header className="w-full border-b-2 border-border/50 bg-white/95 backdrop-blur-md sticky top-0 z-50 shadow-sm">
+    <header className="bg-white border-b border-border sticky top-0 z-50">
       <div className="container mx-auto px-6 py-4">
-        <nav className="flex items-center justify-between">
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-3 md:gap-4">
             <Link
               to="/"
-              className="flex items-center gap-2 hover:opacity-85 transition-opacity"
+              className="flex items-center gap-0 hover:opacity-85 transition-opacity"
             >
               <img
                 src={logo}
                 alt="Pindrop logo"
-                className="h-8 w-8 md:h-9 md:w-9 object-contain"
+                className="h-9 w-9 md:h-10 md:w-10 object-contain"
               />
-              <span className="text-2xl font-bold text-blue-600 tracking-tight">
-                pindrop
+              <span className="text-xl font-bold text-foreground tracking-tight">
+                PINDROP
               </span>
             </Link>
-            <div className="hidden md:flex items-center gap-8">
-              <Link to="/features" className="text-sm font-medium text-foreground/80 hover:text-foreground transition-colors">
+            <nav className="hidden md:flex items-center gap-6">
+              <Link to="/features" className="text-foreground hover:text-accent transition-colors">
                 Features
               </Link>
-              <Link to="/team" className="text-sm font-medium text-foreground/80 hover:text-foreground transition-colors">
+              <Link to="/team" className="text-foreground hover:text-accent transition-colors">
                 Our Team
               </Link>
-              <Link to="/contact" className="text-sm font-medium text-foreground/80 hover:text-foreground transition-colors">
+              <Link to="/contact" className="text-foreground hover:text-accent transition-colors">
                 Contact Us
               </Link>
-            </div>
+            </nav>
           </div>
           <div className="flex items-center gap-4">
             <Button variant="ghost" className="text-foreground hover:bg-muted/50" asChild>
@@ -41,7 +41,7 @@ const Header = () => {
               <Link to="/login">Log in</Link>
             </Button>
           </div>
-        </nav>
+        </div>
       </div>
     </header>
   );
