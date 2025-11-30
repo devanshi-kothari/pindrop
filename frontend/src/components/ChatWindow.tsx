@@ -129,6 +129,7 @@ const ChatWindow = ({
   const [isFetchingHotels, setIsFetchingHotels] = useState(false);
   const [selectedHotelIndex, setSelectedHotelIndex] = useState<number | null>(null);
   const [hasConfirmedHotels, setHasConfirmedHotels] = useState(false);
+  const [hotelIds, setHotelIds] = useState<Record<number, number>>({}); // Map index to hotel_id
   const [propertyDetails, setPropertyDetails] = useState<Record<number, any>>({});
   const [isFetchingPropertyDetails, setIsFetchingPropertyDetails] = useState<Record<number, boolean>>({});
   const [expandedBookingOptions, setExpandedBookingOptions] = useState<Record<number, boolean>>({});
@@ -1019,7 +1020,52 @@ const ChatWindow = ({
       console.log("Hotels API result:", result);
 
       if (response.ok && result.success && Array.isArray(result.properties)) {
-        setHotels(result.properties);
+        const hotelsToSet = result.properties;
+        setHotels(hotelsToSet);
+
+        // Save hotels to database - save ALL hotels returned from API
+        try {
+          console.log(`Saving ${hotelsToSet.length} hotels to database...`);
+          const saveResponse = await fetch(getApiUrl("api/hotels/save"), {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              trip_id: tripId,
+              properties: hotelsToSet, // Send all hotels
+              search_params: {
+                location: hotelLocation,
+                check_in_date: tripPreferences.start_date,
+                check_out_date: tripPreferences.end_date,
+                currency: "USD",
+              },
+            }),
+          });
+
+          const saveResult = await saveResponse.json();
+          if (saveResult.success && saveResult.hotel_ids) {
+            console.log(`Saved ${saveResult.saved_count || saveResult.hotel_ids.length} hotels to database (out of ${saveResult.total_hotels || hotelsToSet.length} total):`, saveResult);
+            // Map hotel indices to hotel_ids
+            const hotelIdMap: Record<number, number> = {};
+            saveResult.hotel_ids.forEach((hotelId: number, idx: number) => {
+              if (idx < hotelsToSet.length) {
+                hotelIdMap[idx] = hotelId;
+              }
+            });
+            setHotelIds(hotelIdMap);
+            
+            if (saveResult.saved_count < hotelsToSet.length) {
+              console.warn(`Warning: Only ${saveResult.saved_count} out of ${hotelsToSet.length} hotels were saved successfully`);
+            }
+          } else {
+            console.error("Failed to save hotels:", saveResult);
+          }
+        } catch (saveError) {
+          console.error("Error saving hotels:", saveError);
+          // Don't show error to user, just log it
+        }
       } else {
         const errorMessage: Message = {
           role: "assistant",
@@ -1307,6 +1353,38 @@ const ChatWindow = ({
             } else if (flightsResult.outbound_flights.length > 0) {
               // Flights were fetched but not selected yet
               setHasConfirmedTripSketch(true);
+            }
+          }
+        }
+
+        // Load hotels
+        const hotelsResponse = await fetch(getApiUrl(`api/hotels/trip/${tripId}`), {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        const hotelsResult = await hotelsResponse.json();
+        if (hotelsResponse.ok && hotelsResult.success) {
+          // Restore hotels
+          if (hotelsResult.hotels && hotelsResult.hotels.length > 0) {
+            console.log("Restoring hotels from database:", hotelsResult.hotels);
+            setHotels(hotelsResult.hotels);
+            setHotelIds(hotelsResult.hotel_ids || {});
+            
+            // Restore selected hotel
+            if (hotelsResult.selected_hotel_index !== null && hotelsResult.selected_hotel_index !== undefined) {
+              setSelectedHotelIndex(hotelsResult.selected_hotel_index);
+            }
+            
+            // If hotels exist, user has started hotels phase
+            setHasStartedHotels(true);
+            
+            // If hotel is selected, user has confirmed hotels
+            if (hotelsResult.selected_hotel_index !== null) {
+              setHasConfirmedHotels(true);
             }
           }
         }
@@ -2903,7 +2981,69 @@ const ChatWindow = ({
                                 ? "border-blue-500 bg-blue-500/10"
                                 : "border-slate-700 bg-slate-950/60 hover:border-slate-600"
                             }`}
-                            onClick={() => setSelectedHotelIndex(index)}
+                            onClick={async () => {
+                              setSelectedHotelIndex(index);
+                              
+                              // Update selection in database
+                              const token = getAuthToken();
+                              if (!token || !tripId) return;
+
+                              let hotelId = hotelIds[index];
+                              
+                              // If hotel_id not available yet, wait a moment and check again
+                              if (!hotelId) {
+                                await new Promise(resolve => setTimeout(resolve, 500));
+                                hotelId = hotelIds[index];
+                              }
+
+                              // Try to save selection - if hotel_id is available
+                              if (hotelId) {
+                                try {
+                                  const response = await fetch(getApiUrl("api/hotels/select"), {
+                                    method: "PUT",
+                                    headers: {
+                                      Authorization: `Bearer ${token}`,
+                                      "Content-Type": "application/json",
+                                    },
+                                    body: JSON.stringify({
+                                      trip_id: tripId,
+                                      hotel_id: hotelId,
+                                      is_selected: true,
+                                    }),
+                                  });
+                                  
+                                  const result = await response.json();
+                                  if (result.success) {
+                                    console.log("Successfully updated hotel selection");
+                                  }
+                                } catch (error) {
+                                  console.error("Error updating hotel selection:", error);
+                                }
+                              } else {
+                                // Retry after a delay if hotel_id becomes available
+                                setTimeout(async () => {
+                                  const retryHotelId = hotelIds[index];
+                                  if (retryHotelId) {
+                                    try {
+                                      await fetch(getApiUrl("api/hotels/select"), {
+                                        method: "PUT",
+                                        headers: {
+                                          Authorization: `Bearer ${token}`,
+                                          "Content-Type": "application/json",
+                                        },
+                                        body: JSON.stringify({
+                                          trip_id: tripId,
+                                          hotel_id: retryHotelId,
+                                          is_selected: true,
+                                        }),
+                                      });
+                                    } catch (error) {
+                                      console.error("Error updating hotel selection (retry):", error);
+                                    }
+                                  }
+                                }, 1000);
+                              }
+                            }}
                           >
                             <div className="flex gap-3">
                               {/* Hotel Image */}

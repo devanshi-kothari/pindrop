@@ -2,6 +2,7 @@
 import express from 'express';
 import fetch from 'node-fetch';
 import { authenticateToken } from '../middleware/auth.js';
+import supabase from '../supabaseClient.js';
 
 const router = express.Router();
 
@@ -174,6 +175,361 @@ router.get('/details', authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'An error occurred while fetching property details',
+      error: error.message
+    });
+  }
+});
+
+// Save hotels to database
+// This endpoint is called after the hotel search API returns results.
+// It saves each hotel option to:
+// 1. The 'hotel' table (individual hotel records)
+// 2. The 'trip_hotel' table (associates hotels with trips)
+router.post('/save', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { trip_id, properties, search_params } = req.body;
+
+    if (!trip_id || !Array.isArray(properties) || properties.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required parameters: trip_id and properties array'
+      });
+    }
+
+    // Verify trip belongs to user
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id')
+      .eq('trip_id', trip_id)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found'
+      });
+    }
+
+    const savedHotelIds = [];
+    const searchParamsObj = search_params || {};
+
+    console.log(`Starting to save ${properties.length} hotel options to database for trip ${trip_id}`);
+
+    // Save each hotel option
+    for (let i = 0; i < properties.length; i++) {
+      const hotelProperty = properties[i];
+      console.log(`Processing hotel option ${i + 1} of ${properties.length}: ${hotelProperty.name}`);
+
+      // Extract known fields from hotel property
+      const hotelData = {
+        name: hotelProperty.name || null,
+        type: hotelProperty.type || null,
+        description: hotelProperty.description || null,
+        link: hotelProperty.link || null,
+        logo: hotelProperty.logo || null,
+        sponsored: hotelProperty.sponsored || false,
+        eco_certified: hotelProperty.eco_certified || false,
+        // Location information
+        location: searchParamsObj.location || null,
+        latitude: hotelProperty.gps_coordinates?.latitude || null,
+        longitude: hotelProperty.gps_coordinates?.longitude || null,
+        // Check-in/out times
+        check_in_time: hotelProperty.check_in_time || null,
+        check_out_time: hotelProperty.check_out_time || null,
+        // Pricing information
+        rate_per_night_lowest: hotelProperty.rate_per_night?.extracted_lowest || null,
+        rate_per_night_formatted: hotelProperty.rate_per_night?.lowest || null,
+        total_rate_lowest: hotelProperty.total_rate?.extracted_lowest || null,
+        total_rate_formatted: hotelProperty.total_rate?.lowest || null,
+        // Hotel classification
+        hotel_class: hotelProperty.hotel_class || null,
+        extracted_hotel_class: hotelProperty.extracted_hotel_class || null,
+        // Ratings and reviews
+        overall_rating: hotelProperty.overall_rating || null,
+        reviews: hotelProperty.reviews || null,
+        location_rating: hotelProperty.location_rating || null,
+        // Complex nested structures stored as JSONB
+        prices: hotelProperty.prices || null,
+        nearby_places: hotelProperty.nearby_places || null,
+        images: hotelProperty.images || null,
+        ratings: hotelProperty.ratings || null,
+        reviews_breakdown: hotelProperty.reviews_breakdown || null,
+        health_and_safety: hotelProperty.health_and_safety || null,
+        // Arrays
+        amenities: hotelProperty.amenities || [],
+        excluded_amenities: hotelProperty.excluded_amenities || [],
+        essential_info: hotelProperty.essential_info || [],
+        // SerpAPI specific fields
+        property_token: hotelProperty.property_token || null,
+        serpapi_property_details_link: hotelProperty.serpapi_property_details_link || null,
+        // Search parameters
+        search_location: searchParamsObj.location || null,
+        check_in_date: searchParamsObj.check_in_date ? new Date(searchParamsObj.check_in_date).toISOString().split('T')[0] : null,
+        check_out_date: searchParamsObj.check_out_date ? new Date(searchParamsObj.check_out_date).toISOString().split('T')[0] : null,
+        currency: searchParamsObj.currency || 'USD',
+        // Additional hotel data that doesn't fit in columns
+        additional_data: {} // Can store any other fields if needed
+      };
+
+      console.log(`Saving hotel: ${hotelData.name}, price: ${hotelData.total_rate_formatted || hotelData.rate_per_night_formatted}`);
+
+      // Insert hotel into hotel table
+      const { data: hotel, error: hotelError } = await supabase
+        .from('hotel')
+        .insert([hotelData])
+        .select('hotel_id')
+        .single();
+
+      if (hotelError) {
+        console.error('Error inserting hotel into hotel table:', hotelError);
+        console.error('Hotel data that failed:', JSON.stringify(hotelData, null, 2));
+        continue; // Skip this hotel but continue with others
+      }
+
+      if (hotel?.hotel_id) {
+        savedHotelIds.push(hotel.hotel_id);
+        console.log(`Successfully saved hotel ${i + 1} to hotel table with hotel_id: ${hotel.hotel_id}`);
+
+        // Associate hotel with trip in trip_hotel table
+        // Use upsert to handle duplicates (if hotel already associated with trip)
+        const { error: tripHotelError } = await supabase
+          .from('trip_hotel')
+          .upsert([{
+            trip_id: trip_id,
+            hotel_id: hotel.hotel_id,
+            is_selected: false
+          }], {
+            onConflict: 'trip_id,hotel_id'
+          });
+
+        if (tripHotelError) {
+          console.error(`Error associating hotel ${i + 1} with trip in trip_hotel table:`, tripHotelError);
+          console.error('trip_id:', trip_id, 'hotel_id:', hotel.hotel_id);
+        } else {
+          console.log(`Successfully associated hotel ${i + 1} (hotel_id: ${hotel.hotel_id}) with trip ${trip_id} in trip_hotel table`);
+        }
+      } else {
+        console.error(`Hotel ${i + 1} was inserted but no hotel_id was returned`);
+      }
+    }
+
+    console.log(`Completed saving hotels. Successfully saved ${savedHotelIds.length} out of ${properties.length} hotel options`);
+
+    res.status(200).json({
+      success: true,
+      message: `Saved ${savedHotelIds.length} hotels`,
+      hotel_ids: savedHotelIds,
+      total_hotels: properties.length,
+      saved_count: savedHotelIds.length
+    });
+  } catch (error) {
+    console.error('Error saving hotels:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while saving hotels',
+      error: error.message
+    });
+  }
+});
+
+// Update hotel selection status
+router.put('/select', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { trip_id, hotel_id, is_selected } = req.body;
+
+    if (!trip_id || !hotel_id || typeof is_selected !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required parameters: trip_id, hotel_id, and is_selected'
+      });
+    }
+
+    // Verify trip belongs to user
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id')
+      .eq('trip_id', trip_id)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found'
+      });
+    }
+
+    // If selecting this hotel, unselect other hotels for this trip
+    if (is_selected) {
+      console.log(`Selecting hotel ${hotel_id} for trip ${trip_id}`);
+      
+      // Unselect all other hotels for this trip
+      const { error: unselectError } = await supabase
+        .from('trip_hotel')
+        .update({ 
+          is_selected: false, 
+          updated_at: new Date().toISOString() 
+        })
+        .eq('trip_id', trip_id)
+        .neq('hotel_id', hotel_id);
+
+      if (unselectError) {
+        console.error('Error unselecting other hotels:', unselectError);
+      } else {
+        console.log('Successfully unselected other hotels for this trip');
+      }
+    }
+
+    // Update the selected hotel in trip_hotel table
+    const { error: updateError } = await supabase
+      .from('trip_hotel')
+      .update({
+        is_selected: is_selected,
+        updated_at: new Date().toISOString()
+      })
+      .eq('trip_id', trip_id)
+      .eq('hotel_id', hotel_id);
+
+    if (updateError) {
+      console.error('Error updating hotel selection in trip_hotel:', updateError);
+      throw updateError;
+    }
+
+    console.log(`Successfully ${is_selected ? 'selected' : 'unselected'} hotel ${hotel_id} for trip ${trip_id}`);
+
+    res.status(200).json({
+      success: true,
+      message: `Hotel selection ${is_selected ? 'updated' : 'cleared'}`,
+      hotel_id: hotel_id,
+      is_selected: is_selected
+    });
+  } catch (error) {
+    console.error('Error updating hotel selection:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while updating hotel selection',
+      error: error.message
+    });
+  }
+});
+
+// Load all hotels for a trip (for restoring state when user returns)
+router.get('/trip/:tripId', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+
+    if (!tripId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid trip_id'
+      });
+    }
+
+    // Verify trip belongs to user
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found'
+      });
+    }
+
+    // Get all hotels associated with this trip
+    const { data: tripHotels, error: tripHotelsError } = await supabase
+      .from('trip_hotel')
+      .select(`
+        hotel_id,
+        is_selected,
+        hotel:hotel(*)
+      `)
+      .eq('trip_id', tripId)
+      .order('created_at', { ascending: true });
+
+    if (tripHotelsError) {
+      throw tripHotelsError;
+    }
+
+    // Reconstruct hotel properties from database columns
+    const hotels = [];
+    const hotelIdMap = {}; // Map index to hotel_id
+    let selectedHotelIndex = null;
+    let selectedHotelId = null;
+
+    tripHotels?.forEach((th, index) => {
+      if (th.hotel) {
+        // Reconstruct hotel property from database columns
+        const hotelProperty = {
+          name: th.hotel.name,
+          type: th.hotel.type,
+          description: th.hotel.description,
+          link: th.hotel.link,
+          logo: th.hotel.logo,
+          sponsored: th.hotel.sponsored,
+          eco_certified: th.hotel.eco_certified,
+          gps_coordinates: th.hotel.latitude && th.hotel.longitude ? {
+            latitude: th.hotel.latitude,
+            longitude: th.hotel.longitude
+          } : null,
+          check_in_time: th.hotel.check_in_time,
+          check_out_time: th.hotel.check_out_time,
+          rate_per_night: th.hotel.rate_per_night_lowest ? {
+            extracted_lowest: th.hotel.rate_per_night_lowest,
+            lowest: th.hotel.rate_per_night_formatted
+          } : null,
+          total_rate: th.hotel.total_rate_lowest ? {
+            extracted_lowest: th.hotel.total_rate_lowest,
+            lowest: th.hotel.total_rate_formatted
+          } : null,
+          hotel_class: th.hotel.hotel_class,
+          extracted_hotel_class: th.hotel.extracted_hotel_class,
+          overall_rating: th.hotel.overall_rating,
+          reviews: th.hotel.reviews,
+          location_rating: th.hotel.location_rating,
+          prices: th.hotel.prices,
+          nearby_places: th.hotel.nearby_places,
+          images: th.hotel.images,
+          ratings: th.hotel.ratings,
+          reviews_breakdown: th.hotel.reviews_breakdown,
+          amenities: th.hotel.amenities || [],
+          excluded_amenities: th.hotel.excluded_amenities || [],
+          essential_info: th.hotel.essential_info || [],
+          health_and_safety: th.hotel.health_and_safety,
+          property_token: th.hotel.property_token,
+          serpapi_property_details_link: th.hotel.serpapi_property_details_link,
+          ...(th.hotel.additional_data || {})
+        };
+
+        hotels.push(hotelProperty);
+        hotelIdMap[index] = th.hotel_id;
+        if (th.is_selected) {
+          selectedHotelId = th.hotel_id;
+          selectedHotelIndex = index;
+        }
+      }
+    });
+
+    res.status(200).json({
+      success: true,
+      hotels: hotels,
+      hotel_ids: hotelIdMap,
+      selected_hotel_index: selectedHotelIndex,
+      selected_hotel_id: selectedHotelId
+    });
+  } catch (error) {
+    console.error('Error loading hotels for trip:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while loading hotels',
       error: error.message
     });
   }

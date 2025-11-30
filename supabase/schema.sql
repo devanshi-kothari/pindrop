@@ -183,3 +183,81 @@ CREATE INDEX IF NOT EXISTS idx_flight_return_mapping_trip_id ON flight_return_ma
 CREATE INDEX IF NOT EXISTS idx_flight_return_mapping_departing ON flight_return_mapping(departing_flight_id);
 CREATE INDEX IF NOT EXISTS idx_flight_return_mapping_return ON flight_return_mapping(return_flight_id);
 CREATE INDEX IF NOT EXISTS idx_flight_return_mapping_trip_departing ON flight_return_mapping(trip_id, departing_flight_id);
+
+-- Individual hotel options (similar to flight table)
+-- Each row represents one hotel option from the search results
+CREATE TABLE IF NOT EXISTS hotel (
+    hotel_id BIGSERIAL PRIMARY KEY,
+    -- Basic hotel information
+    name VARCHAR(255) NOT NULL,
+    type VARCHAR(100), -- e.g., 'hotel', 'vacation rental'
+    description TEXT,
+    link TEXT, -- URL of the property's website
+    logo TEXT, -- URL of the property's logo
+    sponsored BOOLEAN DEFAULT FALSE,
+    eco_certified BOOLEAN DEFAULT FALSE,
+    -- Location information
+    location VARCHAR(255), -- Search location used
+    latitude DECIMAL(10, 8), -- From gps_coordinates
+    longitude DECIMAL(11, 8), -- From gps_coordinates
+    -- Check-in/out times
+    check_in_time VARCHAR(50), -- e.g., '3:00 PM'
+    check_out_time VARCHAR(50), -- e.g., '12:00 PM'
+    -- Pricing information (extracted from rate_per_night and total_rate)
+    rate_per_night_lowest DECIMAL(10, 2), -- extracted_lowest from rate_per_night
+    rate_per_night_formatted VARCHAR(50), -- lowest formatted string
+    total_rate_lowest DECIMAL(10, 2), -- extracted_lowest from total_rate
+    total_rate_formatted VARCHAR(50), -- lowest formatted string
+    -- Hotel classification
+    hotel_class VARCHAR(50), -- e.g., '5-star hotel'
+    extracted_hotel_class INT, -- e.g., 5
+    -- Ratings and reviews
+    overall_rating DECIMAL(3, 2), -- e.g., 4.5
+    reviews INT, -- Total number of reviews
+    location_rating DECIMAL(3, 2), -- Location rating
+    -- Complex nested structures stored as JSONB
+    prices JSONB, -- Array of prices from different sources
+    nearby_places JSONB, -- Array of nearby places with transportations
+    images JSONB, -- Array of image objects (thumbnail, original_image)
+    ratings JSONB, -- Array of star ratings breakdown
+    reviews_breakdown JSONB, -- Array of review breakdown categories
+    amenities TEXT[], -- Array of amenities (e.g., 'Free Wi-Fi', 'Free parking')
+    excluded_amenities TEXT[], -- Array of excluded amenities
+    health_and_safety JSONB, -- Health and safety information object
+    essential_info TEXT[], -- Essential info for vacation rentals
+    -- SerpAPI specific fields
+    property_token VARCHAR(255), -- Token to retrieve property details
+    serpapi_property_details_link TEXT, -- SerpAPI endpoint for property details
+    -- Search parameters used to find this hotel
+    search_location VARCHAR(255), -- Location searched
+    check_in_date DATE, -- Check-in date used in search
+    check_out_date DATE, -- Check-out date used in search
+    currency VARCHAR(10) DEFAULT 'USD',
+    -- Additional hotel data that doesn't fit in columns
+    additional_data JSONB, -- For any other hotel data fields
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+);
+
+-- Maps hotels to trips (similar to trip_flight)
+-- Tracks which hotels are associated with which trips and their selection status
+CREATE TABLE IF NOT EXISTS trip_hotel (
+    trip_id BIGINT NOT NULL REFERENCES trip(trip_id) ON DELETE CASCADE,
+    hotel_id BIGINT NOT NULL REFERENCES hotel(hotel_id) ON DELETE CASCADE,
+    -- Whether this hotel is selected for the trip (only one hotel should be selected per trip)
+    is_selected BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+    -- Composite primary key
+    PRIMARY KEY (trip_id, hotel_id)
+);
+
+-- Indexes for hotel tables
+CREATE INDEX IF NOT EXISTS idx_hotel_location ON hotel(location);
+CREATE INDEX IF NOT EXISTS idx_hotel_name ON hotel(name);
+CREATE INDEX IF NOT EXISTS idx_hotel_property_token ON hotel(property_token) WHERE property_token IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_hotel_search_dates ON hotel(check_in_date, check_out_date);
+CREATE INDEX IF NOT EXISTS idx_trip_hotel_trip_id ON trip_hotel(trip_id);
+CREATE INDEX IF NOT EXISTS idx_trip_hotel_hotel_id ON trip_hotel(hotel_id);
+-- Note: Application logic should ensure only one selected hotel per trip
+-- This can be enforced via a trigger or application-level checks
+CREATE INDEX IF NOT EXISTS idx_trip_hotel_selected ON trip_hotel(trip_id, is_selected) WHERE is_selected = TRUE;
