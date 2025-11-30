@@ -675,19 +675,33 @@ router.get('/trip/:tripId', authenticateToken, async (req, res) => {
     tripFlights?.forEach((tf) => {
       if (tf.flight && tf.flight.flight_type === 'outbound') {
         // Reconstruct flight option from database columns
+        // Start with additional_data first, then override with explicit columns
+        // This ensures departure_token from the column takes precedence
+        const additionalData = tf.flight.additional_data || {};
+        // Remove any conflicting fields from additional_data to avoid overwriting column values
+        const cleanedAdditionalData = { ...additionalData };
+        delete cleanedAdditionalData.price;
+        delete cleanedAdditionalData.departure_token;
+        delete cleanedAdditionalData.total_duration;
+        delete cleanedAdditionalData.flights;
+        delete cleanedAdditionalData.layovers;
+        
         const flightOption = {
+          ...cleanedAdditionalData,
+          // Explicit columns override anything from additional_data
           price: tf.flight.price,
-          departure_token: tf.flight.departure_token,
+          departure_token: tf.flight.departure_token, // This must come from the column, not additional_data
           total_duration: tf.flight.total_duration,
           flights: tf.flight.flights,
-          layovers: tf.flight.layovers,
-          ...(tf.flight.additional_data || {})
+          layovers: tf.flight.layovers
         };
         console.log(`Reconstructed outbound flight ${outboundIndex}:`, {
           flight_id: tf.flight_id,
           has_departure_token: !!flightOption.departure_token,
           departure_token: flightOption.departure_token,
-          price: flightOption.price
+          price: flightOption.price,
+          departure_token_from_column: tf.flight.departure_token,
+          departure_token_in_additional: additionalData.departure_token
         });
         outboundFlights.push(flightOption);
         outboundFlightIdMap[outboundIndex] = tf.flight_id;
@@ -773,6 +787,18 @@ router.get('/trip/:tripId', authenticateToken, async (req, res) => {
     }
     // If no selected departing flight, filteredReturnFlights will be empty array
 
+    // Extract departure_id and arrival_id from the first outbound flight (they should be the same for all flights)
+    let departureId = null;
+    let arrivalId = null;
+    if (outboundFlights.length > 0) {
+      // Get from the first flight's stored data
+      const firstFlightData = tripFlights?.find(tf => tf.flight && tf.flight.flight_type === 'outbound');
+      if (firstFlightData?.flight) {
+        departureId = firstFlightData.flight.departure_id;
+        arrivalId = firstFlightData.flight.arrival_id;
+      }
+    }
+
     res.status(200).json({
       success: true,
       outbound_flights: outboundFlights,
@@ -781,7 +807,9 @@ router.get('/trip/:tripId', authenticateToken, async (req, res) => {
       return_flight_ids: Object.keys(filteredReturnFlightIds).length > 0 ? filteredReturnFlightIds : returnFlightIdMap, // Use filtered if available
       selected_outbound_index: selectedOutboundIndex,
       selected_return_index: filteredSelectedReturnIndex !== null ? filteredSelectedReturnIndex : selectedReturnIndex,
-      return_flight_mappings: returnFlightMappings
+      return_flight_mappings: returnFlightMappings,
+      departure_id: departureId, // Airport code for departure location
+      arrival_id: arrivalId // Airport code for arrival location
     });
   } catch (error) {
     console.error('Error loading flights for trip:', error);

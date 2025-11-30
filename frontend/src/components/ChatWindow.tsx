@@ -846,6 +846,19 @@ const ChatWindow = ({
   // Fetch return flights using departure_token from selected outbound flight
   const fetchReturnFlights = async (departureToken: string) => {
     if (!tripId || !departureId || !arrivalId || !tripPreferences?.start_date || !tripPreferences?.end_date) {
+      console.error("Missing required data for fetching return flights:", {
+        tripId,
+        departureId,
+        arrivalId,
+        start_date: tripPreferences?.start_date,
+        end_date: tripPreferences?.end_date
+      });
+      const errorMessage: Message = {
+        role: "assistant",
+        content: "Missing required information to fetch return flights. Please ensure your trip dates and airport codes are set.",
+        timestamp: formatTime(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
       return;
     }
 
@@ -1307,9 +1320,23 @@ const ChatWindow = ({
 
         const flightsResult = await flightsResponse.json();
         if (flightsResponse.ok && flightsResult.success) {
+          // Restore airport codes if available
+          if (flightsResult.departure_id) {
+            console.log("Restoring departure airport code:", flightsResult.departure_id);
+            setDepartureId(flightsResult.departure_id);
+          }
+          if (flightsResult.arrival_id) {
+            console.log("Restoring arrival airport code:", flightsResult.arrival_id);
+            setArrivalId(flightsResult.arrival_id);
+          }
+
           // Restore outbound flights
           if (flightsResult.outbound_flights && flightsResult.outbound_flights.length > 0) {
             console.log("Restoring outbound flights from database:", flightsResult.outbound_flights);
+            // Log departure_token for each flight to debug
+            flightsResult.outbound_flights.forEach((flight: any, idx: number) => {
+              console.log(`Flight ${idx} departure_token:`, flight?.departure_token, "Type:", typeof flight?.departure_token);
+            });
             setBestFlights(flightsResult.outbound_flights);
             setOutboundFlightIds(flightsResult.outbound_flight_ids || {});
             
@@ -1319,30 +1346,45 @@ const ChatWindow = ({
               const selectedOutbound = flightsResult.outbound_flights[flightsResult.selected_outbound_index];
               console.log("Restored selected outbound flight:", selectedOutbound);
               console.log("Departure token in restored flight:", selectedOutbound?.departure_token);
+              console.log("Button should be enabled:", !!selectedOutbound?.departure_token && returnFlights.length === 0);
             }
 
-            // If there's a selected outbound flight, load its return flights
+            // If there's a selected outbound flight, load its return flights ONLY if a return flight was actually selected
+            // Otherwise, clear return flights so the "Choose return flight" button is visible
             if (flightsResult.selected_outbound_index !== null && flightsResult.selected_outbound_index !== undefined) {
               const selectedOutbound = flightsResult.outbound_flights[flightsResult.selected_outbound_index];
               if (selectedOutbound?.departure_token) {
-                // Load return flights for this departing flight
-                const returnFlightsForDeparture = flightsResult.return_flights || [];
-                if (returnFlightsForDeparture.length > 0) {
-                  console.log("Restoring return flights from database:", returnFlightsForDeparture.length, "flights");
-                  setReturnFlights(returnFlightsForDeparture);
-                  setReturnFlightIds(flightsResult.return_flight_ids || {});
-                  
-                  // Restore selected return flight
-                  if (flightsResult.selected_return_index !== null && flightsResult.selected_return_index !== undefined) {
+                // Only restore return flights if a return flight was actually selected
+                // This ensures the "Choose return flight" button is visible if user wants to select/change return flights
+                if (flightsResult.selected_return_index !== null && flightsResult.selected_return_index !== undefined) {
+                  const returnFlightsForDeparture = flightsResult.return_flights || [];
+                  if (returnFlightsForDeparture.length > 0) {
+                    console.log("Restoring return flights from database:", returnFlightsForDeparture.length, "flights");
+                    setReturnFlights(returnFlightsForDeparture);
+                    setReturnFlightIds(flightsResult.return_flight_ids || {});
                     setSelectedReturnIndex(flightsResult.selected_return_index);
+                  } else {
+                    // Return flight was selected but data not found - clear state
+                    console.log("Return flight was selected but data not found in database");
+                    setReturnFlights([]);
+                    setSelectedReturnIndex(null);
                   }
                 } else {
-                  // No return flights loaded yet - user can click "Choose return flight" button
-                  console.log("No return flights found in database for this departing flight");
+                  // No return flight selected - clear return flights so button is visible
+                  console.log("No return flight selected - clearing return flights to show button");
+                  setReturnFlights([]);
+                  setSelectedReturnIndex(null);
                 }
               } else {
                 console.warn("Selected outbound flight does not have departure_token:", selectedOutbound);
+                // Clear return flights if departure_token is missing
+                setReturnFlights([]);
+                setSelectedReturnIndex(null);
               }
+            } else {
+              // No outbound flight selected - clear return flights
+              setReturnFlights([]);
+              setSelectedReturnIndex(null);
             }
 
             // If flights exist, user has confirmed trip sketch and started flights phase
@@ -2622,6 +2664,11 @@ const ChatWindow = ({
                     {/* Choose Return Flight Button - Show when return flights are NOT loaded or when user wants to refresh */}
                     {selectedOutboundIndex !== null && bestFlights[selectedOutboundIndex] && returnFlights.length === 0 && (
                       <div className="pt-2 flex justify-end">
+                        {!bestFlights[selectedOutboundIndex]?.departure_token && (
+                          <p className="text-[10px] text-red-400 mr-2">
+                            Warning: This flight is missing departure token. Cannot fetch return flights.
+                          </p>
+                        )}
                         <Button
                           size="sm"
                           className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
@@ -2629,17 +2676,39 @@ const ChatWindow = ({
                           onClick={async () => {
                             const selectedFlight = bestFlights[selectedOutboundIndex];
                             console.log("Choose return flight clicked. Selected flight:", selectedFlight);
+                            console.log("Selected outbound index:", selectedOutboundIndex);
+                            console.log("Best flights array length:", bestFlights.length);
                             console.log("Departure token:", selectedFlight?.departure_token);
-                            if (selectedFlight?.departure_token) {
-                              await fetchReturnFlights(selectedFlight.departure_token);
-                            } else {
+                            console.log("Departure token type:", typeof selectedFlight?.departure_token);
+                            console.log("Departure token truthy:", !!selectedFlight?.departure_token);
+                            console.log("Current returnFlights.length:", returnFlights.length);
+                            console.log("isFetchingReturnFlights:", isFetchingReturnFlights);
+                            
+                            // Check if departure_token exists - handle both null and undefined
+                            const departureToken = selectedFlight?.departure_token;
+                            if (!departureToken || departureToken === null || departureToken === undefined || departureToken === '') {
+                              console.error("Missing departure_token in selected flight:", selectedFlight);
                               const errorMessage: Message = {
                                 role: "assistant",
-                                content: "This flight option doesn't have a departure token. Please select a different option.",
+                                content: "This flight option doesn't have a departure token. Please select a different option or try refreshing the page.",
                                 timestamp: formatTime(),
                               };
                               setMessages((prev) => [...prev, errorMessage]);
+                              return;
                             }
+
+                            // Clear any existing return flights and cache to ensure fresh API call
+                            setReturnFlights([]);
+                            setSelectedReturnIndex(null);
+                            setReturnFlightsCache(prev => {
+                              const newCache = { ...prev };
+                              delete newCache[departureToken];
+                              return newCache;
+                            });
+
+                            // Fetch return flights using the validated departure_token
+                            console.log("Calling fetchReturnFlights with token:", departureToken);
+                            await fetchReturnFlights(departureToken);
                           }}
                         >
                           {isFetchingReturnFlights ? "Loading return flights..." : "Choose return flight"}
