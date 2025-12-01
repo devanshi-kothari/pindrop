@@ -261,3 +261,23 @@ CREATE INDEX IF NOT EXISTS idx_trip_hotel_hotel_id ON trip_hotel(hotel_id);
 -- Note: Application logic should ensure only one selected hotel per trip
 -- This can be enforced via a trigger or application-level checks
 CREATE INDEX IF NOT EXISTS idx_trip_hotel_selected ON trip_hotel(trip_id, is_selected) WHERE is_selected = TRUE;
+
+-- Cache hotel booking options to avoid repeated API calls
+-- Stores the booking options (featured_prices) fetched from SerpAPI property details
+CREATE TABLE IF NOT EXISTS hotel_booking_options (
+    hotel_booking_options_id BIGSERIAL PRIMARY KEY,
+    hotel_id BIGINT NOT NULL REFERENCES hotel(hotel_id) ON DELETE CASCADE,
+    -- The serpapi_property_details_link used to fetch this data (for identification)
+    serpapi_link TEXT NOT NULL,
+    -- The full property details response from SerpAPI (or just the booking options part)
+    booking_options_data JSONB NOT NULL,
+    -- When this data was fetched
+    fetched_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+    -- Ensure we don't store duplicate entries for the same hotel and link
+    UNIQUE(hotel_id, serpapi_link)
+);
+
+-- Indexes for hotel_booking_options
+CREATE INDEX IF NOT EXISTS idx_hotel_booking_options_hotel_id ON hotel_booking_options(hotel_id);
+CREATE INDEX IF NOT EXISTS idx_hotel_booking_options_serpapi_link ON hotel_booking_options(serpapi_link);
+CREATE INDEX IF NOT EXISTS idx_hotel_booking_options_fetched_at ON hotel_booking_options(fetched_at);

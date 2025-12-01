@@ -77,9 +77,10 @@ router.get('/search', authenticateToken, async (req, res) => {
 });
 
 // Get detailed property information using serpapi_property_details_link
+// First checks the database for cached booking options, then makes API call if not found
 router.get('/details', authenticateToken, async (req, res) => {
   try {
-    const { serpapi_link } = req.query;
+    const { serpapi_link, hotel_id } = req.query;
 
     // Validate required parameters
     if (!serpapi_link) {
@@ -87,6 +88,37 @@ router.get('/details', authenticateToken, async (req, res) => {
         success: false,
         message: 'Missing required parameter: serpapi_link'
       });
+    }
+
+    // If hotel_id is provided, check database first for cached booking options
+    if (hotel_id) {
+      try {
+        const { data: cachedOptions, error: cacheError } = await supabase
+          .from('hotel_booking_options')
+          .select('booking_options_data, fetched_at')
+          .eq('hotel_id', parseInt(hotel_id))
+          .eq('serpapi_link', serpapi_link)
+          .maybeSingle();
+
+        if (!cacheError && cachedOptions) {
+          console.log(`Found cached booking options for hotel ${hotel_id}, fetched at ${cachedOptions.fetched_at}`);
+          // Return cached data
+          return res.status(200).json({
+            success: true,
+            property: cachedOptions.booking_options_data,
+            cached: true,
+            fetched_at: cachedOptions.fetched_at
+          });
+        } else if (cacheError) {
+          console.error('Error checking cache for booking options:', cacheError);
+          // Continue to API call if cache check fails
+        } else {
+          console.log(`No cached booking options found for hotel ${hotel_id}, fetching from API`);
+        }
+      } catch (cacheCheckError) {
+        console.error('Error checking cache:', cacheCheckError);
+        // Continue to API call if cache check fails
+      }
     }
 
     // Get SerpAPI key from environment
@@ -166,9 +198,36 @@ router.get('/details', authenticateToken, async (req, res) => {
     // The response should contain property details
     console.log('Property details response keys:', Object.keys(data));
 
+    // Save to database cache if hotel_id is provided
+    if (hotel_id) {
+      try {
+        const { error: saveError } = await supabase
+          .from('hotel_booking_options')
+          .upsert([{
+            hotel_id: parseInt(hotel_id),
+            serpapi_link: serpapi_link,
+            booking_options_data: data,
+            fetched_at: new Date().toISOString()
+          }], {
+            onConflict: 'hotel_id,serpapi_link'
+          });
+
+        if (saveError) {
+          console.error('Error saving booking options to cache:', saveError);
+          // Don't fail the request if cache save fails
+        } else {
+          console.log(`Successfully cached booking options for hotel ${hotel_id}`);
+        }
+      } catch (saveCacheError) {
+        console.error('Error saving booking options to cache:', saveCacheError);
+        // Don't fail the request if cache save fails
+      }
+    }
+
     res.status(200).json({
       success: true,
-      property: data
+      property: data,
+      cached: false
     });
   } catch (error) {
     console.error('Error fetching property details:', error);

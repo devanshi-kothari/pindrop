@@ -1112,12 +1112,20 @@ const ChatWindow = ({
       const token = getAuthToken();
       if (!token) return;
 
+      // Get hotel_id from the mapping if available
+      const hotelId = hotelIds[hotelIndex];
+
       // Use the serpapi_property_details_link from the hotel response
       const params = new URLSearchParams({
         serpapi_link: serpapiLink,
       });
 
-      console.log("Fetching property details with serpapi_link:", serpapiLink);
+      // Add hotel_id if available so backend can check cache
+      if (hotelId) {
+        params.append('hotel_id', hotelId.toString());
+      }
+
+      console.log("Fetching property details with serpapi_link:", serpapiLink, hotelId ? `(hotel_id: ${hotelId})` : "(no hotel_id)");
 
       const response = await fetch(getApiUrl(`api/hotels/details?${params.toString()}`), {
         method: "GET",
@@ -1128,7 +1136,7 @@ const ChatWindow = ({
       });
 
       const result = await response.json();
-      console.log("Property details API result:", result);
+      console.log("Property details API result:", result, result.cached ? "(from cache)" : "(from API)");
 
       if (response.ok && result.success && result.property) {
         setPropertyDetails({ ...propertyDetails, [hotelIndex]: result.property });
