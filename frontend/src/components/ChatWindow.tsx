@@ -108,6 +108,7 @@ const ChatWindow = ({
   const [hasShownTripSketchPrompt, setHasShownTripSketchPrompt] = useState(false);
   const [hasConfirmedActivities, setHasConfirmedActivities] = useState(false);
   const [hasConfirmedTripSketch, setHasConfirmedTripSketch] = useState(false);
+  const [tripDestination, setTripDestination] = useState<string | null>(null);
   const [departureLocation, setDepartureLocation] = useState("");
   const [departureId, setDepartureId] = useState<string | null>(null);
   const [arrivalId, setArrivalId] = useState<string | null>(null);
@@ -671,34 +672,43 @@ const ChatWindow = ({
     }
   };
 
-  // Extract arrival location from day 1 of the itinerary
+  // Extract arrival location from day 1 of the itinerary, or from trip destination/activities
   const getArrivalLocation = (): string | null => {
-    if (itineraryDays.length === 0) return null;
+    // First, try to get from itinerary days (if they exist)
+    if (itineraryDays.length > 0) {
+      // Find day 1 (could be day_number === 1 or the first day in the array)
+      const day1 = itineraryDays.find((day) => day.day_number === 1) || itineraryDays[0];
+      
+      if (day1) {
+        // Try to get location from activities
+        if (Array.isArray(day1.activities) && day1.activities.length > 0) {
+          const firstActivity = day1.activities[0];
+          if (firstActivity.location) {
+            return firstActivity.location;
+          }
+        }
+        
+        // Try to extract location from summary
+        if (day1.summary) {
+          // Look for common location patterns in the summary
+          const locationMatch = day1.summary.match(/(?:in|at|to|from)\s+([A-Z][a-zA-Z\s]+(?:,\s*[A-Z][a-zA-Z\s]+)?)/);
+          if (locationMatch) {
+            return locationMatch[1].trim();
+          }
+        }
+      }
+    }
     
-    // Find day 1 (could be day_number === 1 or the first day in the array)
-    const day1 = itineraryDays.find((day) => day.day_number === 1) || itineraryDays[0];
-    
-    if (!day1) return null;
-    
-    // Try to get location from activities
-    if (Array.isArray(day1.activities) && day1.activities.length > 0) {
-      const firstActivity = day1.activities[0];
-      if (firstActivity.location) {
+    // Fallback: try to get from activities (if we have any)
+    if (activities.length > 0) {
+      const firstActivity = activities.find(a => a.location) || activities[0];
+      if (firstActivity?.location) {
         return firstActivity.location;
       }
     }
     
-    // Try to extract location from summary
-    if (day1.summary) {
-      // Look for common location patterns in the summary
-      const locationMatch = day1.summary.match(/(?:in|at|to|from)\s+([A-Z][a-zA-Z\s]+(?:,\s*[A-Z][a-zA-Z\s]+)?)/);
-      if (locationMatch) {
-        return locationMatch[1].trim();
-      }
-    }
-    
-    // Fallback: use trip destination if available
-    return null;
+    // Last resort: use trip destination
+    return tripDestination;
   };
 
   // Fetch flights from SerpAPI
@@ -1295,6 +1305,20 @@ const ChatWindow = ({
       if (!token) return;
 
       try {
+        // Load trip to get destination
+        const tripResponse = await fetch(getApiUrl(`api/trips/${tripId}`), {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        const tripResult = await tripResponse.json();
+        if (tripResponse.ok && tripResult.success && tripResult.trip?.destination) {
+          setTripDestination(tripResult.trip.destination);
+        }
+
         // Load itinerary to restore trip sketch state
         await loadItineraryDays(tripId);
         
@@ -2250,7 +2274,12 @@ const ChatWindow = ({
                     size="sm"
                     className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
                     disabled={!allActivitiesAnswered}
-                    onClick={() => setHasConfirmedActivities(true)}
+                    onClick={() => {
+                      setHasConfirmedActivities(true);
+                      // Skip trip sketch and go straight to flights
+                      setHasConfirmedTripSketch(true);
+                      setHasShownTripSketchPrompt(true);
+                    }}
                   >
                     I&apos;m done with activities
                   </Button>
@@ -2423,7 +2452,7 @@ const ChatWindow = ({
 
                 {/* Arrival Location */}
                 <div className="space-y-2">
-                  <Label className="text-slate-200 text-xs">Arrival location (from day 1 of your trip)</Label>
+                  <Label className="text-slate-200 text-xs">Arrival location</Label>
                   {(() => {
                     const arrivalLocation = getArrivalLocation();
                     return (
@@ -2469,7 +2498,7 @@ const ChatWindow = ({
                           </>
                         ) : (
                           <p className="text-[11px] text-slate-400">
-                            Could not extract arrival location from day 1. Please ensure your trip sketch has location information.
+                            Please set your trip destination or add activities with locations to automatically detect the arrival location.
                           </p>
                         )}
                       </>
@@ -3292,41 +3321,7 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {tripId &&
-            hasConfirmedActivities &&
-            allActivitiesAnswered &&
-            hasAnyLikedActivity &&
-            !hasShownTripSketchPrompt && (
-              <div className="flex justify-start">
-                <div className="bg-slate-900/90 border border-slate-700 text-slate-100 rounded-lg px-4 py-3 shadow-sm max-w-[75%]">
-                  <p className="text-sm">
-                    Is there anything else you would like to chat about, or should I create the
-                    trip sketch?
-                  </p>
-                  <div className="flex gap-2 mt-3">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="border-slate-600 text-xs text-slate-100 bg-slate-900/70 hover:bg-slate-800"
-                      onClick={() => setHasShownTripSketchPrompt(true)}
-                    >
-                      Keep chatting
-                    </Button>
-                    <Button
-                      size="sm"
-                      className="bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-xs font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400 disabled:opacity-60"
-                      disabled={isGeneratingItinerary}
-                      onClick={async () => {
-                        setHasShownTripSketchPrompt(true);
-                        await generateItinerary();
-                      }}
-                    >
-                      {isGeneratingItinerary ? "Generating trip sketch..." : "Create trip sketch"}
-                    </Button>
-                  </div>
-              </div>
-            </div>
-          )}
+          {/* Trip sketch prompt removed - automatically proceed to flights after activities */}
           <div ref={messagesEndRef} />
         </div>
       </ScrollArea>
