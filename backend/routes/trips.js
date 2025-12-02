@@ -8,14 +8,13 @@ import { saveMessage, extractTripInfo, fetchDestinationImage } from './chat.js';
 
 const router = express.Router();
 
-// Initialize Groq client (OpenAI-compatible API) for itinerary generation
-const groqClient = new OpenAI({
-  apiKey: process.env.GROQ_API_KEY,
-  baseURL: 'https://api.groq.com/openai/v1',
+// Initialize OpenAI client for itinerary generation
+const openaiClient = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 // Default model - can be overridden via env variable
-const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
+const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-3.5-turbo';
 
 const GOOGLE_CUSTOM_SEARCH_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
 const GOOGLE_CUSTOM_SEARCH_CX = process.env.GOOGLE_CUSTOM_SEARCH_CX;
@@ -23,7 +22,7 @@ const GOOGLE_CUSTOM_SEARCH_CX = process.env.GOOGLE_CUSTOM_SEARCH_CX;
 async function generateTripTitleFromMessage(message) {
   if (!message || typeof message !== 'string') return null;
   try {
-    const completion = await groqClient.chat.completions.create({
+    const completion = await openaiClient.chat.completions.create({
       model: DEFAULT_MODEL,
       messages: [
         {
@@ -59,44 +58,210 @@ function normalizeDestinationName(raw) {
     .join(' ');
 }
 
+// Helper function to check if a URL is from a low-quality or irrelevant domain
+function isLowQualityLink(url) {
+  if (!url || typeof url !== 'string') return true;
+  
+  const urlLower = url.toLowerCase();
+  const badDomains = [
+    'facebook.com',
+    'fb.com',
+    'twitter.com',
+    'x.com',
+    'instagram.com',
+    'linkedin.com',
+    'pinterest.com',
+    'reddit.com',
+    'nih.gov',
+    'cdc.gov',
+    'wikipedia.org',
+    'youtube.com',
+    'tiktok.com',
+    'snapchat.com',
+    'tumblr.com',
+    'flickr.com',
+    'imgur.com',
+  ];
+  
+  return badDomains.some(domain => urlLower.includes(domain));
+}
+
+// Helper function to check if a link appears to be a collection/list page
+function isCollectionLink(url, title, snippet) {
+  if (!url || typeof url !== 'string') return false;
+  
+  const urlLower = url.toLowerCase();
+  const titleLower = (title || '').toLowerCase();
+  const snippetLower = (snippet || '').toLowerCase();
+  
+  // Check URL patterns
+  const collectionUrlPatterns = [
+    /\/list\//,
+    /\/top-?\d+/,
+    /\/best-?\d+/,
+    /\/things-to-do/,
+    /\/activities/,
+    /\/attractions/,
+    /\/guide/,
+    /\/blog/,
+    /\/article/,
+  ];
+  
+  if (collectionUrlPatterns.some(pattern => pattern.test(urlLower))) {
+    return true;
+  }
+  
+  // Check title/snippet patterns
+  const collectionTextPatterns = [
+    /^(top|best|\d+)\s+(things to do|activities|places|attractions|must-see)/i,
+    /\b(list|guide|blog|article)\b/i,
+  ];
+  
+  const combinedText = `${titleLower} ${snippetLower}`;
+  if (collectionTextPatterns.some(pattern => pattern.test(combinedText))) {
+    return true;
+  }
+  
+  return false;
+}
+
+// Function to find a better link for a specific activity
+async function findBetterActivityLink(activityName, destination) {
+  if (!GOOGLE_CUSTOM_SEARCH_API_KEY || !GOOGLE_CUSTOM_SEARCH_CX) {
+    return null;
+  }
+  
+  if (!activityName || activityName.length < 3) {
+    return null;
+  }
+  
+  try {
+    // Create a specific search query for this activity
+    const cleanActivityName = activityName
+      .replace(/^(visit|explore|see|tour|experience|go to|check out)\s+/i, '')
+      .trim();
+    
+    const query = destination 
+      ? `"${cleanActivityName}" ${destination} official website`
+      : `"${cleanActivityName}" official website`;
+    
+    const params = new URLSearchParams({
+      key: GOOGLE_CUSTOM_SEARCH_API_KEY,
+      cx: GOOGLE_CUSTOM_SEARCH_CX,
+      q: query,
+      num: '5', // Get a few results to find a good one
+      safe: 'active',
+    });
+    
+    const url = `https://customsearch.googleapis.com/customsearch/v1?${params.toString()}`;
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      return null;
+    }
+    
+    const data = await response.json();
+    if (!Array.isArray(data.items) || data.items.length === 0) {
+      return null;
+    }
+    
+    // Find the first result that:
+    // 1. Is not a low-quality link
+    // 2. Is not a collection page
+    // 3. Appears to be about the specific activity
+    for (const item of data.items) {
+      const itemLink = item.link || '';
+      const itemTitle = item.title || '';
+      const itemSnippet = item.snippet || '';
+      
+      // Skip low-quality links
+      if (isLowQualityLink(itemLink)) {
+        continue;
+      }
+      
+      // Skip collection pages
+      if (isCollectionLink(itemLink, itemTitle, itemSnippet)) {
+        continue;
+      }
+      
+      // Check if the title/snippet mentions the activity name
+      const combinedText = `${itemTitle} ${itemSnippet}`.toLowerCase();
+      const activityNameLower = cleanActivityName.toLowerCase();
+      const activityWords = activityNameLower.split(/\s+/).filter(w => w.length > 3);
+      
+      // If at least one significant word from the activity name appears, it's likely relevant
+      if (activityWords.length > 0 && activityWords.some(word => combinedText.includes(word))) {
+        return itemLink;
+      }
+    }
+    
+    // If no perfect match, return the first non-low-quality, non-collection link
+    for (const item of data.items) {
+      const itemLink = item.link || '';
+      if (!isLowQualityLink(itemLink) && !isCollectionLink(itemLink, item.title, item.snippet)) {
+        return itemLink;
+      }
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('Error finding better activity link:', error);
+    return null;
+  }
+}
+
 async function generateRefinedSearchQuery(trip, preferences, userProfile, activityPreferences) {
-  // Simple, straightforward query generation - don't overthink it
+  // Improved query generation with category diversification
   try {
     const destination = trip?.destination || '';
     
-    // Build a simple query: destination + basic activity interests
-    let queryParts = [];
+    // Build queries that diversify categories
+    let queries = [];
     
-    // Always include destination
-    if (destination) {
-      queryParts.push(destination);
+    // Get activity categories to include
+    const includeCategories = Array.isArray(preferences?.activity_categories) 
+      ? preferences.activity_categories 
+      : [];
+    
+    // Get categories to avoid
+    const avoidCategories = Array.isArray(preferences?.avoid_activity_categories)
+      ? preferences.avoid_activity_categories
+      : [];
+    
+    // If we have specific categories, create separate queries for each to ensure diversity
+    if (includeCategories.length > 0) {
+      // Create one query per category to ensure we get diverse results
+      for (const category of includeCategories.slice(0, 5)) { // Limit to 5 categories max
+        if (destination) {
+          queries.push(`${category} ${destination}`);
+        } else {
+          queries.push(category);
+        }
+      }
     }
     
-    // Add activity interests if specified (limit to 1-2 to keep it simple)
-    if (Array.isArray(preferences?.activity_categories) && preferences.activity_categories.length > 0) {
-      const topInterests = preferences.activity_categories.slice(0, 2);
-      queryParts.push(...topInterests);
+    // If no specific categories, create a general query
+    if (queries.length === 0) {
+      if (destination) {
+        queries.push(`things to do ${destination}`);
+      } else {
+        queries.push('travel activities');
+      }
     }
     
-    // Add "things to do" or "activities" to make it a proper search query
-    if (queryParts.length === 0) {
-      queryParts.push('things to do');
-    } else {
-      queryParts.push('activities');
-    }
+    // For now, return the first query (we'll handle multiple queries in the caller)
+    // This ensures we get diverse results by making multiple search calls
+    const query = queries[0];
+    console.log('[activities] Generated Google query:', query, '| Categories to avoid:', avoidCategories);
     
-    const simpleQuery = queryParts.join(' ');
-    console.log('[activities] Generated Google query:', simpleQuery);
-
-    // That's it - keep it simple!
-    return simpleQuery;
+    return { query, avoidCategories, allQueries: queries };
   } catch (error) {
     console.error('Error generating refined search query:', error);
     // Fallback to very simple query
     if (trip?.destination) {
-      return `things to do ${trip.destination}`;
+      return { query: `things to do ${trip.destination}`, avoidCategories: [], allQueries: [] };
     }
-    return 'travel activities';
+    return { query: 'travel activities', avoidCategories: [], allQueries: [] };
   }
 }
 
@@ -190,7 +355,7 @@ Examples of good extractions:
 
 Return ONLY the activity name or "SKIP", nothing else. No quotes, no explanations.`;
 
-    const completion = await groqClient.chat.completions.create({
+    const completion = await openaiClient.chat.completions.create({
       model: DEFAULT_MODEL,
       messages: [
         {
@@ -405,10 +570,53 @@ async function fetchActivityImage(activityName, destination) {
   return null;
 }
 
+// Helper function to check if an activity matches avoid categories
+function matchesAvoidCategory(activityName, activityCategory, snippet, avoidCategories) {
+  if (!avoidCategories || !Array.isArray(avoidCategories) || avoidCategories.length === 0) {
+    return false;
+  }
+  
+  const combinedText = `${activityName} ${activityCategory} ${snippet}`.toLowerCase();
+  
+  for (const avoidCategory of avoidCategories) {
+    if (!avoidCategory || typeof avoidCategory !== 'string') continue;
+    
+    const avoidLower = avoidCategory.toLowerCase();
+    
+    // Direct category match
+    if (activityCategory && activityCategory.toLowerCase() === avoidLower) {
+      return true;
+    }
+    
+    // Check if avoid category appears in the activity text
+    if (combinedText.includes(avoidLower)) {
+      return true;
+    }
+    
+    // Check for common synonyms
+    const synonyms = {
+      'nightlife': ['club', 'bar', 'nightclub', 'party', 'drinking'],
+      'shopping': ['mall', 'market', 'store', 'retail'],
+      'food': ['restaurant', 'cafe', 'dining', 'eatery'],
+      'outdoors': ['hiking', 'camping', 'nature', 'park'],
+      'museums': ['museum', 'gallery', 'exhibition'],
+    };
+    
+    if (synonyms[avoidLower]) {
+      const hasSynonym = synonyms[avoidLower].some(syn => combinedText.includes(syn));
+      if (hasSynonym) {
+        return true;
+      }
+    }
+  }
+  
+  return false;
+}
+
 async function upsertReusableActivityFromSearchItem(item, destination, preferences = null, userProfile = null) {
   const location = destination || null;
   const snippet = item.snippet || '';
-  const link = item.link || '';
+  const originalLink = item.link || '';
 
   // Extract the actual activity name from the search result (not just the article title)
   let name = await extractActivityNameFromSearchResult(item, destination, preferences, userProfile);
@@ -456,17 +664,102 @@ async function upsertReusableActivityFromSearchItem(item, destination, preferenc
   // At this point, we ALWAYS have some non-empty name string
 
   // Extract additional details
-  const { priceRange, costEstimate, duration } = await extractActivityDetails(name, snippet, link);
+  const { priceRange, costEstimate, duration } = await extractActivityDetails(name, snippet, originalLink);
 
-  // Use a simple heuristic to infer a high-level category from text
-  const lower = `${name} ${snippet}`.toLowerCase();
+  // Use LLM to accurately categorize the activity
   let category = 'other';
-  if (/\bmuseum|\bart\b/.test(lower)) category = 'museums';
-  else if (/\bhike|\btrail|\bpark|\bnational park\b|\bnature\b/.test(lower)) category = 'outdoors';
-  else if (/\bfood|\brestaurant|\bcafe\b|\bbar\b|\bcoffee\b/.test(lower)) category = 'food';
-  else if (/\bnightlife|\bclub\b|\bbar\b/.test(lower)) category = 'nightlife';
-  else if (/\bshopping|\bmarket\b|\bmall\b/.test(lower)) category = 'shopping';
-  else if (/\bconcert|\bmusic\b|\blive music\b/.test(lower)) category = 'music';
+  try {
+    const categoryPrompt = `Categorize this travel activity into ONE of these categories: museums, outdoors, food, nightlife, shopping, music, cultural, relaxing, adventure, arts, other.
+
+Activity Name: "${name}"
+Description: "${snippet}"
+
+Respond with ONLY the category name (lowercase, one word). Examples:
+- "Louvre Museum" → museums
+- "Art Gallery" → museums or arts
+- "Hiking Trail" → outdoors
+- "Restaurant" → food
+- "Nightclub" → nightlife
+- "Shopping Mall" → shopping
+- "Concert Hall" → music
+- "Beach" → relaxing
+- "Zipline" → adventure
+
+Category:`;
+
+    const completion = await openaiClient.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: 'You are an expert at categorizing travel activities. Return only the category name, nothing else.',
+        },
+        {
+          role: 'user',
+          content: categoryPrompt,
+        },
+      ],
+      temperature: 0.3,
+      max_tokens: 10,
+    });
+
+    const llmCategory = (completion.choices[0]?.message?.content || '').trim().toLowerCase();
+    
+    // Map LLM response to our category system
+    const categoryMap = {
+      'museums': 'museums',
+      'museum': 'museums',
+      'arts': 'museums',
+      'art': 'museums',
+      'cultural': 'museums',
+      'outdoors': 'outdoors',
+      'outdoor': 'outdoors',
+      'nature': 'outdoors',
+      'food': 'food',
+      'dining': 'food',
+      'restaurant': 'food',
+      'nightlife': 'nightlife',
+      'shopping': 'shopping',
+      'music': 'music',
+      'relaxing': 'relaxing',
+      'adventure': 'adventure',
+      'other': 'other',
+    };
+    
+    category = categoryMap[llmCategory] || 'other';
+    
+    // Fallback to simple heuristic if LLM returns something unexpected
+    if (category === 'other') {
+      const lower = `${name} ${snippet}`.toLowerCase();
+      // More specific patterns to avoid false matches
+      if (/\bmuseum\b|\bart\s+gallery\b|\bart\s+museum\b/.test(lower)) category = 'museums';
+      else if (/\bhike|\btrail|\bpark\b|\bnational\s+park\b|\bnature\b|\boutdoor\b/.test(lower)) category = 'outdoors';
+      else if (/\brestaurant\b|\bcafe\b|\bfood\b|\bdining\b/.test(lower) && !/\bnightclub\b|\bclub\b/.test(lower)) category = 'food';
+      else if (/\bnightlife\b|\bnightclub\b|\bclub\b|\bbar\b/.test(lower) && !/\brestaurant\b|\bcafe\b/.test(lower)) category = 'nightlife';
+      else if (/\bshopping\b|\bmarket\b|\bmall\b/.test(lower)) category = 'shopping';
+      else if (/\bconcert\b|\bmusic\b|\blive\s+music\b/.test(lower)) category = 'music';
+    }
+  } catch (error) {
+    console.error('Error categorizing activity with LLM, using fallback:', error);
+    // Fallback to simple heuristic
+    const lower = `${name} ${snippet}`.toLowerCase();
+    if (/\bmuseum\b|\bart\s+gallery\b|\bart\s+museum\b/.test(lower)) category = 'museums';
+    else if (/\bhike|\btrail|\bpark\b|\bnational\s+park\b|\bnature\b/.test(lower)) category = 'outdoors';
+    else if (/\brestaurant\b|\bcafe\b|\bfood\b/.test(lower) && !/\bnightclub\b|\bclub\b/.test(lower)) category = 'food';
+    else if (/\bnightlife\b|\bnightclub\b|\bclub\b/.test(lower)) category = 'nightlife';
+    else if (/\bshopping\b|\bmarket\b|\bmall\b/.test(lower)) category = 'shopping';
+    else if (/\bconcert\b|\bmusic\b/.test(lower)) category = 'music';
+  }
+
+  // Check if this activity matches any avoid categories
+  const avoidCategories = Array.isArray(preferences?.avoid_activity_categories)
+    ? preferences.avoid_activity_categories
+    : [];
+  
+  if (matchesAvoidCategory(name, category, snippet, avoidCategories)) {
+    console.log(`[activities] Skipping activity "${name}" - matches avoid category:`, avoidCategories);
+    return null; // Skip this activity
+  }
 
   const tags = [];
   if (category !== 'other') {
@@ -475,7 +768,26 @@ async function upsertReusableActivityFromSearchItem(item, destination, preferenc
   if (destination) {
     tags.push(destination);
   }
-  if (link) {
+
+  // Find a better link for this specific activity
+  let finalLink = originalLink;
+  
+  // If the original link is low-quality or a collection, try to find a better one
+  if (isLowQualityLink(originalLink) || isCollectionLink(originalLink, item.title, snippet)) {
+    console.log(`[activities] Original link is low-quality or collection, searching for better link for: ${name}`);
+    const betterLink = await findBetterActivityLink(name, destination);
+    if (betterLink) {
+      finalLink = betterLink;
+      console.log(`[activities] Found better link: ${betterLink}`);
+    } else {
+      // If we can't find a better link, only use the original if it's not low-quality
+      if (isLowQualityLink(originalLink)) {
+        finalLink = null; // Don't use low-quality links
+      }
+    }
+  }
+  
+  if (finalLink) {
     tags.push('web');
   }
 
@@ -508,6 +820,10 @@ async function upsertReusableActivityFromSearchItem(item, destination, preferenc
 
     if (costEstimate !== null && existing.cost_estimate === null) updateData.cost_estimate = costEstimate;
     if (duration && !existing.duration) updateData.duration = duration;
+    // Update source_url if we found a better link
+    if (finalLink && finalLink !== existing.source_url && !isLowQualityLink(finalLink)) {
+      updateData.source_url = finalLink;
+    }
 
     if (Object.keys(updateData).length > 0) {
       const { data: updated, error: updateError } = await supabase
@@ -538,7 +854,7 @@ async function upsertReusableActivityFromSearchItem(item, destination, preferenc
         rating: null,
         tags,
         source: 'google-search',
-        source_url: link || null
+        source_url: finalLink || null
       },
     ])
     .select()
@@ -1095,16 +1411,27 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       .eq('trip_id', tripId)
       .in('preference', ['liked', 'disliked']);
 
-    // Use LLM to generate a refined, highly relevant search query
-    let query = null;
+    // Use LLM to generate refined, highly relevant search queries with category diversification
+    let queryResult = null;
     try {
-      query = await generateRefinedSearchQuery(trip, tripPreferences, userProfile, activityPreferences || []);
+      queryResult = await generateRefinedSearchQuery(trip, tripPreferences, userProfile, activityPreferences || []);
     } catch (error) {
       console.error('Error generating refined search query:', error);
     }
 
+    // Extract queries and avoid categories
+    let queries = [];
+    let avoidCategories = [];
+    
+    if (queryResult && queryResult.query) {
+      queries = queryResult.allQueries && queryResult.allQueries.length > 0 
+        ? queryResult.allQueries 
+        : [queryResult.query];
+      avoidCategories = queryResult.avoidCategories || [];
+    }
+
     // Fallback to basic query if LLM fails
-    if (!query || query.length < 5) {
+    if (queries.length === 0) {
       const likedTags = Array.isArray(userProfile?.liked_tags) ? userProfile.liked_tags : [];
       const activityCategories = Array.isArray(tripPreferences?.activity_categories)
         ? tripPreferences.activity_categories
@@ -1131,27 +1458,63 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
         queryParts.push(`for ${tripPreferences.group_type}`);
       }
       
-      query = queryParts.join(' ');
+      queries = [queryParts.join(' ')];
     }
 
-    // Fetch more results to have better selection (fetch more since we'll filter out invalid ones)
-    const items = await fetchActivitySearchResults(query, 15);
+    // Get avoid categories from preferences if not already set
+    if (avoidCategories.length === 0 && Array.isArray(tripPreferences?.avoid_activity_categories)) {
+      avoidCategories = tripPreferences.avoid_activity_categories;
+    }
 
-    if (!items.length) {
+    // Fetch results from multiple queries to ensure category diversification
+    const allItems = [];
+    const itemsPerQuery = Math.max(5, Math.floor(15 / Math.max(1, queries.length)));
+    
+    for (const query of queries.slice(0, 5)) { // Limit to 5 queries max
+      try {
+        const items = await fetchActivitySearchResults(query, itemsPerQuery);
+        
+        // Filter out low-quality links before processing
+        const filteredItems = items.filter(item => {
+          const link = item.link || '';
+          return !isLowQualityLink(link);
+        });
+        
+        allItems.push(...filteredItems);
+        console.log(`[activities] Query "${query}" returned ${filteredItems.length} items (after filtering)`);
+      } catch (error) {
+        console.error(`[activities] Error fetching results for query "${query}":`, error);
+      }
+    }
+
+    if (allItems.length === 0) {
       return res.status(200).json({
         success: true,
         activities: [],
         message: 'No activities were found from search.',
       });
     }
+    
+    console.log(`[activities] Total items collected: ${allItems.length} (from ${queries.length} queries)`);
 
-    // Filter and prioritize results, then take top 8
+    // Filter and prioritize results, then take top 8 with strong category diversification
     const suggestions = [];
     const processedActivityIds = new Set();
-
-    console.log(`Processing ${items.length} search results for destination: ${trip.destination}`);
+    const categoryCounts = new Map(); // Track category diversity
+    const categorySeen = new Set(); // Track which categories we've seen at least once
     
-    for (const item of items) {
+    // Get preferred categories from user preferences
+    const preferredCategories = Array.isArray(tripPreferences?.activity_categories)
+      ? tripPreferences.activity_categories.map(c => c.toLowerCase())
+      : [];
+    
+    console.log(`Processing ${allItems.length} search results for destination: ${trip.destination}`);
+    console.log(`Preferred categories: ${preferredCategories.join(', ') || 'none'}`);
+    
+    // First pass: Collect activities, prioritizing diversity
+    const activityCandidates = [];
+    
+    for (const item of allItems) {
       try {
         const activity = await upsertReusableActivityFromSearchItem(item, trip.destination, tripPreferences, userProfile);
         
@@ -1161,62 +1524,143 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
           continue;
         }
         
-        console.log(`Successfully extracted activity: ${activity.name}`);
-        
         // Skip duplicates
         if (processedActivityIds.has(activity.activity_id)) {
           continue;
         }
         processedActivityIds.add(activity.activity_id);
+        
+        activityCandidates.push(activity);
+      } catch (innerError) {
+        console.error('Error processing search item into activity:', innerError);
+      }
+    }
+    
+    console.log(`[activities] Collected ${activityCandidates.length} unique activity candidates`);
+    
+    // Second pass: Select activities with strong diversification
+    // Priority: 1) New categories (especially preferred ones), 2) Categories we haven't seen yet, 3) Balance
+    
+    for (const activity of activityCandidates) {
+      try {
+        const category = activity.category || 'other';
+      const categoryLower = category.toLowerCase();
+      const currentCount = categoryCounts.get(category) || 0;
+      const isPreferred = preferredCategories.length > 0 && preferredCategories.includes(categoryLower);
+      const isNewCategory = !categorySeen.has(category);
+      
+      // If we already have 8 activities, check if we should replace one
+      if (suggestions.length >= 8) {
+        // Always accept if it's a preferred category we haven't seen yet
+        if (isPreferred && isNewCategory) {
+          // Remove the most over-represented category
+          const sortedCategories = Array.from(categoryCounts.entries())
+            .sort((a, b) => {
+              const aPreferred = preferredCategories.includes(a[0].toLowerCase());
+              const bPreferred = preferredCategories.includes(b[0].toLowerCase());
+              if (aPreferred && !bPreferred) return 1; // Keep preferred
+              if (!aPreferred && bPreferred) return -1; // Remove non-preferred
+              return b[1] - a[1]; // Remove most common
+            });
+          
+          const categoryToRemove = sortedCategories[0]?.[0];
+          if (categoryToRemove && categoryToRemove !== category) {
+            const indexToRemove = suggestions.findIndex(a => a.category === categoryToRemove);
+            if (indexToRemove !== -1) {
+              suggestions.splice(indexToRemove, 1);
+              const removedCount = categoryCounts.get(categoryToRemove) || 0;
+              categoryCounts.set(categoryToRemove, Math.max(0, removedCount - 1));
+              if (removedCount <= 1) {
+                categorySeen.delete(categoryToRemove);
+              }
+            }
+          }
+        } else if (isNewCategory && !isPreferred) {
+          // New non-preferred category - only add if we have space or can replace a duplicate
+          if (currentCount === 0) {
+            // Find a category with 2+ items to replace
+            const categoryToRemove = Array.from(categoryCounts.entries())
+              .filter(([cat, count]) => count >= 2 && cat !== category)
+              .sort((a, b) => b[1] - a[1])[0]?.[0];
+            
+            if (categoryToRemove) {
+              const indexToRemove = suggestions.findIndex(a => a.category === categoryToRemove);
+              if (indexToRemove !== -1) {
+                suggestions.splice(indexToRemove, 1);
+                categoryCounts.set(categoryToRemove, categoryCounts.get(categoryToRemove) - 1);
+              }
+            } else {
+              continue; // Skip if we can't make room
+            }
+          } else {
+            continue; // Skip duplicates of non-preferred categories
+          }
+        } else if (currentCount >= 2) {
+          // Already have 2+ of this category, skip unless it's preferred and we have few preferred categories
+          if (isPreferred && preferredCategories.length <= 3 && currentCount < 3) {
+            // Allow up to 3 of preferred categories if there are few preferred categories
+          } else {
+            continue; // Skip duplicates
+          }
+        } else if (currentCount >= 1 && !isPreferred) {
+          // Already have 1 of this non-preferred category, skip
+          continue;
+        }
+      }
+      
+      // Add the activity
+      categorySeen.add(category);
+      categoryCounts.set(category, currentCount + 1);
+      
+      // Ensure we have a per-trip preference row (pending by default)
+      const { data: existingPref, error: prefError } = await supabase
+        .from('trip_activity_preference')
+        .select('*')
+        .eq('trip_id', tripId)
+        .eq('activity_id', activity.activity_id)
+        .maybeSingle();
 
-        // Ensure we have a per-trip preference row (pending by default)
-        const { data: existingPref, error: prefError } = await supabase
+      if (prefError) {
+        console.error('Error checking existing trip_activity_preference:', prefError);
+        continue;
+      }
+
+      let prefRow = existingPref;
+
+      if (!prefRow) {
+        const { data: inserted, error: insertError } = await supabase
           .from('trip_activity_preference')
-          .select('*')
-          .eq('trip_id', tripId)
-          .eq('activity_id', activity.activity_id)
-          .maybeSingle();
+          .insert([
+            {
+              trip_id: tripId,
+              activity_id: activity.activity_id,
+              preference: 'pending',
+            },
+          ])
+          .select()
+          .single();
 
-        if (prefError) {
-          console.error('Error checking existing trip_activity_preference:', prefError);
+        if (insertError) {
+          console.error('Error inserting trip_activity_preference:', insertError);
           continue;
         }
 
-        let prefRow = existingPref;
+        prefRow = inserted;
+      }
 
-        if (!prefRow) {
-          const { data: inserted, error: insertError } = await supabase
-            .from('trip_activity_preference')
-            .insert([
-              {
-                trip_id: tripId,
-                activity_id: activity.activity_id,
-                preference: 'pending',
-              },
-            ])
-            .select()
-            .single();
-
-          if (insertError) {
-            console.error('Error inserting trip_activity_preference:', insertError);
-            continue;
-          }
-
-          prefRow = inserted;
-        }
-
-        suggestions.push({
-          ...activity,
-          trip_activity_preference_id: prefRow.trip_activity_preference_id,
-          preference: prefRow.preference,
-        });
-        
-        // Limit to 8 activities for better UX
-        if (suggestions.length >= 8) {
-          break;
-        }
+      suggestions.push({
+        ...activity,
+        trip_activity_preference_id: prefRow.trip_activity_preference_id,
+        preference: prefRow.preference,
+      });
+      
+      console.log(`[activities] Added: ${activity.name} (${category}) - Total: ${suggestions.length}, Categories seen: ${Array.from(categorySeen).join(', ')}`);
+      
+      if (suggestions.length >= 8) {
+        break;
+      }
       } catch (innerError) {
-        console.error('Error processing search item into activity:', innerError);
+        console.error('Error processing activity candidate:', innerError);
       }
     }
 
@@ -1483,7 +1927,17 @@ router.get('/:tripId/itinerary', authenticateToken, async (req, res) => {
 });
 
 // Generate day-by-day itinerary and activities for a trip using the LLM
+// DISABLED: Skipping itinerary generation, going straight to flight/hotel booking
 router.post('/:tripId/generate-itinerary', authenticateToken, async (req, res) => {
+  // Temporarily disabled - skip itinerary generation, proceed directly to booking
+  return res.status(200).json({
+    success: true,
+    message: 'Your trip preferences have been saved.',
+    days_count: 0,
+    itineraries: [],
+  });
+  
+  /* DISABLED CODE - Uncomment to re-enable itinerary generation
   try {
     const userId = req.user.userId;
     const tripId = parseInt(req.params.tripId);
@@ -1644,7 +2098,7 @@ Respond ONLY with valid JSON in this exact format (no markdown, no explanation):
       };
 
       try {
-        const completion = await groqClient.chat.completions.create({
+        const completion = await openaiClient.chat.completions.create({
           model: DEFAULT_MODEL,
           messages: [
             {
@@ -1736,7 +2190,7 @@ If dates or number of days are missing, infer a reasonable number of days (3-5) 
         trip_preferences: tripPreferences || null,
       };
 
-      const completion = await groqClient.chat.completions.create({
+      const completion = await openaiClient.chat.completions.create({
         model: DEFAULT_MODEL,
         messages: [
           {
@@ -1880,6 +2334,325 @@ If dates or number of days are missing, infer a reasonable number of days (3-5) 
     res.status(500).json({
       success: false,
       message: 'Failed to generate itinerary',
+      error: error.message,
+    });
+  }
+  */ // End of disabled code
+});
+
+// Phase 5: Generate final chronological itinerary with flights, hotels, and activities
+router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+
+    // Load trip and ensure it belongs to the user
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('*')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found',
+      });
+    }
+
+    // Load trip preferences
+    const { data: tripPreferences, error: prefError } = await supabase
+      .from('trip_preference')
+      .select('*')
+      .eq('trip_id', tripId)
+      .maybeSingle();
+
+    if (prefError) {
+      throw prefError;
+    }
+
+    if (!tripPreferences || !tripPreferences.start_date || !tripPreferences.end_date) {
+      return res.status(400).json({
+        success: false,
+        message: 'Trip dates are required to generate the final itinerary',
+      });
+    }
+
+    // Load user profile
+    const { data: userProfile } = await supabase
+      .from('app_user')
+      .select('home_location, budget_preference, travel_style, liked_tags')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    // Get selected flights
+    const { data: tripFlights } = await supabase
+      .from('trip_flight')
+      .select(`
+        flight_id,
+        is_selected,
+        flight:flight(*)
+      `)
+      .eq('trip_id', tripId)
+      .eq('is_selected', true);
+
+    const selectedOutboundFlight = tripFlights?.find(tf => tf.flight?.flight_type === 'outbound')?.flight || null;
+    const selectedReturnFlight = tripFlights?.find(tf => tf.flight?.flight_type === 'return')?.flight || null;
+
+    // Get selected hotel
+    const { data: tripHotels } = await supabase
+      .from('trip_hotel')
+      .select(`
+        hotel_id,
+        is_selected,
+        hotel:hotel(*)
+      `)
+      .eq('trip_id', tripId)
+      .eq('is_selected', true);
+
+    const selectedHotel = tripHotels?.[0]?.hotel || null;
+
+    // Get liked activities
+    const { data: likedActivityPrefs } = await supabase
+      .from('trip_activity_preference')
+      .select(`
+        activity_id,
+        activity:activity(*)
+      `)
+      .eq('trip_id', tripId)
+      .eq('preference', 'liked');
+
+    const likedActivities = (likedActivityPrefs || []).map(ap => ap.activity).filter(Boolean);
+
+    // Calculate date range - ensure we include both start and end dates
+    const startDate = new Date(tripPreferences.start_date);
+    const endDate = new Date(tripPreferences.end_date);
+    
+    // Calculate numDays properly: if start is Jan 1 and end is Jan 25, that's 25 days (inclusive)
+    // The difference in days + 1 gives us the inclusive count
+    const dateDiffMs = endDate.getTime() - startDate.getTime();
+    const dateDiffDays = Math.floor(dateDiffMs / (1000 * 60 * 60 * 24));
+    const calculatedNumDays = dateDiffDays + 1; // +1 to include both start and end dates
+    
+    // Use num_days from preferences if available, otherwise calculate from dates
+    const numDays = tripPreferences.num_days || calculatedNumDays;
+    
+    console.log(`[final-itinerary] Date calculation: start=${tripPreferences.start_date}, end=${tripPreferences.end_date}, calculated=${calculatedNumDays}, using=${numDays}`);
+
+    // Generate activities for each day
+    const dailyActivities = [];
+    const budgetPerDay = tripPreferences.max_budget ? tripPreferences.max_budget / numDays : null;
+    
+    // Determine target activities per day based on pace
+    const targetActivitiesPerDay = tripPreferences.pace === 'packed' ? 4 : tripPreferences.pace === 'balanced' ? 3 : 2;
+
+    for (let day = 0; day < numDays; day++) {
+      const currentDate = new Date(startDate);
+      currentDate.setDate(startDate.getDate() + day);
+      const dateStr = currentDate.toISOString().split('T')[0];
+
+      // Get activities for this day (distribute liked activities + generate new ones)
+      const dayActivities = [];
+
+      // Distribute liked activities across days (but don't rely on them for all days)
+      if (likedActivities.length > 0) {
+        const activitiesPerDay = Math.ceil(likedActivities.length / numDays);
+        const startIdx = day * activitiesPerDay;
+        const endIdx = Math.min(startIdx + activitiesPerDay, likedActivities.length);
+        const dayLikedActivities = likedActivities.slice(startIdx, endIdx);
+        dayActivities.push(...dayLikedActivities.map(a => ({
+          ...a,
+          source: 'user_selected',
+        })));
+      }
+
+      // ALWAYS generate activities to reach target, regardless of how many liked activities we have
+      // This ensures every day has activities even if user only liked a couple
+      const neededActivities = Math.max(0, targetActivitiesPerDay - dayActivities.length);
+
+      if (neededActivities > 0 && trip.destination) {
+        // Generate search query for this day - vary it slightly per day for diversity
+        const activityCategories = Array.isArray(tripPreferences.activity_categories) && tripPreferences.activity_categories.length > 0
+          ? tripPreferences.activity_categories
+          : [];
+        
+        // Rotate through categories or use different queries per day for variety
+        const categoryForDay = activityCategories.length > 0 
+          ? activityCategories[day % activityCategories.length]
+          : 'activities';
+        
+        const dayQuery = `${trip.destination} ${categoryForDay} ${day === 0 ? 'must see' : day === numDays - 1 ? 'last day' : 'things to do'}`;
+        
+        try {
+          const searchItems = await fetchActivitySearchResults(dayQuery, neededActivities * 3); // Get more to have options
+          const filteredItems = searchItems.filter(item => !isLowQualityLink(item.link || ''));
+          
+          let addedCount = 0;
+          for (const item of filteredItems) {
+            if (addedCount >= neededActivities) break;
+            
+            const activity = await upsertReusableActivityFromSearchItem(
+              item,
+              trip.destination,
+              tripPreferences,
+              userProfile
+            );
+            
+            if (activity && !dayActivities.find(a => a.activity_id === activity.activity_id)) {
+              // Check budget if applicable
+              if (budgetPerDay && activity.cost_estimate) {
+                const dayTotal = dayActivities.reduce((sum, a) => sum + (a.cost_estimate || 0), 0);
+                if (dayTotal + activity.cost_estimate <= budgetPerDay * 1.2) { // Allow 20% buffer
+                  dayActivities.push({
+                    ...activity,
+                    source: 'generated',
+                  });
+                  addedCount++;
+                }
+              } else {
+                dayActivities.push({
+                  ...activity,
+                  source: 'generated',
+                });
+                addedCount++;
+              }
+            }
+          }
+          
+          // If we still don't have enough activities, try a more general query
+          if (dayActivities.length < targetActivitiesPerDay && addedCount < neededActivities) {
+            const generalQuery = `${trip.destination} things to do`;
+            const generalItems = await fetchActivitySearchResults(generalQuery, (targetActivitiesPerDay - dayActivities.length) * 2);
+            const generalFiltered = generalItems.filter(item => !isLowQualityLink(item.link || ''));
+            
+            for (const item of generalFiltered) {
+              if (dayActivities.length >= targetActivitiesPerDay) break;
+              
+              const activity = await upsertReusableActivityFromSearchItem(
+                item,
+                trip.destination,
+                tripPreferences,
+                userProfile
+              );
+              
+              if (activity && !dayActivities.find(a => a.activity_id === activity.activity_id)) {
+                dayActivities.push({
+                  ...activity,
+                  source: 'generated',
+                });
+              }
+            }
+          }
+        } catch (error) {
+          console.error(`Error generating activities for day ${day + 1}:`, error);
+        }
+      }
+      
+      console.log(`[final-itinerary] Day ${day + 1} (${dateStr}): ${dayActivities.length} activities (target: ${targetActivitiesPerDay})`);
+
+      dailyActivities.push({
+        day_number: day + 1,
+        date: dateStr,
+        activities: dayActivities,
+      });
+    }
+    
+    // Verify we have the correct number of days and include the end_date
+    console.log(`[final-itinerary] Generated ${dailyActivities.length} days, expected ${numDays}`);
+    if (dailyActivities.length > 0) {
+      const lastDayDate = dailyActivities[dailyActivities.length - 1].date;
+      const expectedEndDate = tripPreferences.end_date;
+      console.log(`[final-itinerary] Last day date: ${lastDayDate}, expected end date: ${expectedEndDate}`);
+      
+      // If the last day doesn't match the end_date, we need to add it or fix the calculation
+      if (lastDayDate !== expectedEndDate) {
+        console.warn(`[final-itinerary] Date mismatch! Last day is ${lastDayDate} but end_date is ${expectedEndDate}`);
+        // Ensure the last day matches the end_date
+        dailyActivities[dailyActivities.length - 1].date = expectedEndDate;
+      }
+    }
+
+    // Build final itinerary structure
+    const itinerary = {
+      trip_id: tripId,
+      trip_title: trip.title,
+      destination: trip.destination,
+      start_date: tripPreferences.start_date,
+      end_date: tripPreferences.end_date,
+      num_days: numDays,
+      total_budget: tripPreferences.max_budget || null,
+      days: dailyActivities.map((dayData, index) => {
+        const dayItinerary = {
+          day_number: dayData.day_number,
+          date: dayData.date,
+          activities: dayData.activities.map(a => ({
+            activity_id: a.activity_id,
+            name: a.name,
+            location: a.location,
+            category: a.category,
+            duration: a.duration,
+            cost_estimate: a.cost_estimate,
+            source_url: a.source_url,
+            image_url: a.image_url,
+            description: a.description,
+            source: a.source || 'generated',
+          })),
+        };
+
+        // Add flight info for first and last day
+        if (index === 0 && selectedOutboundFlight) {
+          dayItinerary.outbound_flight = {
+            departure_id: selectedOutboundFlight.departure_id,
+            arrival_id: selectedOutboundFlight.arrival_id,
+            price: selectedOutboundFlight.price,
+            total_duration: selectedOutboundFlight.total_duration,
+            flights: selectedOutboundFlight.flights,
+            layovers: selectedOutboundFlight.layovers,
+          };
+        }
+
+        // Check if this is the last day by comparing date to end_date (more reliable than index)
+        const isLastDay = dayData.date === tripPreferences.end_date || index === dailyActivities.length - 1;
+        if (isLastDay && selectedReturnFlight) {
+          dayItinerary.return_flight = {
+            departure_id: selectedReturnFlight.departure_id,
+            arrival_id: selectedReturnFlight.arrival_id,
+            price: selectedReturnFlight.price,
+            total_duration: selectedReturnFlight.total_duration,
+            flights: selectedReturnFlight.flights,
+            layovers: selectedReturnFlight.layovers,
+          };
+        }
+
+        // Add hotel info (same for all days)
+        if (selectedHotel) {
+          dayItinerary.hotel = {
+            hotel_id: selectedHotel.hotel_id,
+            name: selectedHotel.name,
+            location: selectedHotel.location,
+            rate_per_night: selectedHotel.rate_per_night_lowest,
+            rate_per_night_formatted: selectedHotel.rate_per_night_formatted,
+            link: selectedHotel.link,
+            overall_rating: selectedHotel.overall_rating,
+            check_in_time: selectedHotel.check_in_time,
+            check_out_time: selectedHotel.check_out_time,
+          };
+        }
+
+        return dayItinerary;
+      }),
+    };
+
+    res.status(200).json({
+      success: true,
+      itinerary,
+    });
+  } catch (error) {
+    console.error('Error generating final itinerary:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate final itinerary',
       error: error.message,
     });
   }

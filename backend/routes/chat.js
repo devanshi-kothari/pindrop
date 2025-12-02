@@ -7,14 +7,13 @@ import { authenticateToken } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// Initialize Groq client (OpenAI-compatible API)
-const groqClient = new OpenAI({
-  apiKey: process.env.GROQ_API_KEY,
-  baseURL: 'https://api.groq.com/openai/v1',
+// Initialize OpenAI client
+const openaiClient = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 // Default model - can be overridden via env variable
-const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
+const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-3.5-turbo';
 
 const GOOGLE_CUSTOM_SEARCH_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
 const GOOGLE_CUSTOM_SEARCH_CX = process.env.GOOGLE_CUSTOM_SEARCH_CX || '80b87ce61302c4f86';
@@ -157,7 +156,7 @@ Message: "${message}"
 
 If the message is clearly about creating a new trip (ex., "I want to go to X", "plan a trip to Y", "I'd like to visit Z"), set is_trip_request to true. Otherwise false.`;
 
-    const completion = await groqClient.chat.completions.create({
+    const completion = await openaiClient.chat.completions.create({
       model: DEFAULT_MODEL,
       messages: [
         {
@@ -419,20 +418,20 @@ When you recommend activities, also explain briefly why they fit these preferenc
       console.log('💾 Skipping user message persistence due to suppressTripCreation=true');
     }
 
-    // Call Groq API
-    console.log(`🤖 Calling Groq API with model: ${chatModel}`);
+    // Call OpenAI API
+    console.log(`🤖 Calling OpenAI API with model: ${chatModel}`);
     let assistantMessage;
     try {
-      const completion = await groqClient.chat.completions.create({
+      const completion = await openaiClient.chat.completions.create({
         model: chatModel,
         messages: messages,
       });
 
       assistantMessage = completion.choices[0]?.message?.content || 'Sorry, I did not receive a response.';
-      console.log(`✅ Received response from Groq (${assistantMessage.length} characters)`);
-    } catch (groqError) {
-      console.error('❌ Groq API error:', groqError);
-      throw groqError;
+      console.log(`✅ Received response from OpenAI (${assistantMessage.length} characters)`);
+    } catch (openaiError) {
+      console.error('❌ OpenAI API error:', openaiError);
+      throw openaiError;
     }
 
     // Save assistant response to database (with tripId if provided or created),
@@ -464,13 +463,13 @@ When you recommend activities, also explain briefly why they fit these preferenc
 
     res.status(200).json(response);
   } catch (error) {
-    console.error('Groq chat error:', error);
+    console.error('OpenAI chat error:', error);
 
     // Check if it's an authentication error
     if (error.status === 401 || error.message?.includes('API key')) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid Groq API key. Please check your configuration.',
+        message: 'Invalid OpenAI API key. Please check your configuration.',
         error: error.message
       });
     }
@@ -587,8 +586,8 @@ When you recommend activities, also explain briefly why they fit these preferenc
     try {
       let fullResponse = '';
 
-      // Stream the response from Groq
-      const stream = await groqClient.chat.completions.create({
+      // Stream the response from OpenAI
+      const stream = await openaiClient.chat.completions.create({
         model: chatModel,
         messages: messages,
         stream: true,
@@ -623,7 +622,7 @@ When you recommend activities, also explain briefly why they fit these preferenc
       res.end();
     }
   } catch (error) {
-    console.error('Groq stream chat error:', error);
+    console.error('OpenAI stream chat error:', error);
     if (!res.headersSent) {
       res.status(500).json({
         success: false,
@@ -651,7 +650,7 @@ router.post('/airport-code', authenticateToken, async (req, res) => {
 Please respond with ONLY the 3-letter airport code in uppercase (e.g., "JFK", "LAX", "CDG"). 
 If you cannot determine the airport code, respond with "UNKNOWN".`;
 
-    const completion = await groqClient.chat.completions.create({
+    const completion = await openaiClient.chat.completions.create({
       model: DEFAULT_MODEL,
       messages: [
         {
