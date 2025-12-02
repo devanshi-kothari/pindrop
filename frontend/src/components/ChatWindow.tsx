@@ -134,6 +134,8 @@ const ChatWindow = ({
   const [propertyDetails, setPropertyDetails] = useState<Record<number, any>>({});
   const [isFetchingPropertyDetails, setIsFetchingPropertyDetails] = useState<Record<number, boolean>>({});
   const [expandedBookingOptions, setExpandedBookingOptions] = useState<Record<number, boolean>>({});
+  const [finalItinerary, setFinalItinerary] = useState<any | null>(null);
+  const [isGeneratingFinalItinerary, setIsGeneratingFinalItinerary] = useState(false);
   const [destinationCarouselIndices, setDestinationCarouselIndices] = useState<Record<number, number>>(
     {}
   );
@@ -612,7 +614,7 @@ const ChatWindow = ({
           content:
             result.activities.length > 0
               ? "I pulled together a small set of activity ideas based on your preferences. Swipe through them below and tell me what you like."
-              : "I wasn’t able to find good activity ideas just yet. You can adjust your preferences or try again.",
+              : "I wasn't able to find good activity ideas just yet. You can adjust your preferences or try again.",
           timestamp: formatTime(),
         };
         setMessages((prev) => [...prev, assistantMessage]);
@@ -623,6 +625,48 @@ const ChatWindow = ({
       console.error("Error generating activities:", error);
     } finally {
       setIsGeneratingActivities(false);
+    }
+  };
+
+  const generateFinalItinerary = async () => {
+    if (!tripId) return;
+
+    try {
+      setIsGeneratingFinalItinerary(true);
+      const token = getAuthToken();
+      if (!token) return;
+
+      const response = await fetch(getApiUrl(`api/trips/${tripId}/generate-final-itinerary`), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      const result = await response.json();
+
+      if (response.ok && result.success && result.itinerary) {
+        setFinalItinerary(result.itinerary);
+      } else {
+        console.error("Failed to generate final itinerary:", result.message);
+        const errorMessage: Message = {
+          role: "assistant",
+          content: result.message || "Failed to generate final itinerary. Please try again.",
+          timestamp: formatTime(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+      }
+    } catch (error) {
+      console.error("Error generating final itinerary:", error);
+      const errorMessage: Message = {
+        role: "assistant",
+        content: "I encountered an error while generating your final itinerary. Please try again.",
+        timestamp: formatTime(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setIsGeneratingFinalItinerary(false);
     }
   };
 
@@ -676,24 +720,24 @@ const ChatWindow = ({
   const getArrivalLocation = (): string | null => {
     // First, try to get from itinerary days (if they exist)
     if (itineraryDays.length > 0) {
-      // Find day 1 (could be day_number === 1 or the first day in the array)
-      const day1 = itineraryDays.find((day) => day.day_number === 1) || itineraryDays[0];
-      
+    // Find day 1 (could be day_number === 1 or the first day in the array)
+    const day1 = itineraryDays.find((day) => day.day_number === 1) || itineraryDays[0];
+    
       if (day1) {
-        // Try to get location from activities
-        if (Array.isArray(day1.activities) && day1.activities.length > 0) {
-          const firstActivity = day1.activities[0];
-          if (firstActivity.location) {
-            return firstActivity.location;
-          }
-        }
-        
-        // Try to extract location from summary
-        if (day1.summary) {
-          // Look for common location patterns in the summary
-          const locationMatch = day1.summary.match(/(?:in|at|to|from)\s+([A-Z][a-zA-Z\s]+(?:,\s*[A-Z][a-zA-Z\s]+)?)/);
-          if (locationMatch) {
-            return locationMatch[1].trim();
+    // Try to get location from activities
+    if (Array.isArray(day1.activities) && day1.activities.length > 0) {
+      const firstActivity = day1.activities[0];
+      if (firstActivity.location) {
+        return firstActivity.location;
+      }
+    }
+    
+    // Try to extract location from summary
+    if (day1.summary) {
+      // Look for common location patterns in the summary
+      const locationMatch = day1.summary.match(/(?:in|at|to|from)\s+([A-Z][a-zA-Z\s]+(?:,\s*[A-Z][a-zA-Z\s]+)?)/);
+      if (locationMatch) {
+        return locationMatch[1].trim();
           }
         }
       }
@@ -1459,6 +1503,8 @@ const ChatWindow = ({
             // If hotel is selected, user has confirmed hotels
             if (hotelsResult.selected_hotel_index !== null) {
               setHasConfirmedHotels(true);
+              // Automatically generate final itinerary when hotels are confirmed
+              generateFinalItinerary();
             }
           }
         }
@@ -3298,7 +3344,11 @@ const ChatWindow = ({
                         <Button
                           size="sm"
                           className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                          onClick={() => setHasConfirmedHotels(true)}
+                          onClick={() => {
+                            setHasConfirmedHotels(true);
+                            // Automatically generate final itinerary when hotels are confirmed
+                            generateFinalItinerary();
+                          }}
                         >
                           I&apos;m done planning hotels
                         </Button>
@@ -3311,13 +3361,166 @@ const ChatWindow = ({
           )}
           {hasConfirmedHotels && (
             <div className="flex justify-start">
-              <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm space-y-3">
-                <p className="text-xs font-semibold text-slate-300">
-                  Phase 5: Final itinerary
+              <div className="w-full max-w-4xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-6 py-5 shadow-lg space-y-4">
+                {isGeneratingFinalItinerary ? (
+                  <div className="flex items-center gap-3 py-8">
+                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-emerald-400"></div>
+                    <p className="text-sm text-slate-300">Generating your final itinerary...</p>
+                  </div>
+                ) : finalItinerary ? (
+                  <div className="space-y-6">
+                    <div className="border-b border-slate-700 pb-4">
+                      <h3 className="text-lg font-bold text-white mb-1">{finalItinerary.trip_title}</h3>
+                      <p className="text-sm text-slate-400">{finalItinerary.destination} • {finalItinerary.num_days} days</p>
+                      {finalItinerary.total_budget && (
+                        <p className="text-xs text-emerald-400 mt-1">Budget: ${finalItinerary.total_budget.toLocaleString()}</p>
+                      )}
+                    </div>
+
+                    {finalItinerary.days.map((day: any, dayIndex: number) => {
+                      const date = day.date ? new Date(day.date).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) : `Day ${day.day_number}`;
+                      return (
+                        <div key={day.day_number} className="bg-slate-800/50 rounded-lg p-5 border border-slate-700 space-y-4">
+                          <div className="flex items-center justify-between border-b border-slate-700 pb-3">
+                            <div>
+                              <h4 className="text-base font-semibold text-white">Day {day.day_number}</h4>
+                              <p className="text-xs text-slate-400">{date}</p>
+                            </div>
+                          </div>
+
+                          {/* Outbound Flight */}
+                          {day.outbound_flight && (
+                            <div className="bg-blue-900/30 rounded-md p-3 border border-blue-800/50">
+                              <div className="flex items-center gap-2 mb-2">
+                                <span className="text-blue-400 text-sm font-semibold">✈️ Outbound Flight</span>
+                                {day.outbound_flight.price && (
+                                  <span className="text-xs text-slate-300">${day.outbound_flight.price.toLocaleString()}</span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-300">
+                                {day.outbound_flight.departure_id} → {day.outbound_flight.arrival_id}
+                                {day.outbound_flight.total_duration && (
+                                  <span className="text-slate-400 ml-2">• {Math.floor(day.outbound_flight.total_duration / 60)}h {day.outbound_flight.total_duration % 60}m</span>
+                                )}
                 </p>
-                <p className="text-[11px] text-slate-400">
-                  Final itinerary UI will be implemented here.
-                </p>
+              </div>
+                          )}
+
+                          {/* Hotel */}
+                          {day.hotel && (
+                            <div className="bg-purple-900/30 rounded-md p-3 border border-purple-800/50">
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-purple-400 text-sm font-semibold">🏨 Hotel</span>
+                                  {day.hotel.overall_rating && (
+                                    <span className="text-xs text-yellow-400">⭐ {day.hotel.overall_rating}</span>
+                                  )}
+            </div>
+                                {day.hotel.rate_per_night && (
+                                  <span className="text-xs text-slate-300">${day.hotel.rate_per_night.toLocaleString()}/night</span>
+                                )}
+                              </div>
+                              <div className="flex items-center justify-between">
+                                <p className="text-sm text-white font-medium">{day.hotel.name}</p>
+                                {day.hotel.link && (
+                                  <a
+                                    href={day.hotel.link}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs text-purple-400 hover:text-purple-300 underline"
+                                  >
+                                    View →
+                                  </a>
+                                )}
+                              </div>
+                              {day.hotel.location && (
+                                <p className="text-xs text-slate-400 mt-1">📍 {day.hotel.location}</p>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Activities */}
+                          {day.activities && day.activities.length > 0 && (
+                            <div className="space-y-2">
+                              <p className="text-sm font-semibold text-slate-300 mb-2">Activities</p>
+                              {day.activities.map((activity: any, actIndex: number) => (
+                                <div
+                                  key={actIndex}
+                                  className="bg-slate-700/30 rounded-md p-3 border border-slate-600/50 hover:border-emerald-500/50 transition-colors"
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="flex-1">
+                                      <div className="flex items-center gap-2 mb-1">
+                                        <p className="text-sm font-medium text-white">{activity.name}</p>
+                                        {activity.source === 'user_selected' && (
+                                          <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded">Your Pick</span>
+                                        )}
+                                      </div>
+                                      {activity.location && (
+                                        <p className="text-xs text-slate-400 mb-1">📍 {activity.location}</p>
+                                      )}
+                                      <div className="flex items-center gap-3 text-xs text-slate-400">
+                                        {activity.category && (
+                                          <span className="capitalize">{activity.category}</span>
+                                        )}
+                                        {activity.duration && (
+                                          <span>⏱️ {activity.duration}</span>
+                                        )}
+                                        {activity.cost_estimate && (
+                                          <span className="text-emerald-400">${activity.cost_estimate}</span>
+                                        )}
+                                      </div>
+                                    </div>
+                                    {activity.source_url && (
+                                      <a
+                                        href={activity.source_url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-xs text-blue-400 hover:text-blue-300 underline whitespace-nowrap"
+                                      >
+                                        Learn More →
+                                      </a>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Return Flight */}
+                          {day.return_flight && (
+                            <div className="bg-blue-900/30 rounded-md p-3 border border-blue-800/50">
+                              <div className="flex items-center gap-2 mb-2">
+                                <span className="text-blue-400 text-sm font-semibold">✈️ Return Flight</span>
+                                {day.return_flight.price && (
+                                  <span className="text-xs text-slate-300">${day.return_flight.price.toLocaleString()}</span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-300">
+                                {day.return_flight.departure_id} → {day.return_flight.arrival_id}
+                                {day.return_flight.total_duration && (
+                                  <span className="text-slate-400 ml-2">• {Math.floor(day.return_flight.total_duration / 60)}h {day.return_flight.total_duration % 60}m</span>
+                                )}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="text-center py-8">
+                    <p className="text-sm text-slate-400 mb-4">Ready to generate your final itinerary!</p>
+                    <Button
+                      size="sm"
+                      className="bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-xs font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400"
+                      onClick={generateFinalItinerary}
+                      disabled={isGeneratingFinalItinerary}
+                    >
+                      {isGeneratingFinalItinerary ? "Generating..." : "Generate Final Itinerary"}
+                    </Button>
+                  </div>
+                )}
               </div>
             </div>
           )}
