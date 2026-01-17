@@ -111,10 +111,13 @@ const ChatWindow = ({
   const [tripDestination, setTripDestination] = useState<string | null>(null);
   const [departureLocation, setDepartureLocation] = useState("");
   const [departureId, setDepartureId] = useState<string | null>(null);
+  const [departureAirportCodes, setDepartureAirportCodes] = useState<string[]>([]); // All departure airport codes
+  const [departureAirports, setDepartureAirports] = useState<Array<{code: string; name: string; distance_miles: number | null}>>([]); // Full airport details
   const [arrivalId, setArrivalId] = useState<string | null>(null);
   const [isFetchingDepartureCode, setIsFetchingDepartureCode] = useState(false);
   const [isFetchingArrivalCode, setIsFetchingArrivalCode] = useState(false);
   const [bestFlights, setBestFlights] = useState<any[]>([]);
+  const [flightsByAirport, setFlightsByAirport] = useState<Record<string, any[]>>({}); // Flights grouped by departure airport code
   const [outboundFlightIds, setOutboundFlightIds] = useState<Record<number, number>>({}); // Map index to flight_id
   const [isFetchingFlights, setIsFetchingFlights] = useState(false);
   const [selectedOutboundIndex, setSelectedOutboundIndex] = useState<number | null>(null);
@@ -755,11 +758,14 @@ const ChatWindow = ({
     return tripDestination;
   };
 
-  // Fetch flights from SerpAPI
+  // Fetch flights from SerpAPI for all departure airports
   const fetchFlights = async () => {
-    console.log("fetchFlights called", { tripId, departureId, arrivalId, tripPreferences });
+    console.log("fetchFlights called", { tripId, departureId, departureAirportCodes, arrivalId, tripPreferences });
     
-    if (!tripId || !departureId || !arrivalId) {
+    // Use all departure airport codes if available, otherwise fall back to single departureId
+    const airportsToSearch = departureAirportCodes.length > 0 ? departureAirportCodes : (departureId ? [departureId] : []);
+    
+    if (!tripId || airportsToSearch.length === 0 || !arrivalId) {
       const errorMessage: Message = {
         role: "assistant",
         content: "Please set both departure and arrival airport codes before searching for flights.",
@@ -784,102 +790,136 @@ const ChatWindow = ({
       const token = getAuthToken();
       if (!token) return;
 
-      const params = new URLSearchParams({
-        departure_id: departureId,
-        arrival_id: arrivalId,
-        outbound_date: tripPreferences.start_date,
-        return_date: tripPreferences.end_date,
-      });
+      // Fetch flights for each departure airport in parallel
+      const flightPromises = airportsToSearch.map(async (departureAirportCode) => {
+        const params = new URLSearchParams({
+          departure_id: departureAirportCode,
+          arrival_id: arrivalId,
+          outbound_date: tripPreferences.start_date,
+          return_date: tripPreferences.end_date,
+        });
 
-      console.log("Fetching flights with params:", {
-        departure_id: departureId,
-        arrival_id: arrivalId,
-        outbound_date: tripPreferences.start_date,
-        return_date: tripPreferences.end_date,
-      });
+        console.log(`Fetching flights for departure airport ${departureAirportCode} with params:`, {
+          departure_id: departureAirportCode,
+          arrival_id: arrivalId,
+          outbound_date: tripPreferences.start_date,
+          return_date: tripPreferences.end_date,
+        });
 
-      const response = await fetch(getApiUrl(`api/flights/search?${params.toString()}`), {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-      });
+        try {
+          const response = await fetch(getApiUrl(`api/flights/search?${params.toString()}`), {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+          });
 
-      console.log("Flight API response status:", response.status);
+          const result = await response.json();
+          console.log(`Flight API response for ${departureAirportCode}:`, result);
 
-      const result = await response.json();
-      console.log("Flight API result:", result);
-
-      if (response.ok && result.success) {
-        let flightsToSet: any[] = [];
-        if (Array.isArray(result.best_flights) && result.best_flights.length > 0) {
-          flightsToSet = result.best_flights;
-        } else if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
-          flightsToSet = result.other_flights;
-        }
-
-        if (flightsToSet.length > 0) {
-          console.log(`Setting ${flightsToSet.length} best flights:`, flightsToSet);
-          setBestFlights(flightsToSet);
-
-          // Save flights to database - save ALL flights returned from API
-          try {
-            console.log(`Saving ${flightsToSet.length} outbound flights to database...`);
-            const saveResponse = await fetch(getApiUrl("api/flights/save-outbound"), {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${token}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                trip_id: tripId,
-                flights: flightsToSet, // Send all flights
-                search_params: {
-                  departure_id: departureId,
-                  arrival_id: arrivalId,
-                  outbound_date: tripPreferences.start_date,
-                  return_date: tripPreferences.end_date,
-                  currency: "USD",
-                },
-              }),
-            });
-
-            const saveResult = await saveResponse.json();
-            if (saveResult.success && saveResult.flight_ids) {
-              console.log(`Saved ${saveResult.saved_count || saveResult.flight_ids.length} outbound flights to database (out of ${saveResult.total_flights || flightsToSet.length} total):`, saveResult);
-              // Map flight indices to flight_ids
-              const flightIdMap: Record<number, number> = {};
-              saveResult.flight_ids.forEach((flightId: number, idx: number) => {
-                if (idx < flightsToSet.length) {
-                  flightIdMap[idx] = flightId;
-                }
-              });
-              setOutboundFlightIds(flightIdMap);
-              
-              if (saveResult.saved_count < flightsToSet.length) {
-                console.warn(`Warning: Only ${saveResult.saved_count} out of ${flightsToSet.length} flights were saved successfully`);
-              }
-            } else {
-              console.error("Failed to save outbound flights:", saveResult);
+          if (response.ok && result.success) {
+            let flightsForAirport: any[] = [];
+            if (Array.isArray(result.best_flights) && result.best_flights.length > 0) {
+              flightsForAirport = result.best_flights;
+            } else if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
+              flightsForAirport = result.other_flights;
             }
-          } catch (saveError) {
-            console.error("Error saving outbound flights:", saveError);
-            // Don't show error to user, just log it
+
+            // Add departure airport code to each flight for grouping
+            return {
+              airportCode: departureAirportCode,
+              flights: flightsForAirport.map(flight => ({
+                ...flight,
+                departure_airport_code: departureAirportCode
+              }))
+            };
+          } else {
+            console.error(`Flight API error for ${departureAirportCode}:`, result);
+            return {
+              airportCode: departureAirportCode,
+              flights: []
+            };
           }
-        } else {
-          const errorMessage: Message = {
-            role: "assistant",
-            content: "No flight options found for your search. Please try different dates or airports.",
-            timestamp: formatTime(),
+        } catch (error) {
+          console.error(`Error fetching flights for ${departureAirportCode}:`, error);
+          return {
+            airportCode: departureAirportCode,
+            flights: []
           };
-          setMessages((prev) => [...prev, errorMessage]);
         }
-      } else {
-        console.error("Flight API error:", result);
+      });
+
+      const results = await Promise.all(flightPromises);
+      
+      // Group flights by departure airport code
+      const flightsByAirportMap: Record<string, any[]> = {};
+      const allFlights: any[] = [];
+      let globalIndex = 0;
+
+      results.forEach(({ airportCode, flights }) => {
+        if (flights.length > 0) {
+          flightsByAirportMap[airportCode] = flights;
+          // Add flights to flat list for backward compatibility
+          allFlights.push(...flights);
+        }
+      });
+
+      setFlightsByAirport(flightsByAirportMap);
+      setBestFlights(allFlights); // Keep for backward compatibility
+
+      // Save flights to database for all airports
+      const allFlightsToSave = allFlights;
+      if (allFlightsToSave.length > 0) {
+        try {
+          console.log(`Saving ${allFlightsToSave.length} outbound flights to database...`);
+          const saveResponse = await fetch(getApiUrl("api/flights/save-outbound"), {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              trip_id: tripId,
+              flights: allFlightsToSave,
+              search_params: {
+                departure_id: departureId || airportsToSearch[0], // Use primary departure for search params
+                arrival_id: arrivalId,
+                outbound_date: tripPreferences.start_date,
+                return_date: tripPreferences.end_date,
+                currency: "USD",
+              },
+            }),
+          });
+
+          const saveResult = await saveResponse.json();
+          if (saveResult.success && saveResult.flight_ids) {
+            console.log(`Saved ${saveResult.saved_count || saveResult.flight_ids.length} outbound flights to database:`, saveResult);
+            // Map flight indices to flight_ids (using global index across all airports)
+            const flightIdMap: Record<number, number> = {};
+            saveResult.flight_ids.forEach((flightId: number, idx: number) => {
+              if (idx < allFlightsToSave.length) {
+                flightIdMap[idx] = flightId;
+              }
+            });
+            setOutboundFlightIds(flightIdMap);
+            
+            if (saveResult.saved_count < allFlightsToSave.length) {
+              console.warn(`Warning: Only ${saveResult.saved_count} out of ${allFlightsToSave.length} flights were saved successfully`);
+            }
+          } else {
+            console.error("Failed to save outbound flights:", saveResult);
+          }
+        } catch (saveError) {
+          console.error("Error saving outbound flights:", saveError);
+        }
+      }
+
+      // Check if any flights were found
+      if (allFlightsToSave.length === 0) {
         const errorMessage: Message = {
           role: "assistant",
-          content: result.message || "Failed to fetch flight options. Please try again.",
+          content: "No flight options found for your search across all departure airports. Please try different dates or airports.",
           timestamp: formatTime(),
         };
         setMessages((prev) => [...prev, errorMessage]);
@@ -899,7 +939,7 @@ const ChatWindow = ({
 
   // Fetch return flights using departure_token from selected outbound flight
   const fetchReturnFlights = async (departureToken: string) => {
-    if (!tripId || !departureId || !arrivalId || !tripPreferences?.start_date || !tripPreferences?.end_date) {
+    if (!tripId || !arrivalId || !tripPreferences?.start_date || !tripPreferences?.end_date) {
       console.error("Missing required data for fetching return flights:", {
         tripId,
         departureId,
@@ -923,19 +963,58 @@ const ChatWindow = ({
       return;
     }
 
+    // Find the actual selected flight to get its departure airport code
+    // The selected flight might be from a different airport than the primary departureId
+    let actualDepartureId = departureId;
+    if (selectedOutboundIndex !== null && bestFlights[selectedOutboundIndex]) {
+      const selectedFlight = bestFlights[selectedOutboundIndex];
+      // Get departure airport code from the selected flight
+      if (selectedFlight.departure_airport_code) {
+        actualDepartureId = selectedFlight.departure_airport_code;
+      } else if (selectedFlight.flights?.[0]?.departure_airport?.id) {
+        actualDepartureId = selectedFlight.flights[0].departure_airport.id;
+      }
+      // If we have grouped flights, search for the exact flight object to get its airport code
+      if (Object.keys(flightsByAirport).length > 0 && selectedFlight?.departure_token) {
+        for (const [airportCode, flightsForAirport] of Object.entries(flightsByAirport)) {
+          const found = flightsForAirport.find(f => f?.departure_token === selectedFlight?.departure_token);
+          if (found) {
+            actualDepartureId = airportCode;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!actualDepartureId) {
+      const errorMessage: Message = {
+        role: "assistant",
+        content: "Could not determine departure airport for return flight search. Please try selecting the outbound flight again.",
+        timestamp: formatTime(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+      return;
+    }
+
     try {
       setIsFetchingReturnFlights(true);
       const token = getAuthToken();
       if (!token) return;
 
-      // For return flights, use the same departure_id and arrival_id as the original search
+      // For return flights, use the actual departure_id from the selected outbound flight
       // The departure_token tells SerpAPI which outbound flight was selected and returns matching return flights
       const params = new URLSearchParams({
-        departure_id: departureId,
+        departure_id: actualDepartureId,
         arrival_id: arrivalId,
         outbound_date: tripPreferences.start_date,
         return_date: tripPreferences.end_date,
         departure_token: departureToken,
+      });
+
+      console.log("Fetching return flights with params:", {
+        departure_id: actualDepartureId,
+        arrival_id: arrivalId,
+        departure_token: departureToken
       });
 
       console.log("Fetching return flights with token:", departureToken);
@@ -950,6 +1029,10 @@ const ChatWindow = ({
 
       const result = await response.json();
       console.log("Return flights API result:", result);
+      console.log("Return flights API result keys:", Object.keys(result));
+      console.log("best_flights:", result.best_flights);
+      console.log("other_flights:", result.other_flights);
+      console.log("Response status:", response.status);
 
       if (response.ok && result.success) {
         let flightsToSet: any[] = [];
@@ -958,6 +1041,8 @@ const ChatWindow = ({
         } else if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
           flightsToSet = result.other_flights;
         }
+        
+        console.log(`Found ${flightsToSet.length} return flights to display`);
         
         if (flightsToSet.length > 0) {
           // Cache the return flights by departure_token
@@ -1012,9 +1097,16 @@ const ChatWindow = ({
             }
           }
         } else {
+          console.warn("No return flights found in API response:", {
+            has_best_flights: !!result.best_flights,
+            best_flights_length: result.best_flights?.length || 0,
+            has_other_flights: !!result.other_flights,
+            other_flights_length: result.other_flights?.length || 0,
+            raw_result: result
+          });
           const errorMessage: Message = {
             role: "assistant",
-            content: "No return flight options found. Please try selecting a different outbound flight.",
+            content: `No return flight options found for this outbound flight. SerpAPI returned ${result.best_flights?.length || 0} best flights and ${result.other_flights?.length || 0} other flights. Please try selecting a different outbound flight.`,
             timestamp: formatTime(),
           };
           setMessages((prev) => [...prev, errorMessage]);
@@ -1204,7 +1296,8 @@ const ChatWindow = ({
     }
   };
 
-  // Query LLM to get airport code for a location (silent - doesn't save to chat history)
+  // Query LLM to get airport codes for a location (silent - doesn't save to chat history)
+  // Returns the primary airport code (closest) for backward compatibility
   const getAirportCode = async (location: string, isDeparture: boolean): Promise<string | null> => {
     try {
       const token = getAuthToken();
@@ -1223,8 +1316,24 @@ const ChatWindow = ({
 
       const result = await response.json();
 
-      if (response.ok && result.success && result.airport_code) {
-        return result.airport_code;
+      if (response.ok && result.success) {
+        // Store all airport codes and details if this is a departure location
+        if (isDeparture && result.airport_codes && Array.isArray(result.airport_codes)) {
+          setDepartureAirportCodes(result.airport_codes);
+          // Store full airport details if available
+          if (result.airports && Array.isArray(result.airports)) {
+            setDepartureAirports(result.airports);
+          } else {
+            // If airports array not available, create from codes only
+            setDepartureAirports(result.airport_codes.map((code: string) => ({
+              code,
+              name: '',
+              distance_miles: null
+            })));
+          }
+        }
+        // Return the primary (closest) airport code for backward compatibility
+        return result.airport_code || null;
       }
       
       return null;
@@ -1413,6 +1522,22 @@ const ChatWindow = ({
             flightsResult.outbound_flights.forEach((flight: any, idx: number) => {
               console.log(`Flight ${idx} departure_token:`, flight?.departure_token, "Type:", typeof flight?.departure_token);
             });
+            
+            // Group flights by departure airport code
+            const flightsByAirportMap: Record<string, any[]> = {};
+            flightsResult.outbound_flights.forEach((flight: any) => {
+              // Try to get departure airport code from flight data
+              const departureCode = flight.departure_airport_code || 
+                                   flight.flights?.[0]?.departure_airport?.id ||
+                                   flightsResult.departure_id || 
+                                   'UNKNOWN';
+              if (!flightsByAirportMap[departureCode]) {
+                flightsByAirportMap[departureCode] = [];
+              }
+              flightsByAirportMap[departureCode].push(flight);
+            });
+            
+            setFlightsByAirport(flightsByAirportMap);
             setBestFlights(flightsResult.outbound_flights);
             setOutboundFlightIds(flightsResult.outbound_flight_ids || {});
             
@@ -2490,9 +2615,48 @@ const ChatWindow = ({
                     </Button>
                   </div>
                   {departureId && (
-                    <p className="text-[11px] text-emerald-400">
-                      Departure airport code: <span className="font-semibold">{departureId}</span>
-                    </p>
+                    <div className="space-y-1">
+                      <p className="text-[11px] text-emerald-400">
+                        Primary departure airport: <span className="font-semibold">{departureId}</span>
+                      </p>
+                      {departureAirportCodes.length > 1 && (
+                        <div className="space-y-1 pt-1 border-t border-slate-700">
+                          <p className="text-[11px] text-slate-300 font-semibold">
+                            All available airports ({departureAirportCodes.length}):
+                          </p>
+                          <div className="space-y-1 pl-2">
+                            {departureAirports.length > 0 ? (
+                              // Show full details with names and distances
+                              departureAirports.map((airport, idx) => (
+                                <div key={airport.code} className="text-[10px] text-slate-400">
+                                  <span className={`font-semibold ${idx === 0 ? 'text-emerald-400' : 'text-slate-300'}`}>
+                                    {airport.code}
+                                  </span>
+                                  {airport.name && (
+                                    <> - {airport.name}</>
+                                  )}
+                                  {airport.distance_miles !== null && (
+                                    <> ({airport.distance_miles} miles away)</>
+                                  )}
+                                </div>
+                              ))
+                            ) : (
+                              // Fallback: just show codes
+                              departureAirportCodes.map((code, idx) => (
+                                <div key={code} className="text-[10px] text-slate-400">
+                                  <span className={`font-semibold ${idx === 0 ? 'text-emerald-400' : 'text-slate-300'}`}>
+                                    {code}
+                                  </span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                          <p className="text-[10px] text-slate-500 italic pt-1">
+                            Flights will be searched from all {departureAirportCodes.length} airports
+                          </p>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
 
@@ -2593,10 +2757,43 @@ const ChatWindow = ({
 
                 {/* Flight Results - Step 1: Select Outbound */}
                 {bestFlights.length > 0 && returnFlights.length === 0 && (
-                  <div className="space-y-3 pt-2 border-t border-slate-700">
+                  <div className="space-y-4 pt-2 border-t border-slate-700">
                     <p className="text-xs font-semibold text-slate-300">Step 1: Select your outbound flight</p>
-                    <div className="space-y-3">
-                      {bestFlights.map((flightOption, index) => {
+                    
+                    {/* Group flights by departure airport */}
+                    {Object.keys(flightsByAirport).length > 0 ? (
+                      // Display flights grouped by departure airport
+                      Object.entries(flightsByAirport).map(([airportCode, flightsForAirport]) => (
+                        <div key={airportCode} className="space-y-2">
+                          <div className="flex items-center gap-2 pb-2 border-b border-slate-700">
+                            <p className="text-xs font-semibold text-slate-200">
+                              Departures from {airportCode}
+                            </p>
+                            <span className="text-[10px] text-slate-400">
+                              ({flightsForAirport.length} option{flightsForAirport.length !== 1 ? "s" : ""})
+                            </span>
+                          </div>
+                          <div className="space-y-3 pl-2">
+                            {flightsForAirport.map((flightOption, localIndex) => {
+                              // Find global index in bestFlights array using departure_token as unique identifier
+                              // If departure_token is available, use it for exact matching
+                              let globalIndex = -1;
+                              if (flightOption.departure_token) {
+                                globalIndex = bestFlights.findIndex(
+                                  f => f?.departure_token === flightOption.departure_token
+                                );
+                              }
+                              // Fallback to object reference or other matching
+                              if (globalIndex < 0) {
+                                globalIndex = bestFlights.findIndex(
+                                  f => f === flightOption || 
+                                  (f.departure_airport_code === airportCode && 
+                                   f.price === flightOption.price &&
+                                   f.total_duration === flightOption.total_duration &&
+                                   JSON.stringify(f.flights) === JSON.stringify(flightOption.flights))
+                                );
+                              }
+                              const index = globalIndex >= 0 ? globalIndex : localIndex;
                         const outboundFlights = flightOption.flights || [];
                         const outboundLayovers = flightOption.layovers || [];
                         const firstOutbound = outboundFlights[0];
@@ -2668,7 +2865,8 @@ const ChatWindow = ({
                                 }
                               } else {
                                 // If still no flight_id, try using departure_token to find it
-                                const selectedFlight = bestFlights[index];
+                                // Use the actual flightOption from the grouped display to ensure we have the right flight
+                                const selectedFlight = flightOption;
                                 if (selectedFlight?.departure_token) {
                                   // The backend can look up by departure_token if needed
                                   // For now, we'll retry after a delay
@@ -2741,23 +2939,159 @@ const ChatWindow = ({
                             </div>
                           </div>
                         );
-                      })}
-                    </div>
+                            })}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      // Fallback: display as flat list if grouping not available
+                      <div className="space-y-3">
+                        {bestFlights.map((flightOption, index) => {
+                        const outboundFlights = flightOption.flights || [];
+                        const outboundLayovers = flightOption.layovers || [];
+                        const firstOutbound = outboundFlights[0];
+                        const lastOutbound = outboundFlights[outboundFlights.length - 1];
+                        const isSelected = selectedOutboundIndex === index;
+                        const isLayoversExpanded = expandedLayovers[index] || false;
+
+                        const formatDuration = (minutes: number) => {
+                          const hours = Math.floor(minutes / 60);
+                          const mins = minutes % 60;
+                          return `${hours}h ${mins}m`;
+                        };
+
+                        return (
+                          <div
+                            key={index}
+                            className={`border rounded-lg p-3 cursor-pointer transition-colors ${
+                              isSelected
+                                ? "border-blue-500 bg-blue-500/10"
+                                : "border-slate-700 bg-slate-950/60 hover:border-slate-600"
+                            }`}
+                            onClick={async () => {
+                              // If selecting a different outbound flight, clear return flight selection
+                              if (selectedOutboundIndex !== index && selectedOutboundIndex !== null) {
+                                setSelectedReturnIndex(null);
+                                setReturnFlights([]);
+                              }
+                              
+                              setSelectedOutboundIndex(index);
+                              // Update selection in database
+                              // Wait a bit for flight_id to be available if save is still in progress
+                              const token = getAuthToken();
+                              if (!token || !tripId) return;
+
+                              let flightId = outboundFlightIds[index];
+                              
+                              // If flight_id not available yet, wait a moment and check again
+                              if (!flightId) {
+                                await new Promise(resolve => setTimeout(resolve, 500));
+                                flightId = outboundFlightIds[index];
+                              }
+
+                              // Try to save selection - if flight_id is available
+                              if (flightId) {
+                                try {
+                                  const response = await fetch(getApiUrl("api/flights/select"), {
+                                    method: "PUT",
+                                    headers: {
+                                      Authorization: `Bearer ${token}`,
+                                      "Content-Type": "application/json",
+                                    },
+                                    body: JSON.stringify({
+                                      trip_id: tripId,
+                                      flight_id: flightId,
+                                      is_selected: true,
+                                    }),
+                                  });
+                                  
+                                  const result = await response.json();
+                                  if (result.success) {
+                                    console.log("Successfully updated outbound flight selection");
+                                    // Backend will automatically unselect return flights, but clear UI state
+                                    if (selectedReturnIndex !== null) {
+                                      setSelectedReturnIndex(null);
+                                    }
+                                  }
+                                } catch (error) {
+                                  console.error("Error updating flight selection:", error);
+                                }
+                              }
+                            }}
+                          >
+                            <div className="space-y-2">
+                              <div className="space-y-1">
+                                <p className="text-xs text-slate-200">
+                                  <span className="font-semibold">{firstOutbound?.departure_airport?.name || firstOutbound?.departure_airport?.id}</span>
+                                  {" → "}
+                                  <span className="font-semibold">{lastOutbound?.arrival_airport?.name || lastOutbound?.arrival_airport?.id}</span>
+                                </p>
+                                <p className="text-[11px] text-slate-400">
+                                  {firstOutbound?.departure_airport?.time} → {lastOutbound?.arrival_airport?.time}
+                                </p>
+                                <p className="text-[11px] text-slate-400">
+                                  {firstOutbound?.airline || "Multiple airlines"}
+                                </p>
+                                <p className="text-[11px] text-slate-400">
+                                  Duration: {formatDuration(flightOption.total_duration || 0)}
+                                </p>
+                                <p className="text-xs font-semibold text-emerald-400">
+                                  Outbound price: ${flightOption.price?.toLocaleString() || "N/A"}
+                                </p>
+                              </div>
+                              {outboundLayovers.length > 0 && (
+                                <Collapsible open={isLayoversExpanded} onOpenChange={(open) => setExpandedLayovers({ ...expandedLayovers, [index]: open })}>
+                                  <CollapsibleTrigger className="flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300">
+                                    <ChevronDown className={`h-3 w-3 transition-transform ${isLayoversExpanded ? "rotate-180" : ""}`} />
+                                    {outboundLayovers.length} layover{outboundLayovers.length > 1 ? "s" : ""}
+                                  </CollapsibleTrigger>
+                                  <CollapsibleContent className="mt-2 space-y-1">
+                                    {outboundLayovers.map((layover: any, layoverIdx: number) => (
+                                      <div key={layoverIdx} className="text-[11px] text-slate-400 pl-4">
+                                        {layover.name} ({layover.id}) - {formatDuration(layover.duration)}
+                                        {layover.overnight && " (overnight)"}
+                                      </div>
+                                    ))}
+                                  </CollapsibleContent>
+                                </Collapsible>
+                              )}
+                            </div>
+                          </div>
+                        );
+                        })}
+                      </div>
+                    )}
                     
                     {/* Choose Return Flight Button - Show when return flights are NOT loaded or when user wants to refresh */}
                     {selectedOutboundIndex !== null && bestFlights[selectedOutboundIndex] && returnFlights.length === 0 && (
                       <div className="pt-2 flex justify-end">
-                        {!bestFlights[selectedOutboundIndex]?.departure_token && (
-                          <p className="text-[10px] text-red-400 mr-2">
-                            Warning: This flight is missing departure token. Cannot fetch return flights.
-                          </p>
-                        )}
-                        <Button
-                          size="sm"
-                          className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                          disabled={isFetchingReturnFlights || !bestFlights[selectedOutboundIndex]?.departure_token}
-                          onClick={async () => {
-                            const selectedFlight = bestFlights[selectedOutboundIndex];
+                        {(() => {
+                          // Find the actual selected flight object - might be from grouped display
+                          let selectedFlight = bestFlights[selectedOutboundIndex];
+                          // If we have grouped flights, try to find the flight by departure_token to ensure we have the right one
+                          if (Object.keys(flightsByAirport).length > 0 && selectedFlight?.departure_token) {
+                            // Search through grouped flights to find the exact flight object
+                            for (const flightsForAirport of Object.values(flightsByAirport)) {
+                              const found = flightsForAirport.find(f => f?.departure_token === selectedFlight?.departure_token);
+                              if (found) {
+                                selectedFlight = found;
+                                break;
+                              }
+                            }
+                          }
+                          return (
+                            <>
+                              {!selectedFlight?.departure_token && (
+                                <p className="text-[10px] text-red-400 mr-2">
+                                  Warning: This flight is missing departure token. Cannot fetch return flights.
+                                </p>
+                              )}
+                              <Button
+                                size="sm"
+                                className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                                disabled={isFetchingReturnFlights || !selectedFlight?.departure_token}
+                                onClick={async () => {
+                                  // Use the selectedFlight from closure above
                             console.log("Choose return flight clicked. Selected flight:", selectedFlight);
                             console.log("Selected outbound index:", selectedOutboundIndex);
                             console.log("Best flights array length:", bestFlights.length);
@@ -2792,10 +3126,13 @@ const ChatWindow = ({
                             // Fetch return flights using the validated departure_token
                             console.log("Calling fetchReturnFlights with token:", departureToken);
                             await fetchReturnFlights(departureToken);
-                          }}
-                        >
-                          {isFetchingReturnFlights ? "Loading return flights..." : "Choose return flight"}
-                        </Button>
+                                  }}
+                                >
+                                  {isFetchingReturnFlights ? "Loading return flights..." : "Choose return flight"}
+                                </Button>
+                              </>
+                            );
+                          })()}
                       </div>
                     )}
                   </div>

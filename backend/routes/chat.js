@@ -634,6 +634,7 @@ When you recommend activities, also explain briefly why they fit these preferenc
 });
 
 // Silent airport code lookup - doesn't save to chat history
+// Returns the 3 closest airports to the given location
 router.post('/airport-code', authenticateToken, async (req, res) => {
   try {
     const { location } = req.body;
@@ -646,36 +647,94 @@ router.post('/airport-code', authenticateToken, async (req, res) => {
       });
     }
 
-    const prompt = `I need the uppercase 3-letter IATA airport code for the airport closest to "${location}". 
-Please respond with ONLY the 3-letter airport code in uppercase (e.g., "JFK", "LAX", "CDG"). 
-If you cannot determine the airport code, respond with "UNKNOWN".`;
+    const prompt = `Given the location "${location}", provide the 3 closest airports sorted by distance (closest first).
+For each airport, provide the 3-letter IATA airport code in uppercase, the full airport name, and the approximate distance in miles.
+Return ONLY valid JSON in this exact format (no markdown, no explanation):
+{
+  "airports": [
+    {"code": "JFK", "name": "John F. Kennedy International Airport", "distance_miles": 15},
+    {"code": "LGA", "name": "LaGuardia Airport", "distance_miles": 8},
+    {"code": "EWR", "name": "Newark Liberty International Airport", "distance_miles": 18}
+  ]
+}
+If you cannot find 3 airports, return as many as you can find (minimum 1). Only include valid 3-letter IATA codes.`;
 
     const completion = await openaiClient.chat.completions.create({
       model: DEFAULT_MODEL,
       messages: [
         {
+          role: 'system',
+          content: 'You are an expert at finding airports near locations. Always respond with valid JSON only, no additional text.',
+        },
+        {
           role: 'user',
           content: prompt,
         },
       ],
-      temperature: 0.3,
-      max_tokens: 10,
+      temperature: 0.2,
+      max_tokens: 300,
+      response_format: { type: "json_object" },
     });
 
     const response = completion.choices[0]?.message?.content || '';
-    const codeMatch = response.match(/\b([A-Z]{3})\b/);
-    const airportCode = codeMatch && codeMatch[1] !== "UNKNOWN" ? codeMatch[1] : null;
+    let airports = [];
+    
+    try {
+      // Parse JSON response
+      const parsed = JSON.parse(response);
+      
+      if (parsed.airports && Array.isArray(parsed.airports)) {
+        // Extract valid airport codes (3-letter uppercase)
+        airports = parsed.airports
+          .filter(airport => airport && airport.code && /^[A-Z]{3}$/.test(airport.code))
+          .slice(0, 3) // Ensure max 3 airports
+          .map(airport => ({
+            code: airport.code,
+            name: airport.name || '',
+            distance_miles: airport.distance_miles || null
+          }));
+      }
+    } catch (parseError) {
+      // Fallback: try to extract codes from text using regex
+      console.warn('Failed to parse JSON response, attempting regex extraction:', parseError);
+      const codeMatches = response.matchAll(/\b([A-Z]{3})\b/g);
+      const uniqueCodes = [...new Set(Array.from(codeMatches).map(m => m[1]))]
+        .filter(code => code !== 'UNKNOWN')
+        .slice(0, 3);
+      
+      airports = uniqueCodes.map(code => ({
+        code: code,
+        name: '',
+        distance_miles: null
+      }));
+    }
+
+    // Ensure we have at least one airport
+    if (airports.length === 0) {
+      return res.status(200).json({
+        success: false,
+        airport_code: null,
+        airport_codes: [],
+        message: "Could not determine airport codes for this location"
+      });
+    }
+
+    // Extract just the codes for backward compatibility and convenience
+    const airportCodes = airports.map(a => a.code);
+    const primaryAirportCode = airportCodes[0]; // Closest airport
 
     res.status(200).json({
       success: true,
-      airport_code: airportCode,
-      message: airportCode || "Could not determine airport code"
+      airport_code: primaryAirportCode, // Backward compatibility - returns closest airport
+      airport_codes: airportCodes, // Array of all airport codes
+      airports: airports, // Full details including names and distances
+      message: `Found ${airports.length} airport(s) near ${location}`
     });
   } catch (error) {
-    console.error('Error getting airport code:', error);
+    console.error('Error getting airport codes:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to get airport code',
+      message: 'Failed to get airport codes',
       error: error.message
     });
   }
