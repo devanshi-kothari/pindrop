@@ -216,16 +216,16 @@ const TripPlanning = () => {
                 <Button
                   variant="outline"
                   onClick={() => navigate(`/trip/${trip.trip_id}/final-itinerary`)}
-                  className="flex items-center gap-2"
+                  className="flex items-center gap-2 border-blue-200 bg-white text-slate-900 hover:bg-blue-50"
                 >
                   <Map className="h-4 w-4" />
-                  View Final Itinerary
+                  View/Edit Final Itinerary
                 </Button>
                 <Button
                   variant="outline"
                   onClick={() => updateTripStatus("draft")}
                   disabled={saving || trip.trip_status === "draft"}
-                  className="flex items-center gap-2"
+                  className="flex items-center gap-2 border-blue-200 bg-white text-slate-900 hover:bg-blue-50"
                 >
                   <Bookmark className="h-4 w-4" />
                   Draft for Later
@@ -233,7 +233,7 @@ const TripPlanning = () => {
                 <Button
                   onClick={() => updateTripStatus("planned")}
                   disabled={saving || trip.trip_status === "planned"}
-                  className="flex items-center gap-2 bg-blue-500 hover:bg-blue-600"
+                  className="flex items-center gap-2 bg-yellow-400 text-slate-900 hover:bg-yellow-300"
                 >
                   <Save className="h-4 w-4" />
                   Save Itinerary

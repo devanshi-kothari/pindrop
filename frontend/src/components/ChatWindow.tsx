@@ -1734,15 +1734,15 @@ const ChatWindow = ({
 
   return (
     <div
-      className={`flex flex-col h-full bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 ${className}`}
+      className={`flex flex-col h-full bg-gradient-to-b from-yellow-50 via-background to-yellow-50 ${className}`}
     >
       {/* Chat Header */}
-      <div className="flex items-center justify-between p-4 border-b border-slate-800 bg-slate-900/70 backdrop-blur">
-        <h2 className="text-lg font-semibold text-white">Trip Planner</h2>
+      <div className="flex items-center justify-between p-4 border-b border-blue-100 bg-white/90 backdrop-blur">
+        <h2 className="text-lg font-semibold text-slate-900">Trip Planner</h2>
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8 text-slate-200 hover:bg-slate-800 hover:text-white"
+          className="h-8 w-8 text-slate-700 hover:bg-blue-100 hover:text-slate-900"
         >
           <Maximize2 className="h-4 w-4" />
         </Button>
@@ -1751,14 +1751,14 @@ const ChatWindow = ({
       {/* Structured trip preferences */}
       {tripId && (planningMode === "known" || hasLockedDestination) && (
         <div className="px-4 pt-4">
-          <Card className="border-slate-800 bg-slate-900/70 backdrop-blur text-slate-100">
+          <Card className="border-blue-100 bg-white/90 backdrop-blur text-slate-900">
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <CardTitle className="text-base font-semibold">
                     Phase 1: Trip preferences for this itinerary
                   </CardTitle>
-                  <p className="text-xs text-slate-400 mt-1">
+                  <p className="text-xs text-slate-500 mt-1">
                     These answers help tailor a day-by-day plan. They start from your profile
                     defaults, but you can tweak them for this specific trip.
                   </p>
@@ -1767,7 +1767,7 @@ const ChatWindow = ({
                   <Button
                     size="sm"
                     variant="outline"
-                    className="border-slate-600 bg-slate-900/80 text-slate-100 hover:bg-slate-800 hover:text-white"
+                    className="border-blue-200 bg-white text-slate-900 hover:bg-blue-50"
                     onClick={savePreferences}
                     disabled={isSavingPreferences || !tripPreferences}
                   >
@@ -1775,7 +1775,7 @@ const ChatWindow = ({
                   </Button>
                   <Button
                     size="sm"
-                    className="bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400 disabled:opacity-60"
+                    className="bg-yellow-400 text-slate-900 font-semibold hover:bg-yellow-300 disabled:opacity-60"
                     onClick={generateActivities}
                     disabled={isGeneratingActivities}
                   >
@@ -1787,19 +1787,19 @@ const ChatWindow = ({
             <CardContent className="space-y-4 text-xs sm:text-sm">
               <div className="grid gap-4 md:grid-cols-3">
                 <div className="space-y-1.5">
-                  <Label className="text-slate-200 text-xs">Trip dates</Label>
+                  <Label className="text-slate-800 text-xs">Trip dates</Label>
                   <div className="flex gap-2">
                     <Input
                       type="date"
                       value={tripPreferences?.start_date ?? ""}
                       onChange={(e) => handlePreferenceChange("start_date", e.target.value || null)}
-                      className="h-8 bg-slate-950 border-slate-700 text-xs"
+                      className="h-8 bg-white border-blue-200 text-xs"
                     />
                     <Input
                       type="date"
                       value={tripPreferences?.end_date ?? ""}
                       onChange={(e) => handlePreferenceChange("end_date", e.target.value || null)}
-                      className="h-8 bg-slate-950 border-slate-700 text-xs"
+                      className="h-8 bg-white border-blue-200 text-xs"
                     />
                   </div>
                   {dateError && (
@@ -1807,7 +1807,7 @@ const ChatWindow = ({
                   )}
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-slate-200 text-xs">Rough number of days</Label>
+                  <Label className="text-slate-800 text-xs">Rough number of days</Label>
                   <Input
                     type="number"
                     min={1}
@@ -1824,17 +1824,17 @@ const ChatWindow = ({
                       )
                     }
                     disabled={computedNumDays !== null}
-                    className="h-8 bg-slate-950 border-slate-700 text-xs"
+                    className="h-8 bg-white border-blue-200 text-xs"
                     placeholder={computedNumDays !== null ? "" : "ex. 4"}
                   />
                   {computedNumDays !== null && (
-                    <p className="mt-1 text-[11px] text-slate-400">
+                    <p className="mt-1 text-[11px] text-slate-500">
                       Automatically calculated from your start and end dates.
                     </p>
                   )}
                 </div>
                 <div className="space-y-1.5">
-                  <Label className="text-slate-200 text-xs">Total trip budget (USD)</Label>
+                  <Label className="text-slate-800 text-xs">Total trip budget (USD)</Label>
                   <div className="flex gap-2">
                     <Input
                       type="number"
@@ -1846,7 +1846,7 @@ const ChatWindow = ({
                           e.target.value ? parseFloat(e.target.value) : null
                         )
                       }
-                      className="h-8 bg-slate-950 border-slate-700 text-xs"
+                      className="h-8 bg-white border-blue-200 text-xs"
                       placeholder="Min"
                     />
                     <Input
@@ -1859,7 +1859,7 @@ const ChatWindow = ({
                           e.target.value ? parseFloat(e.target.value) : null
                         )
                       }
-                      className="h-8 bg-slate-950 border-slate-700 text-xs"
+                      className="h-8 bg-white border-blue-200 text-xs"
                       placeholder="Max"
                     />
                   </div>
@@ -1868,7 +1868,7 @@ const ChatWindow = ({
 
               <div className="grid gap-4 md:grid-cols-3">
                 <div className="space-y-2">
-                  <Label className="text-slate-200 text-xs">How full should each day feel?</Label>
+                  <Label className="text-slate-800 text-xs">How full should each day feel?</Label>
                   <RadioGroup
                     value={tripPreferences?.pace ?? ""}
                     onValueChange={(value) =>
@@ -1876,15 +1876,15 @@ const ChatWindow = ({
                     }
                     className="grid grid-cols-1 gap-2"
                   >
-                    <label className="flex items-center gap-2 rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs cursor-pointer hover:border-slate-500">
+                    <label className="flex items-center gap-2 rounded-md border border-blue-200 bg-white px-2.5 py-1.5 text-xs cursor-pointer hover:border-blue-200">
                       <RadioGroupItem value="slow" />
                       <span>Slow & relaxing</span>
                     </label>
-                    <label className="flex items-center gap-2 rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs cursor-pointer hover:border-slate-500">
+                    <label className="flex items-center gap-2 rounded-md border border-blue-200 bg-white px-2.5 py-1.5 text-xs cursor-pointer hover:border-blue-200">
                       <RadioGroupItem value="balanced" />
                       <span>Balanced mix</span>
                     </label>
-                    <label className="flex items-center gap-2 rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-xs cursor-pointer hover:border-slate-500">
+                    <label className="flex items-center gap-2 rounded-md border border-blue-200 bg-white px-2.5 py-1.5 text-xs cursor-pointer hover:border-blue-200">
                       <RadioGroupItem value="packed" />
                       <span>Packed with activities</span>
                     </label>
@@ -1892,89 +1892,89 @@ const ChatWindow = ({
                 </div>
 
                 <div className="space-y-2">
-                  <Label className="text-slate-200 text-xs">Who is this trip for?</Label>
+                  <Label className="text-slate-800 text-xs">Who is this trip for?</Label>
                   <Select
                     value={tripPreferences?.group_type ?? ""}
                     onValueChange={(value) => handlePreferenceChange("group_type", value)}
                   >
-                    <SelectTrigger className="h-8 bg-slate-950 border-slate-700 text-xs">
+                    <SelectTrigger className="h-8 bg-white border-blue-200 text-xs">
                       <SelectValue placeholder="Select group type" />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-950 border-slate-700 text-xs">
+                    <SelectContent className="bg-white border-blue-200 text-xs">
                       <SelectItem
                         value="solo"
-                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                        className="text-slate-900 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
                       >
                         Solo
                       </SelectItem>
                       <SelectItem
                         value="couple"
-                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                        className="text-slate-900 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
                       >
                         Couple
                       </SelectItem>
                       <SelectItem
                         value="family"
-                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                        className="text-slate-900 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
                       >
                         Family
                       </SelectItem>
                       <SelectItem
                         value="friends"
-                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                        className="text-slate-900 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
                       >
                         Friends
                       </SelectItem>
                       <SelectItem
                         value="girls_trip"
-                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                        className="text-slate-900 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
                       >
                         Girls' trip
                       </SelectItem>
                       <SelectItem
                         value="work"
-                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                        className="text-slate-900 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
                       >
                         Work / team trip
                       </SelectItem>
                     </SelectContent>
                   </Select>
-                  <Label className="text-slate-200 text-xs mt-2">Preferred stay</Label>
+                  <Label className="text-slate-800 text-xs mt-2">Preferred stay</Label>
                   <Select
                     value={tripPreferences?.accommodation_type ?? ""}
                     onValueChange={(value) => handlePreferenceChange("accommodation_type", value)}
                   >
-                    <SelectTrigger className="h-8 bg-slate-950 border-slate-700 text-xs">
+                    <SelectTrigger className="h-8 bg-white border-blue-200 text-xs">
                       <SelectValue placeholder="Hotel, Airbnb, hostel..." />
                     </SelectTrigger>
-                    <SelectContent className="bg-slate-950 border-slate-700 text-xs">
+                    <SelectContent className="bg-white border-blue-200 text-xs">
                       <SelectItem
                         value="hotel"
-                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                        className="text-slate-900 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
                       >
                         Hotel
                       </SelectItem>
                       <SelectItem
                         value="airbnb"
-                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                        className="text-slate-900 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
                       >
                         Apartment / Airbnb
                       </SelectItem>
                       <SelectItem
                         value="hostel"
-                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                        className="text-slate-900 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
                       >
                         Hostel
                       </SelectItem>
                       <SelectItem
                         value="boutique"
-                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                        className="text-slate-900 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
                       >
                         Boutique stay
                       </SelectItem>
                       <SelectItem
                         value="no_preference"
-                        className="text-slate-100 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
+                        className="text-slate-900 data-[highlighted]:bg-yellow-400 data-[highlighted]:text-slate-950"
                       >
                         No strong preference
                       </SelectItem>
@@ -1983,22 +1983,22 @@ const ChatWindow = ({
                 </div>
 
                 <div className="space-y-2">
-                  <Label className="text-slate-200 text-xs">
+                  <Label className="text-slate-800 text-xs">
                     Safety notes (optional)
                   </Label>
                   <Textarea
                     value={tripPreferences?.safety_notes ?? ""}
                     onChange={(e) => handlePreferenceChange("safety_notes", e.target.value)}
-                    className="min-h-[60px] bg-slate-950 border-slate-700 text-xs resize-none"
+                    className="min-h-[60px] bg-white border-blue-200 text-xs resize-none"
                     placeholder="ex. Safe for a group of girls, well-lit areas, avoid very late nights..."
                   />
-                  <Label className="text-slate-200 text-xs mt-2">
+                  <Label className="text-slate-800 text-xs mt-2">
                     Accessibility notes (optional)
                   </Label>
                   <Textarea
                     value={tripPreferences?.accessibility_notes ?? ""}
                     onChange={(e) => handlePreferenceChange("accessibility_notes", e.target.value)}
-                    className="min-h-[50px] bg-slate-950 border-slate-700 text-xs resize-none"
+                    className="min-h-[50px] bg-white border-blue-200 text-xs resize-none"
                     placeholder="ex. Limited walking, step-free access, stroller-friendly..."
                   />
                 </div>
@@ -2006,7 +2006,7 @@ const ChatWindow = ({
 
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
-                  <Label className="text-slate-200 text-xs">
+                  <Label className="text-slate-800 text-xs">
                     What do you want more of on this trip?
                   </Label>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-1">
@@ -2031,16 +2031,16 @@ const ChatWindow = ({
                           onCheckedChange={() =>
                             toggleCategory("activity_categories", cat as ActivityCategory)
                           }
-                          className="h-3.5 w-3.5 border-slate-500 data-[state=checked]:bg-emerald-400 data-[state=checked]:border-emerald-400"
+                          className="h-3.5 w-3.5 border-blue-200 data-[state=checked]:bg-emerald-400 data-[state=checked]:border-emerald-400"
                         />
-                        <span className="capitalize text-slate-200">{cat}</span>
+                        <span className="capitalize text-slate-800">{cat}</span>
                       </label>
                     ))}
                   </div>
                 </div>
 
                 <div className="space-y-2">
-                  <Label className="text-slate-200 text-xs">
+                  <Label className="text-slate-800 text-xs">
                     Anything you'd like to avoid?
                   </Label>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-1">
@@ -2065,9 +2065,9 @@ const ChatWindow = ({
                           onCheckedChange={() =>
                             toggleCategory("avoid_activity_categories", cat as ActivityCategory)
                           }
-                          className="h-3.5 w-3.5 border-slate-500 data-[state=checked]:bg-rose-400 data-[state=checked]:border-rose-400"
+                          className="h-3.5 w-3.5 border-blue-200 data-[state=checked]:bg-rose-400 data-[state=checked]:border-rose-400"
                         />
-                        <span className="capitalize text-slate-200">{cat}</span>
+                        <span className="capitalize text-slate-800">{cat}</span>
                       </label>
                     ))}
                   </div>
@@ -2075,13 +2075,13 @@ const ChatWindow = ({
               </div>
 
               <div className="space-y-1.5">
-                <Label className="text-slate-200 text-xs">
+                <Label className="text-slate-800 text-xs">
                   Any other vibes, constraints, or must-dos for this trip?
                 </Label>
                 <Textarea
                   value={tripPreferences?.custom_requests ?? ""}
                   onChange={(e) => handlePreferenceChange("custom_requests", e.target.value)}
-                  className="min-h-[60px] bg-slate-950 border-slate-700 text-xs resize-none"
+                  className="min-h-[60px] bg-white border-blue-200 text-xs resize-none"
                   placeholder="ex. Rooftop bars with a view, no super early mornings, vegetarian-friendly spots, kid-friendly afternoons..."
                 />
               </div>
@@ -2093,9 +2093,9 @@ const ChatWindow = ({
       {/* Destination lock-in UI for "help me choose" mode before a destination is chosen */}
       {planningMode === "explore" && !hasLockedDestination && (
         <div className="px-4 pt-3">
-          <Card className="border-slate-800 bg-slate-900/70 backdrop-blur text-slate-100">
+          <Card className="border-blue-100 bg-white/90 backdrop-blur text-slate-900">
             <CardContent className="py-3 space-y-2 text-xs sm:text-sm">
-              <p className="text-slate-300">
+              <p className="text-slate-600">
                 Once you&apos;ve chatted with me and decided on a destination, lock it in here to
                 start the detailed planning form.
               </p>
@@ -2105,7 +2105,7 @@ const ChatWindow = ({
                   value={lockDestination}
                   onChange={(e) => setLockDestination(e.target.value)}
                   placeholder="Where did you decide to go?"
-                  className="h-8 bg-slate-950 border-slate-700 text-xs"
+                  className="h-8 bg-white border-blue-200 text-xs"
                   disabled={isLockingDestination}
                 />
                 <Button
@@ -2187,7 +2187,7 @@ const ChatWindow = ({
         <div className="space-y-4">
           {isLoadingHistory && (
             <div className="flex justify-start">
-              <div className="bg-slate-900/90 border border-slate-700 text-slate-100 rounded-lg px-4 py-3 shadow-sm">
+              <div className="bg-white border border-blue-200 text-slate-900 rounded-lg px-4 py-3 shadow-sm">
                 <p className="text-sm">Loading conversation history...</p>
               </div>
             </div>
@@ -2206,7 +2206,7 @@ const ChatWindow = ({
                 className={`max-w-[75%] rounded-lg px-4 py-3 shadow-sm ${
                   message.role === "user"
                     ? "bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 shadow-lg"
-                    : "bg-slate-900/90 border border-slate-700 text-slate-100"
+                    : "bg-white border border-blue-200 text-slate-900"
                 }`}
               >
                 <div className="text-sm whitespace-pre-wrap break-words leading-relaxed">
@@ -2304,7 +2304,7 @@ const ChatWindow = ({
                           return (
                             <div className="space-y-3">
                               {intro && (
-                                <div className="text-xs text-slate-200">
+                                <div className="text-xs text-slate-800">
                                   {renderWithBold(intro)}
                                 </div>
                               )}
@@ -2343,11 +2343,11 @@ const ChatWindow = ({
 
                               <div className="space-y-1">
                                 {globalTail ? (
-                                  <p className="text-[11px] text-slate-400 whitespace-pre-wrap">
+                                  <p className="text-[11px] text-slate-500 whitespace-pre-wrap">
                                     {renderWithBold(globalTail)}
                                   </p>
                                 ) : (
-                                  <p className="text-xs text-slate-200">
+                                  <p className="text-xs text-slate-800">
                                     What do you think? Tell me which ideas you like, or what you&apos;d
                                     like to change.
                                   </p>
@@ -2379,25 +2379,25 @@ const ChatWindow = ({
           })()}
           {isCreatingTrip && (
             <div className="flex justify-start">
-              <div className="bg-slate-900/90 border border-slate-700 text-slate-100 rounded-lg px-4 py-3 shadow-sm">
+              <div className="bg-white border border-blue-200 text-slate-900 rounded-lg px-4 py-3 shadow-sm">
                 <p className="text-sm">Creating your trip...</p>
               </div>
             </div>
           )}
           {isLoading && !isCreatingTrip && (
             <div className="flex justify-start">
-              <div className="bg-slate-900/90 border border-slate-700 text-slate-100 rounded-lg px-4 py-3 shadow-sm">
+              <div className="bg-white border border-blue-200 text-slate-900 rounded-lg px-4 py-3 shadow-sm">
                 <p className="text-sm">Thinking...</p>
               </div>
             </div>
           )}
           {tripId && activities.length > 0 && (
             <div className="flex justify-start">
-              <div className="w-full max-w-md bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-6 shadow-sm">
-                <p className="text-xs font-semibold text-slate-300 mb-1">
+              <div className="w-full max-w-md bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm">
+                <p className="text-xs font-semibold text-slate-600 mb-1">
                   Phase 2: Explore activities
                 </p>
-                <p className="text-[11px] text-slate-300 mb-4">
+                <p className="text-[11px] text-slate-600 mb-4">
                   Swipe right to like, left to pass, or use the buttons below. Swipe up for maybe.
                 </p>
                 
@@ -2456,10 +2456,10 @@ const ChatWindow = ({
                   {activities.filter((a) => a.preference === "pending").length === 0 && (
                     <div className="flex h-full items-center justify-center">
                       <div className="text-center">
-                        <p className="text-sm font-semibold text-slate-300 mb-2">
+                        <p className="text-sm font-semibold text-slate-600 mb-2">
                           All activities reviewed! 🎉
                         </p>
-                        <p className="text-xs text-slate-400">
+                        <p className="text-xs text-slate-500">
                           You've reacted to all {activities.length} activities.
                         </p>
                       </div>
@@ -2469,7 +2469,7 @@ const ChatWindow = ({
 
                 {/* Progress indicator */}
                 <div className="mt-4 flex items-center justify-between">
-                  <p className="text-[11px] text-slate-400">
+                  <p className="text-[11px] text-slate-500">
                     {activities.filter((a) => a.preference === "pending").length === 0
                       ? "All done!"
                       : `${activities.filter((a) => a.preference === "pending").length} remaining`}
@@ -2493,7 +2493,7 @@ const ChatWindow = ({
           )}
           {itinerarySummary && (
             <div className="flex justify-start">
-              <div className="bg-slate-900/90 border border-emerald-500/60 text-slate-100 rounded-lg px-4 py-3 shadow-sm max-w-[75%]">
+              <div className="bg-white border border-emerald-500/60 text-slate-900 rounded-lg px-4 py-3 shadow-sm max-w-[75%]">
                 <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
                   {itinerarySummary}
                 </p>
@@ -2502,8 +2502,8 @@ const ChatWindow = ({
           )}
           {itineraryDays.length > 0 && (
             <div className="flex justify-start">
-              <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm space-y-3">
-                <p className="text-xs font-semibold text-slate-300">
+              <div className="w-full max-w-xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
+                <p className="text-xs font-semibold text-slate-600">
                   Phase 3: Day-by-day trip sketch
                 </p>
                 {(() => {
@@ -2564,7 +2564,7 @@ const ChatWindow = ({
                           type="button"
                           variant="outline"
                           size="sm"
-                          className="h-7 px-2 text-xs border-slate-600 text-slate-100 bg-slate-900/80 hover:bg-slate-800 disabled:opacity-40"
+                          className="h-7 px-2 text-xs border-blue-200 text-slate-900 bg-white hover:bg-blue-50 disabled:opacity-40"
                           disabled={currentIndex === 0}
                           onClick={() =>
                             setItineraryCarouselIndex((prev) =>
@@ -2578,7 +2578,7 @@ const ChatWindow = ({
                           type="button"
                           variant="outline"
                           size="sm"
-                          className="h-7 px-2 text-xs border-slate-600 text-slate-100 bg-slate-900/80 hover:bg-slate-800 disabled:opacity-40"
+                          className="h-7 px-2 text-xs border-blue-200 text-slate-900 bg-white hover:bg-blue-50 disabled:opacity-40"
                           disabled={currentIndex === maxIndex}
                           onClick={() =>
                             setItineraryCarouselIndex((prev) =>
@@ -2606,21 +2606,21 @@ const ChatWindow = ({
           )}
           {hasConfirmedTripSketch && (
             <div className="flex justify-start">
-              <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm space-y-3">
-                <p className="text-xs font-semibold text-slate-300">
+              <div className="w-full max-w-xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
+                <p className="text-xs font-semibold text-slate-600">
                   Phase 4 Part 1: Plan your flights
                 </p>
                 
                 {/* Departure Location */}
                 <div className="space-y-2">
-                  <Label className="text-slate-200 text-xs">Departure location (your home town)</Label>
+                  <Label className="text-slate-800 text-xs">Departure location (your home town)</Label>
                   <div className="flex gap-2">
                     <Input
                       type="text"
                       value={departureLocation}
                       onChange={(e) => setDepartureLocation(e.target.value)}
                       placeholder="e.g., New York, NY or Austin, TX"
-                      className="h-8 bg-slate-950 border-slate-700 text-xs text-slate-100"
+                      className="h-8 bg-white border-blue-200 text-xs text-slate-900"
                       disabled={isFetchingDepartureCode || !!departureId}
                     />
                     <Button
@@ -2653,16 +2653,16 @@ const ChatWindow = ({
                         Primary departure airport: <span className="font-semibold">{departureId}</span>
                       </p>
                       {departureAirportCodes.length > 1 && (
-                        <div className="space-y-1 pt-1 border-t border-slate-700">
-                          <p className="text-[11px] text-slate-300 font-semibold">
+                        <div className="space-y-1 pt-1 border-t border-blue-200">
+                          <p className="text-[11px] text-slate-600 font-semibold">
                             All available airports ({departureAirportCodes.length}):
                           </p>
                           <div className="space-y-1 pl-2">
                             {departureAirports.length > 0 ? (
                               // Show full details with names and distances
                               departureAirports.map((airport, idx) => (
-                                <div key={airport.code} className="text-[10px] text-slate-400">
-                                  <span className={`font-semibold ${idx === 0 ? 'text-emerald-400' : 'text-slate-300'}`}>
+                                <div key={airport.code} className="text-[10px] text-slate-500">
+                                  <span className={`font-semibold ${idx === 0 ? 'text-emerald-400' : 'text-slate-600'}`}>
                                     {airport.code}
                                   </span>
                                   {airport.name && (
@@ -2676,8 +2676,8 @@ const ChatWindow = ({
                             ) : (
                               // Fallback: just show codes
                               departureAirportCodes.map((code, idx) => (
-                                <div key={code} className="text-[10px] text-slate-400">
-                                  <span className={`font-semibold ${idx === 0 ? 'text-emerald-400' : 'text-slate-300'}`}>
+                                <div key={code} className="text-[10px] text-slate-500">
+                                  <span className={`font-semibold ${idx === 0 ? 'text-emerald-400' : 'text-slate-600'}`}>
                                     {code}
                                   </span>
                                 </div>
@@ -2695,7 +2695,7 @@ const ChatWindow = ({
 
                 {/* Arrival Location */}
                 <div className="space-y-2">
-                  <Label className="text-slate-200 text-xs">Arrival location</Label>
+                  <Label className="text-slate-800 text-xs">Arrival location</Label>
                   {(() => {
                     const arrivalLocation = getArrivalLocation();
                     return (
@@ -2707,7 +2707,7 @@ const ChatWindow = ({
                                 type="text"
                                 value={arrivalLocation}
                                 disabled
-                                className="h-8 bg-slate-950 border-slate-700 text-xs text-slate-400"
+                                className="h-8 bg-white border-blue-200 text-xs text-slate-500"
                               />
                               <Button
                                 size="sm"
@@ -2740,7 +2740,7 @@ const ChatWindow = ({
                             )}
                           </>
                         ) : (
-                          <p className="text-[11px] text-slate-400">
+                          <p className="text-[11px] text-slate-500">
                             Please set your trip destination or add activities with locations to automatically detect the arrival location.
                           </p>
                         )}
@@ -2751,19 +2751,19 @@ const ChatWindow = ({
 
                 {/* Flight Dates Summary */}
                 {tripPreferences?.start_date && tripPreferences?.end_date && (
-                  <div className="space-y-2 pt-2 border-t border-slate-700">
-                    <p className="text-xs font-semibold text-slate-300">Flight dates</p>
-                    <div className="text-[11px] text-slate-400 space-y-1">
-                      <p>Outbound date: <span className="text-slate-200">{tripPreferences.start_date}</span></p>
-                      <p>Return date: <span className="text-slate-200">{tripPreferences.end_date}</span></p>
-                      <p>Trip type: <span className="text-slate-200">Round trip (type: 1)</span></p>
+                  <div className="space-y-2 pt-2 border-t border-blue-200">
+                    <p className="text-xs font-semibold text-slate-600">Flight dates</p>
+                    <div className="text-[11px] text-slate-500 space-y-1">
+                      <p>Outbound date: <span className="text-slate-800">{tripPreferences.start_date}</span></p>
+                      <p>Return date: <span className="text-slate-800">{tripPreferences.end_date}</span></p>
+                      <p>Trip type: <span className="text-slate-800">Round trip (type: 1)</span></p>
                     </div>
                   </div>
                 )}
 
                 {/* Search Flights Button */}
                 {departureId && arrivalId && (
-                  <div className="space-y-2 pt-2 border-t border-slate-700">
+                  <div className="space-y-2 pt-2 border-t border-blue-200">
                     {!tripPreferences?.start_date || !tripPreferences?.end_date ? (
                       <p className="text-[11px] text-rose-400">
                         Please set your trip dates in Phase 1 to search for flights.
@@ -2783,26 +2783,26 @@ const ChatWindow = ({
 
                 {/* Loading Indicator */}
                 {isFetchingFlights && (
-                  <div className="space-y-2 pt-2 border-t border-slate-700">
-                    <p className="text-xs text-slate-400">Searching for flights...</p>
+                  <div className="space-y-2 pt-2 border-t border-blue-200">
+                    <p className="text-xs text-slate-500">Searching for flights...</p>
                   </div>
                 )}
 
                 {/* Flight Results - Step 1: Select Outbound */}
                 {bestFlights.length > 0 && returnFlights.length === 0 && (
-                  <div className="space-y-4 pt-2 border-t border-slate-700">
-                    <p className="text-xs font-semibold text-slate-300">Step 1: Select your outbound flight</p>
+                  <div className="space-y-4 pt-2 border-t border-blue-200">
+                    <p className="text-xs font-semibold text-slate-600">Step 1: Select your outbound flight</p>
                     
                     {/* Group flights by departure airport */}
                     {Object.keys(flightsByAirport).length > 0 ? (
                       // Display flights grouped by departure airport
                       Object.entries(flightsByAirport).map(([airportCode, flightsForAirport]) => (
                         <div key={airportCode} className="space-y-2">
-                          <div className="flex items-center gap-2 pb-2 border-b border-slate-700">
-                            <p className="text-xs font-semibold text-slate-200">
+                          <div className="flex items-center gap-2 pb-2 border-b border-blue-200">
+                            <p className="text-xs font-semibold text-slate-800">
                               Departures from {airportCode}
                             </p>
-                            <span className="text-[10px] text-slate-400">
+                            <span className="text-[10px] text-slate-500">
                               ({flightsForAirport.length} option{flightsForAirport.length !== 1 ? "s" : ""})
                             </span>
                           </div>
@@ -2846,7 +2846,7 @@ const ChatWindow = ({
                             className={`border rounded-lg p-3 cursor-pointer transition-colors ${
                               isSelected
                                 ? "border-blue-500 bg-blue-500/10"
-                                : "border-slate-700 bg-slate-950/60 hover:border-slate-600"
+                                : "border-blue-200 bg-white/60 hover:border-blue-200"
                             }`}
                             onClick={async () => {
                               // If selecting a different outbound flight, clear return flight selection
@@ -2935,18 +2935,18 @@ const ChatWindow = ({
                           >
                             <div className="space-y-2">
                               <div className="space-y-1">
-                                <p className="text-xs text-slate-200">
+                                <p className="text-xs text-slate-800">
                                   <span className="font-semibold">{firstOutbound?.departure_airport?.name || firstOutbound?.departure_airport?.id}</span>
                                   {" → "}
                                   <span className="font-semibold">{lastOutbound?.arrival_airport?.name || lastOutbound?.arrival_airport?.id}</span>
                                 </p>
-                                <p className="text-[11px] text-slate-400">
+                                <p className="text-[11px] text-slate-500">
                                   {firstOutbound?.departure_airport?.time} → {lastOutbound?.arrival_airport?.time}
                                 </p>
-                                <p className="text-[11px] text-slate-400">
+                                <p className="text-[11px] text-slate-500">
                                   {firstOutbound?.airline || "Multiple airlines"}
                                 </p>
-                                <p className="text-[11px] text-slate-400">
+                                <p className="text-[11px] text-slate-500">
                                   Duration: {formatDuration(flightOption.total_duration || 0)}
                                 </p>
                                 <p className="text-xs font-semibold text-emerald-400">
@@ -2961,7 +2961,7 @@ const ChatWindow = ({
                                   </CollapsibleTrigger>
                                   <CollapsibleContent className="mt-2 space-y-1">
                                     {outboundLayovers.map((layover: any, layoverIdx: number) => (
-                                      <div key={layoverIdx} className="text-[11px] text-slate-400 pl-4">
+                                      <div key={layoverIdx} className="text-[11px] text-slate-500 pl-4">
                                         {layover.name} ({layover.id}) - {formatDuration(layover.duration)}
                                         {layover.overnight && " (overnight)"}
                                       </div>
@@ -2999,7 +2999,7 @@ const ChatWindow = ({
                             className={`border rounded-lg p-3 cursor-pointer transition-colors ${
                               isSelected
                                 ? "border-blue-500 bg-blue-500/10"
-                                : "border-slate-700 bg-slate-950/60 hover:border-slate-600"
+                                : "border-blue-200 bg-white/60 hover:border-blue-200"
                             }`}
                             onClick={async () => {
                               // If selecting a different outbound flight, clear return flight selection
@@ -3054,18 +3054,18 @@ const ChatWindow = ({
                           >
                             <div className="space-y-2">
                               <div className="space-y-1">
-                                <p className="text-xs text-slate-200">
+                                <p className="text-xs text-slate-800">
                                   <span className="font-semibold">{firstOutbound?.departure_airport?.name || firstOutbound?.departure_airport?.id}</span>
                                   {" → "}
                                   <span className="font-semibold">{lastOutbound?.arrival_airport?.name || lastOutbound?.arrival_airport?.id}</span>
                                 </p>
-                                <p className="text-[11px] text-slate-400">
+                                <p className="text-[11px] text-slate-500">
                                   {firstOutbound?.departure_airport?.time} → {lastOutbound?.arrival_airport?.time}
                                 </p>
-                                <p className="text-[11px] text-slate-400">
+                                <p className="text-[11px] text-slate-500">
                                   {firstOutbound?.airline || "Multiple airlines"}
                                 </p>
-                                <p className="text-[11px] text-slate-400">
+                                <p className="text-[11px] text-slate-500">
                                   Duration: {formatDuration(flightOption.total_duration || 0)}
                                 </p>
                                 <p className="text-xs font-semibold text-emerald-400">
@@ -3080,7 +3080,7 @@ const ChatWindow = ({
                                   </CollapsibleTrigger>
                                   <CollapsibleContent className="mt-2 space-y-1">
                                     {outboundLayovers.map((layover: any, layoverIdx: number) => (
-                                      <div key={layoverIdx} className="text-[11px] text-slate-400 pl-4">
+                                      <div key={layoverIdx} className="text-[11px] text-slate-500 pl-4">
                                         {layover.name} ({layover.id}) - {formatDuration(layover.duration)}
                                         {layover.overnight && " (overnight)"}
                                       </div>
@@ -3173,21 +3173,21 @@ const ChatWindow = ({
 
                 {/* Loading Return Flights */}
                 {selectedOutboundIndex !== null && isFetchingReturnFlights && (
-                  <div className="space-y-2 pt-2 border-t border-slate-700">
-                    <p className="text-xs text-slate-400">Loading return flight options...</p>
+                  <div className="space-y-2 pt-2 border-t border-blue-200">
+                    <p className="text-xs text-slate-500">Loading return flight options...</p>
                   </div>
                 )}
 
                 {/* Step 2: Select Return Flight */}
                 {selectedOutboundIndex !== null && returnFlights.length > 0 && (
-                  <div className="space-y-3 pt-2 border-t border-slate-700">
+                  <div className="space-y-3 pt-2 border-t border-blue-200">
                     <div className="flex items-center justify-between">
-                    <p className="text-xs font-semibold text-slate-300">Step 2: Select your return flight</p>
+                    <p className="text-xs font-semibold text-slate-600">Step 2: Select your return flight</p>
                       <div className="flex gap-2">
                         <Button
                           size="sm"
                           variant="outline"
-                          className="h-6 px-3 text-[10px] border-slate-600 text-slate-300 bg-slate-800/50 hover:bg-slate-700 disabled:opacity-60"
+                          className="h-6 px-3 text-[10px] border-blue-200 text-slate-600 bg-blue-50 hover:bg-blue-50 disabled:opacity-60"
                           disabled={isFetchingReturnFlights || !bestFlights[selectedOutboundIndex]?.departure_token}
                           onClick={async () => {
                             const selectedFlight = bestFlights[selectedOutboundIndex];
@@ -3207,7 +3207,7 @@ const ChatWindow = ({
                         <Button
                           size="sm"
                           variant="outline"
-                          className="h-6 px-3 text-[10px] border-slate-600 text-slate-300 bg-slate-800/50 hover:bg-slate-700"
+                          className="h-6 px-3 text-[10px] border-blue-200 text-slate-600 bg-blue-50 hover:bg-blue-50"
                           onClick={() => {
                             setReturnFlights([]);
                             setSelectedReturnIndex(null);
@@ -3233,10 +3233,10 @@ const ChatWindow = ({
                       return (
                         <div className="mb-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
                           <p className="text-[11px] font-semibold text-blue-400 mb-2">Selected Outbound:</p>
-                          <p className="text-xs text-slate-200">
+                          <p className="text-xs text-slate-800">
                             {firstOutbound?.departure_airport?.name || firstOutbound?.departure_airport?.id} → {lastOutbound?.arrival_airport?.name || lastOutbound?.arrival_airport?.id}
                           </p>
-                          <p className="text-[11px] text-slate-400">
+                          <p className="text-[11px] text-slate-500">
                             {firstOutbound?.departure_airport?.time} → {lastOutbound?.arrival_airport?.time}
                           </p>
                         </div>
@@ -3265,7 +3265,7 @@ const ChatWindow = ({
                             className={`border rounded-lg p-3 cursor-pointer transition-colors ${
                               isSelected
                                 ? "border-blue-500 bg-blue-500/10"
-                                : "border-slate-700 bg-slate-950/60 hover:border-slate-600"
+                                : "border-blue-200 bg-white/60 hover:border-blue-200"
                             }`}
                             onClick={async () => {
                               setSelectedReturnIndex(index);
@@ -3327,18 +3327,18 @@ const ChatWindow = ({
                           >
                             <div className="space-y-2">
                               <div className="space-y-1">
-                                <p className="text-xs text-slate-200">
+                                <p className="text-xs text-slate-800">
                                   <span className="font-semibold">{firstReturn?.departure_airport?.name || firstReturn?.departure_airport?.id}</span>
                                   {" → "}
                                   <span className="font-semibold">{lastReturn?.arrival_airport?.name || lastReturn?.arrival_airport?.id}</span>
                                 </p>
-                                <p className="text-[11px] text-slate-400">
+                                <p className="text-[11px] text-slate-500">
                                   {firstReturn?.departure_airport?.time} → {lastReturn?.arrival_airport?.time}
                                 </p>
-                                <p className="text-[11px] text-slate-400">
+                                <p className="text-[11px] text-slate-500">
                                   {firstReturn?.airline || "Multiple airlines"}
                                 </p>
-                                <p className="text-[11px] text-slate-400">
+                                <p className="text-[11px] text-slate-500">
                                   Duration: {formatDuration(flightOption.total_duration || 0)}
                                 </p>
                                 <p className="text-xs font-semibold text-emerald-400">
@@ -3353,7 +3353,7 @@ const ChatWindow = ({
                                   </CollapsibleTrigger>
                                   <CollapsibleContent className="mt-2 space-y-1">
                                     {returnLayovers.map((layover: any, layoverIdx: number) => (
-                                      <div key={layoverIdx} className="text-[11px] text-slate-400 pl-4">
+                                      <div key={layoverIdx} className="text-[11px] text-slate-500 pl-4">
                                         {layover.name} ({layover.id}) - {formatDuration(layover.duration)}
                                         {layover.overnight && " (overnight)"}
                                       </div>
@@ -3373,7 +3373,7 @@ const ChatWindow = ({
                         <p className="text-xs font-semibold text-emerald-400 mb-2">Complete Round Trip:</p>
                         <div className="grid grid-cols-2 gap-4 text-xs">
                           <div>
-                            <p className="text-slate-300 font-semibold mb-1">Outbound</p>
+                            <p className="text-slate-600 font-semibold mb-1">Outbound</p>
                             {(() => {
                               const outbound = bestFlights[selectedOutboundIndex];
                               const outboundFlights = outbound.flights || [];
@@ -3381,14 +3381,14 @@ const ChatWindow = ({
                               const last = outboundFlights[outboundFlights.length - 1];
                               return (
                                 <>
-                                  <p className="text-slate-200">{first?.departure_airport?.id} → {last?.arrival_airport?.id}</p>
-                                  <p className="text-[11px] text-slate-400">${outbound.price?.toLocaleString()}</p>
+                                  <p className="text-slate-800">{first?.departure_airport?.id} → {last?.arrival_airport?.id}</p>
+                                  <p className="text-[11px] text-slate-500">${outbound.price?.toLocaleString()}</p>
                                 </>
                               );
                             })()}
                           </div>
                           <div>
-                            <p className="text-slate-300 font-semibold mb-1">Return</p>
+                            <p className="text-slate-600 font-semibold mb-1">Return</p>
                             {(() => {
                               const returnFlight = returnFlights[selectedReturnIndex];
                               const returnFlightLegs = returnFlight.flights || [];
@@ -3396,8 +3396,8 @@ const ChatWindow = ({
                               const last = returnFlightLegs[returnFlightLegs.length - 1];
                               return (
                                 <>
-                                  <p className="text-slate-200">{first?.departure_airport?.id} → {last?.arrival_airport?.id}</p>
-                                  <p className="text-[11px] text-slate-400">${returnFlight.price?.toLocaleString()}</p>
+                                  <p className="text-slate-800">{first?.departure_airport?.id} → {last?.arrival_airport?.id}</p>
+                                  <p className="text-[11px] text-slate-500">${returnFlight.price?.toLocaleString()}</p>
                                 </>
                               );
                             })()}
@@ -3436,8 +3436,8 @@ const ChatWindow = ({
           )}
           {hasStartedHotels && (
             <div className="flex justify-start">
-              <div className="w-full max-w-xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-4 py-3 shadow-sm space-y-3">
-                <p className="text-xs font-semibold text-slate-300">
+              <div className="w-full max-w-xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
+                <p className="text-xs font-semibold text-slate-600">
                   Phase 4 Part 2: Book your hotels
                 </p>
 
@@ -3446,12 +3446,12 @@ const ChatWindow = ({
                   const hotelLocation = getArrivalLocation();
                   return (
                     <div className="space-y-2">
-                      <div className="text-[11px] text-slate-400 space-y-1">
-                        <p>Location: <span className="text-slate-200">{hotelLocation || "Extracting from trip..."}</span></p>
+                      <div className="text-[11px] text-slate-500 space-y-1">
+                        <p>Location: <span className="text-slate-800">{hotelLocation || "Extracting from trip..."}</span></p>
                         {tripPreferences?.start_date && tripPreferences?.end_date && (
                           <>
-                            <p>Check-in: <span className="text-slate-200">{tripPreferences.start_date}</span></p>
-                            <p>Check-out: <span className="text-slate-200">{tripPreferences.end_date}</span></p>
+                            <p>Check-in: <span className="text-slate-800">{tripPreferences.start_date}</span></p>
+                            <p>Check-out: <span className="text-slate-800">{tripPreferences.end_date}</span></p>
                           </>
                         )}
                       </div>
@@ -3469,15 +3469,15 @@ const ChatWindow = ({
 
                 {/* Loading Indicator */}
                 {isFetchingHotels && (
-                  <div className="space-y-2 pt-2 border-t border-slate-700">
-                    <p className="text-xs text-slate-400">Searching for hotels...</p>
+                  <div className="space-y-2 pt-2 border-t border-blue-200">
+                    <p className="text-xs text-slate-500">Searching for hotels...</p>
                   </div>
                 )}
 
                 {/* Hotel Results */}
                 {hotels.length > 0 && (
-                  <div className="space-y-3 pt-2 border-t border-slate-700">
-                    <p className="text-xs font-semibold text-slate-300">Available hotels</p>
+                  <div className="space-y-3 pt-2 border-t border-blue-200">
+                    <p className="text-xs font-semibold text-slate-600">Available hotels</p>
                     <div className="space-y-3">
                       {hotels.map((hotel, index) => {
                         const isSelected = selectedHotelIndex === index;
@@ -3501,7 +3501,7 @@ const ChatWindow = ({
                             className={`border rounded-lg p-3 cursor-pointer transition-colors ${
                               isSelected
                                 ? "border-blue-500 bg-blue-500/10"
-                                : "border-slate-700 bg-slate-950/60 hover:border-slate-600"
+                                : "border-blue-200 bg-white/60 hover:border-blue-200"
                             }`}
                             onClick={async () => {
                               setSelectedHotelIndex(index);
@@ -3585,17 +3585,17 @@ const ChatWindow = ({
                               {/* Hotel Info */}
                               <div className="flex-1 space-y-2">
                                 <div>
-                                  <p className="text-sm font-semibold text-slate-200">{hotel.name}</p>
+                                  <p className="text-sm font-semibold text-slate-800">{hotel.name}</p>
                                   {hotel.hotel_class && (
-                                    <p className="text-[11px] text-slate-400">{hotel.hotel_class}</p>
+                                    <p className="text-[11px] text-slate-500">{hotel.hotel_class}</p>
                                   )}
                                 </div>
                                 
                                 {hotel.description && (
-                                  <p className="text-[11px] text-slate-400 line-clamp-2">{hotel.description}</p>
+                                  <p className="text-[11px] text-slate-500 line-clamp-2">{hotel.description}</p>
                                 )}
 
-                                <div className="flex items-center gap-3 text-[11px] text-slate-400">
+                                <div className="flex items-center gap-3 text-[11px] text-slate-500">
                                   {rating && <span>{rating}</span>}
                                   {reviews && <span>{reviews}</span>}
                                 </div>
@@ -3603,7 +3603,7 @@ const ChatWindow = ({
                                 {hotel.amenities && hotel.amenities.length > 0 && (
                                   <div className="flex flex-wrap gap-1">
                                     {hotel.amenities.slice(0, 3).map((amenity: string, amenityIdx: number) => (
-                                      <span key={amenityIdx} className="text-[10px] px-2 py-0.5 bg-slate-800 rounded text-slate-300">
+                                      <span key={amenityIdx} className="text-[10px] px-2 py-0.5 bg-blue-50 rounded text-slate-600">
                                         {amenity}
                                       </span>
                                     ))}
@@ -3631,7 +3631,7 @@ const ChatWindow = ({
                                       </CollapsibleTrigger>
                                       <CollapsibleContent className="mt-2 space-y-2">
                                         {isFetchingPropertyDetails[index] ? (
-                                          <p className="text-[11px] text-slate-400">Loading booking options...</p>
+                                          <p className="text-[11px] text-slate-500">Loading booking options...</p>
                                         ) : propertyDetails[index] ? (
                                           (() => {
                                             const details = propertyDetails[index];
@@ -3642,7 +3642,7 @@ const ChatWindow = ({
                                             
                                             if (bookingOptions.length === 0) {
                                               return (
-                                                <p className="text-[11px] text-slate-400">No booking options available</p>
+                                                <p className="text-[11px] text-slate-500">No booking options available</p>
                                               );
                                             }
 
@@ -3654,9 +3654,9 @@ const ChatWindow = ({
                                                   const link = option.link || option.url || null;
                                                   
                                                   return (
-                                                    <div key={optionIdx} className="flex items-center justify-between p-2 bg-slate-800 rounded border border-slate-700">
+                                                    <div key={optionIdx} className="flex items-center justify-between p-2 bg-blue-50 rounded border border-blue-200">
                                                       <div className="flex-1 min-w-0">
-                                                        <p className="text-[11px] font-semibold text-slate-200 truncate">{source}</p>
+                                                        <p className="text-[11px] font-semibold text-slate-800 truncate">{source}</p>
                                                         {price && (
                                                           <p className="text-[10px] text-emerald-400">{price} / night</p>
                                                         )}
@@ -3680,14 +3680,14 @@ const ChatWindow = ({
                                             );
                                           })()
                                         ) : (
-                                          <p className="text-[11px] text-slate-400">Click to load booking options</p>
+                                          <p className="text-[11px] text-slate-500">Click to load booking options</p>
                                         )}
                                       </CollapsibleContent>
                                     </Collapsible>
                                   </div>
                                 )}
 
-                                <div className="flex items-center justify-between pt-2 border-t border-slate-700">
+                                <div className="flex items-center justify-between pt-2 border-t border-blue-200">
                                   <div className="flex flex-col">
                                     {ratePerNight ? (
                                       <p className="text-sm font-semibold text-emerald-400">
@@ -3731,17 +3731,17 @@ const ChatWindow = ({
           )}
           {hasConfirmedHotels && (
             <div className="flex justify-start">
-              <div className="w-full max-w-4xl bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-6 py-5 shadow-lg space-y-4">
+              <div className="w-full max-w-4xl bg-white border border-blue-100 text-slate-900 rounded-lg px-6 py-5 shadow-lg space-y-4">
                 {isGeneratingFinalItinerary ? (
                   <div className="flex items-center gap-3 py-8">
                     <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-emerald-400"></div>
-                    <p className="text-sm text-slate-300">Generating your final itinerary...</p>
+                    <p className="text-sm text-slate-600">Generating your final itinerary...</p>
                   </div>
                 ) : finalItinerary ? (
                   <div className="space-y-6">
-                    <div className="border-b border-slate-700 pb-4">
-                      <h3 className="text-lg font-bold text-white mb-1">{finalItinerary.trip_title}</h3>
-                      <p className="text-sm text-slate-400">{finalItinerary.destination} • {finalItinerary.num_days} days</p>
+                    <div className="border-b border-blue-200 pb-4">
+                      <h3 className="text-lg font-bold text-slate-900 mb-1">{finalItinerary.trip_title}</h3>
+                      <p className="text-sm text-slate-500">{finalItinerary.destination} • {finalItinerary.num_days} days</p>
                       {finalItinerary.total_budget && (
                         <p className="text-xs text-emerald-400 mt-1">Budget: ${finalItinerary.total_budget.toLocaleString()}</p>
                       )}
@@ -3750,27 +3750,27 @@ const ChatWindow = ({
                     {finalItinerary.days.map((day: any, dayIndex: number) => {
                       const date = day.date ? new Date(day.date).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) : `Day ${day.day_number}`;
                       return (
-                        <div key={day.day_number} className="bg-slate-800/50 rounded-lg p-5 border border-slate-700 space-y-4">
-                          <div className="flex items-center justify-between border-b border-slate-700 pb-3">
+                        <div key={day.day_number} className="bg-blue-50 rounded-lg p-5 border border-blue-200 space-y-4">
+                          <div className="flex items-center justify-between border-b border-blue-200 pb-3">
                             <div>
-                              <h4 className="text-base font-semibold text-white">Day {day.day_number}</h4>
-                              <p className="text-xs text-slate-400">{date}</p>
+                              <h4 className="text-base font-semibold text-slate-900">Day {day.day_number}</h4>
+                              <p className="text-xs text-slate-500">{date}</p>
                             </div>
                           </div>
 
                           {/* Outbound Flight */}
                           {day.outbound_flight && (
-                            <div className="bg-blue-900/30 rounded-md p-3 border border-blue-800/50">
+                            <div className="bg-blue-50 rounded-md p-3 border border-blue-200">
                               <div className="flex items-center gap-2 mb-2">
-                                <span className="text-blue-400 text-sm font-semibold">✈️ Outbound Flight</span>
+                                <span className="text-blue-600 text-sm font-semibold">✈️ Outbound Flight</span>
                                 {day.outbound_flight.price && (
-                                  <span className="text-xs text-slate-300">${day.outbound_flight.price.toLocaleString()}</span>
+                                  <span className="text-xs text-slate-600">${day.outbound_flight.price.toLocaleString()}</span>
                                 )}
                               </div>
-                              <p className="text-xs text-slate-300">
+                              <p className="text-xs text-slate-600">
                                 {day.outbound_flight.departure_id} → {day.outbound_flight.arrival_id}
                                 {day.outbound_flight.total_duration && (
-                                  <span className="text-slate-400 ml-2">• {Math.floor(day.outbound_flight.total_duration / 60)}h {day.outbound_flight.total_duration % 60}m</span>
+                                  <span className="text-slate-500 ml-2">• {Math.floor(day.outbound_flight.total_duration / 60)}h {day.outbound_flight.total_duration % 60}m</span>
                                 )}
                 </p>
               </div>
@@ -3778,33 +3778,33 @@ const ChatWindow = ({
 
                           {/* Hotel */}
                           {day.hotel && (
-                            <div className="bg-purple-900/30 rounded-md p-3 border border-purple-800/50">
+                            <div className="bg-yellow-50 rounded-md p-3 border border-yellow-200">
                               <div className="flex items-center justify-between mb-2">
                                 <div className="flex items-center gap-2">
-                                  <span className="text-purple-400 text-sm font-semibold">🏨 Hotel</span>
+                                  <span className="text-yellow-700 text-sm font-semibold">🏨 Hotel</span>
                                   {day.hotel.overall_rating && (
-                                    <span className="text-xs text-yellow-400">⭐ {day.hotel.overall_rating}</span>
+                                    <span className="text-xs text-yellow-500">⭐ {day.hotel.overall_rating}</span>
                                   )}
             </div>
                                 {day.hotel.rate_per_night && (
-                                  <span className="text-xs text-slate-300">${day.hotel.rate_per_night.toLocaleString()}/night</span>
+                                  <span className="text-xs text-slate-600">${day.hotel.rate_per_night.toLocaleString()}/night</span>
                                 )}
                               </div>
                               <div className="flex items-center justify-between">
-                                <p className="text-sm text-white font-medium">{day.hotel.name}</p>
+                                <p className="text-sm text-slate-900 font-medium">{day.hotel.name}</p>
                                 {day.hotel.link && (
                                   <a
                                     href={day.hotel.link}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    className="text-xs text-purple-400 hover:text-purple-300 underline"
+                                    className="text-xs text-blue-600 hover:text-blue-700 underline"
                                   >
                                     View →
                                   </a>
                                 )}
                               </div>
                               {day.hotel.location && (
-                                <p className="text-xs text-slate-400 mt-1">📍 {day.hotel.location}</p>
+                                <p className="text-xs text-slate-500 mt-1">📍 {day.hotel.location}</p>
                               )}
                             </div>
                           )}
@@ -3812,24 +3812,24 @@ const ChatWindow = ({
                           {/* Activities */}
                           {day.activities && day.activities.length > 0 && (
                             <div className="space-y-2">
-                              <p className="text-sm font-semibold text-slate-300 mb-2">Activities</p>
+                              <p className="text-sm font-semibold text-slate-600 mb-2">Activities</p>
                               {day.activities.map((activity: any, actIndex: number) => (
                                 <div
                                   key={actIndex}
-                                  className="bg-slate-700/30 rounded-md p-3 border border-slate-600/50 hover:border-emerald-500/50 transition-colors"
+                                  className="bg-blue-50/70 rounded-md p-3 border border-blue-200/50 hover:border-emerald-500/50 transition-colors"
                                 >
                                   <div className="flex items-start justify-between gap-3">
                                     <div className="flex-1">
                                       <div className="flex items-center gap-2 mb-1">
-                                        <p className="text-sm font-medium text-white">{activity.name}</p>
+                                      <p className="text-sm font-medium text-slate-900">{activity.name}</p>
                                         {activity.source === 'user_selected' && (
                                           <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded">Your Pick</span>
                                         )}
                                       </div>
                                       {activity.location && (
-                                        <p className="text-xs text-slate-400 mb-1">📍 {activity.location}</p>
+                                        <p className="text-xs text-slate-500 mb-1">📍 {activity.location}</p>
                                       )}
-                                      <div className="flex items-center gap-3 text-xs text-slate-400">
+                                      <div className="flex items-center gap-3 text-xs text-slate-500">
                                         {activity.category && (
                                           <span className="capitalize">{activity.category}</span>
                                         )}
@@ -3859,17 +3859,17 @@ const ChatWindow = ({
 
                           {/* Return Flight */}
                           {day.return_flight && (
-                            <div className="bg-blue-900/30 rounded-md p-3 border border-blue-800/50">
+                            <div className="bg-blue-50 rounded-md p-3 border border-blue-200">
                               <div className="flex items-center gap-2 mb-2">
-                                <span className="text-blue-400 text-sm font-semibold">✈️ Return Flight</span>
+                                <span className="text-blue-600 text-sm font-semibold">✈️ Return Flight</span>
                                 {day.return_flight.price && (
-                                  <span className="text-xs text-slate-300">${day.return_flight.price.toLocaleString()}</span>
+                                  <span className="text-xs text-slate-600">${day.return_flight.price.toLocaleString()}</span>
                                 )}
                               </div>
-                              <p className="text-xs text-slate-300">
+                              <p className="text-xs text-slate-600">
                                 {day.return_flight.departure_id} → {day.return_flight.arrival_id}
                                 {day.return_flight.total_duration && (
-                                  <span className="text-slate-400 ml-2">• {Math.floor(day.return_flight.total_duration / 60)}h {day.return_flight.total_duration % 60}m</span>
+                                  <span className="text-slate-500 ml-2">• {Math.floor(day.return_flight.total_duration / 60)}h {day.return_flight.total_duration % 60}m</span>
                                 )}
                               </p>
                             </div>
@@ -3880,7 +3880,7 @@ const ChatWindow = ({
                   </div>
                 ) : (
                   <div className="text-center py-8">
-                    <p className="text-sm text-slate-400 mb-4">Ready to generate your final itinerary!</p>
+                    <p className="text-sm text-slate-500 mb-4">Ready to generate your final itinerary!</p>
                     <Button
                       size="sm"
                       className="bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-xs font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400"
@@ -3912,13 +3912,13 @@ const ChatWindow = ({
             onChange={(e) => setInputMessage(e.target.value)}
             onKeyPress={handleKeyPress}
             disabled={isLoading}
-            className="pl-12 pr-14 h-12 rounded-full border-2 bg-black text-white placeholder:text-gray-400 border-gray-700 focus:border-blue-400"
+            className="pl-12 pr-14 h-12 rounded-full border-2 bg-white text-slate-900 placeholder:text-slate-400 border-blue-200 focus:border-blue-500"
           />
           <Button
             type="button"
             onClick={() => sendMessage()}
             disabled={!inputMessage.trim() || isLoading}
-            className="absolute right-2 h-8 w-8 rounded-full bg-blue-500 hover:bg-blue-400 text-white p-0 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="absolute right-2 h-8 w-8 rounded-full bg-yellow-400 hover:bg-yellow-300 text-slate-900 p-0 disabled:opacity-50 disabled:cursor-not-allowed"
             id="chat-send-button"
           >
             <Send className="h-4 w-4" />

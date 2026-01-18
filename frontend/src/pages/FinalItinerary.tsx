@@ -158,166 +158,119 @@ const FinalItinerary = () => {
                 </Button>
               </div>
             ) : (
-              <div className="max-w-4xl mx-auto bg-slate-900/90 border border-slate-800 text-slate-100 rounded-lg px-6 py-6 shadow-lg space-y-6">
-                <div className="border-b border-slate-700 pb-4">
-                  <h2 className="text-lg font-bold text-white mb-1">{itinerary.trip_title}</h2>
-                  <p className="text-sm text-slate-400">
-                    {itinerary.destination || "Trip"} • {itinerary.num_days} days
-                  </p>
-                  {itinerary.total_budget && (
-                    <p className="text-xs text-emerald-400 mt-1">
-                      Budget: ${itinerary.total_budget.toLocaleString()}
-                    </p>
-                  )}
+              <div className="w-full">
+                <div className="flex items-center justify-between gap-4 rounded-md border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs text-yellow-900 mb-4">
+                  <span className="font-semibold">Editable layout</span>
+                  <span className="text-yellow-700">Editing controls coming soon</span>
                 </div>
+                <div className="rounded-lg border border-blue-100 bg-white/80 p-4 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-4 border-b border-blue-100 pb-4">
+                    <div>
+                      <h2 className="text-lg font-bold text-slate-900">{itinerary.trip_title}</h2>
+                      <p className="text-sm text-slate-500">
+                        {itinerary.destination || "Trip"} • {itinerary.num_days} days
+                      </p>
+                    </div>
+                    {itinerary.total_budget && (
+                      <p className="text-xs text-blue-600">
+                        Budget: ${itinerary.total_budget.toLocaleString()}
+                      </p>
+                    )}
+                  </div>
 
-                {itinerary.days.map((day) => {
-                  const dateLabel = formatDate(day.date) || `Day ${day.day_number}`;
-                  return (
-                    <div
-                      key={day.day_number}
-                      className="bg-slate-800/50 rounded-lg p-5 border border-slate-700 space-y-4"
-                    >
-                      <div className="flex items-center justify-between border-b border-slate-700 pb-3">
-                        <div>
-                          <h3 className="text-base font-semibold text-white">
-                            Day {day.day_number}
-                          </h3>
-                          <p className="text-xs text-slate-400">{dateLabel}</p>
-                        </div>
-                      </div>
-
-                      {day.summary && (
-                        <p className="text-xs text-slate-300 whitespace-pre-wrap">{day.summary}</p>
-                      )}
-
-                      {day.outbound_flight && (
-                        <div className="bg-blue-900/30 rounded-md p-3 border border-blue-800/50">
-                          <div className="flex items-center gap-2 mb-2">
-                            <span className="text-blue-400 text-sm font-semibold">✈️ Outbound Flight</span>
-                            {day.outbound_flight.price && (
-                              <span className="text-xs text-slate-300">
-                                ${day.outbound_flight.price.toLocaleString()}
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-xs text-slate-300">
-                            {day.outbound_flight.departure_id} → {day.outbound_flight.arrival_id}
-                            {day.outbound_flight.total_duration && (
-                              <span className="text-slate-400 ml-2">
-                                • {Math.floor(day.outbound_flight.total_duration / 60)}h{" "}
-                                {day.outbound_flight.total_duration % 60}m
-                              </span>
-                            )}
-                          </p>
-                        </div>
-                      )}
-
-                      {day.hotel && (
-                        <div className="bg-purple-900/30 rounded-md p-3 border border-purple-800/50">
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="flex items-center gap-2">
-                              <span className="text-purple-400 text-sm font-semibold">🏨 Hotel</span>
-                              {day.hotel.overall_rating && (
-                                <span className="text-xs text-yellow-400">⭐ {day.hotel.overall_rating}</span>
-                              )}
+                  <div className="mt-4 grid gap-4 lg:grid-cols-[repeat(auto-fit,minmax(240px,1fr))]">
+                    {itinerary.days.map((day) => {
+                      const dateLabel = formatDate(day.date) || `Day ${day.day_number}`;
+                      return (
+                        <div
+                          key={day.day_number}
+                          className="flex flex-col rounded-lg border border-dashed border-blue-200 bg-blue-50/60 p-4"
+                        >
+                          <div className="flex items-start justify-between gap-2 border-b border-blue-100 pb-2">
+                            <div>
+                              <p className="text-xs uppercase tracking-wide text-blue-500">
+                                Day {day.day_number}
+                              </p>
+                              <p className="text-sm font-semibold text-slate-900">{dateLabel}</p>
                             </div>
-                            {day.hotel.rate_per_night && (
-                              <span className="text-xs text-slate-300">
-                                ${day.hotel.rate_per_night.toLocaleString()}/night
-                              </span>
-                            )}
+                            <span className="rounded-full border border-blue-200 bg-white px-2 py-1 text-[11px] text-blue-600">
+                              Editable
+                            </span>
                           </div>
-                          <div className="flex items-center justify-between">
-                            <p className="text-sm text-white font-medium">{day.hotel.name}</p>
-                            {day.hotel.link && (
-                              <a
-                                href={day.hotel.link}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-xs text-purple-400 hover:text-purple-300 underline"
-                              >
-                                View →
-                              </a>
-                            )}
-                          </div>
-                          {day.hotel.location && (
-                            <p className="text-xs text-slate-400 mt-1">📍 {day.hotel.location}</p>
-                          )}
-                        </div>
-                      )}
 
-                      {day.activities && day.activities.length > 0 && (
-                        <div className="space-y-2">
-                          <p className="text-sm font-semibold text-slate-300 mb-2">Activities</p>
-                          {day.activities.map((activity, index) => (
-                            <div
-                              key={`${day.day_number}-${index}`}
-                              className="bg-slate-700/30 rounded-md p-3 border border-slate-600/50"
-                            >
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="flex-1">
-                                  <div className="flex items-center gap-2 mb-1">
-                                    <p className="text-sm font-medium text-white">{activity.name}</p>
-                                    {activity.source === "user_selected" && (
-                                      <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded">
-                                        Your Pick
-                                      </span>
-                                    )}
-                                  </div>
-                                  {activity.location && (
-                                    <p className="text-xs text-slate-400 mb-1">📍 {activity.location}</p>
-                                  )}
-                                  <div className="flex items-center gap-3 text-xs text-slate-400">
-                                    {activity.category && <span className="capitalize">{activity.category}</span>}
-                                    {activity.duration && <span>⏱️ {activity.duration}</span>}
-                                    {activity.cost_estimate && (
-                                      <span className="text-emerald-400">
-                                        ${activity.cost_estimate}
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
-                                {activity.source_url && (
-                                  <a
-                                    href={activity.source_url}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-xs text-blue-400 hover:text-blue-300 underline whitespace-nowrap"
+                          {day.summary && (
+                            <p className="mt-2 text-xs text-slate-600">{day.summary}</p>
+                          )}
+
+                          {day.outbound_flight && (
+                            <div className="mt-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-slate-600">
+                              <span className="text-blue-600 font-semibold">✈️ Outbound</span>{" "}
+                              {day.outbound_flight.departure_id} → {day.outbound_flight.arrival_id}
+                            </div>
+                          )}
+
+                          {day.hotel && (
+                            <div className="mt-2 rounded-md border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs text-slate-700">
+                              <span className="text-yellow-700 font-semibold">🏨 Hotel</span>{" "}
+                              {day.hotel.name}
+                            </div>
+                          )}
+
+                          {day.activities && day.activities.length > 0 && (
+                            <div className="mt-3 space-y-2">
+                              <p className="text-xs font-semibold text-slate-600">Activities</p>
+                              <div className="space-y-2">
+                                {day.activities.slice(0, 3).map((activity, index) => (
+                                  <div
+                                    key={`${day.day_number}-${index}`}
+                                    className="rounded-md border border-blue-100 bg-white px-3 py-2 text-xs text-slate-700"
                                   >
-                                    Learn More →
-                                  </a>
+                                    <div className="flex items-start justify-between gap-2">
+                                      <div className="flex-1">
+                                        <p className="font-semibold text-slate-900">{activity.name}</p>
+                                        <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                                          {activity.location && <span>📍 {activity.location}</span>}
+                                          {activity.duration && <span>⏱️ {activity.duration}</span>}
+                                          {activity.cost_estimate && (
+                                            <span className="text-emerald-500">
+                                              ${activity.cost_estimate}
+                                            </span>
+                                          )}
+                                        </div>
+                                      </div>
+                                      {activity.source_url && (
+                                        <a
+                                          href={activity.source_url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-[11px] text-blue-600 hover:text-blue-700 underline whitespace-nowrap"
+                                        >
+                                          Learn more →
+                                        </a>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                                {day.activities.length > 3 && (
+                                  <p className="text-[11px] text-slate-500">
+                                    +{day.activities.length - 3} more activities
+                                  </p>
                                 )}
                               </div>
                             </div>
-                          ))}
-                        </div>
-                      )}
+                          )}
 
-                      {day.return_flight && (
-                        <div className="bg-blue-900/30 rounded-md p-3 border border-blue-800/50">
-                          <div className="flex items-center gap-2 mb-2">
-                            <span className="text-blue-400 text-sm font-semibold">✈️ Return Flight</span>
-                            {day.return_flight.price && (
-                              <span className="text-xs text-slate-300">
-                                ${day.return_flight.price.toLocaleString()}
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-xs text-slate-300">
-                            {day.return_flight.departure_id} → {day.return_flight.arrival_id}
-                            {day.return_flight.total_duration && (
-                              <span className="text-slate-400 ml-2">
-                                • {Math.floor(day.return_flight.total_duration / 60)}h{" "}
-                                {day.return_flight.total_duration % 60}m
-                              </span>
-                            )}
-                          </p>
+                          {day.return_flight && (
+                            <div className="mt-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-slate-600">
+                              <span className="text-blue-600 font-semibold">✈️ Return</span>{" "}
+                              {day.return_flight.departure_id} → {day.return_flight.arrival_id}
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  );
-                })}
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             )}
           </div>
