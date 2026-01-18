@@ -411,6 +411,35 @@ const ChatWindow = ({
     []
   );
 
+  const loadFinalItinerary = useCallback(
+    async (id: number) => {
+      try {
+        const token = getAuthToken();
+        if (!token) return false;
+
+        const response = await fetch(getApiUrl(`api/trips/${id}/final-itinerary`), {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success && result.itinerary?.days?.length > 0) {
+          setFinalItinerary(result.itinerary);
+          return true;
+        }
+      } catch (error) {
+        console.error("Error loading final itinerary:", error);
+      }
+
+      return false;
+    },
+    []
+  );
+
   // Load trip preferences once we know the tripId
   useEffect(() => {
     const loadPreferences = async () => {
@@ -1458,6 +1487,7 @@ const ChatWindow = ({
       if (!token) return;
 
       try {
+        setFinalItinerary(null);
         // Load trip to get destination
         const tripResponse = await fetch(getApiUrl(`api/trips/${tripId}`), {
           method: "GET",
@@ -1628,8 +1658,11 @@ const ChatWindow = ({
             // If hotel is selected, user has confirmed hotels
             if (hotelsResult.selected_hotel_index !== null) {
               setHasConfirmedHotels(true);
-              // Automatically generate final itinerary when hotels are confirmed
-              generateFinalItinerary();
+              const hasFinalItinerary = await loadFinalItinerary(tripId);
+              if (!hasFinalItinerary) {
+                // Automatically generate final itinerary when hotels are confirmed
+                generateFinalItinerary();
+              }
             }
           }
         }
@@ -1641,7 +1674,7 @@ const ChatWindow = ({
 
     loadPersistedData();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tripId, isLoadingHistory, loadItineraryDays]);
+  }, [tripId, isLoadingHistory, loadFinalItinerary, loadItineraryDays]);
 
   // In "help me choose" mode, automatically send the initial message from
   // the dashboard as the first user message, and show the LLM's response,

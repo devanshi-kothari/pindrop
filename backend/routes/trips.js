@@ -1912,6 +1912,81 @@ router.get('/:tripId/itinerary', authenticateToken, async (req, res) => {
         };
       }) || [];
 
+    // Attach saved flight + hotel selections to the itinerary response
+    const { data: tripFlights } = await supabase
+      .from('trip_flight')
+      .select(
+        `
+        flight_id,
+        is_selected,
+        flight:flight(*)
+      `
+      )
+      .eq('trip_id', tripId)
+      .eq('is_selected', true);
+
+    const selectedOutboundFlight = tripFlights?.find(
+      (tf) => tf.flight?.flight_type === 'outbound'
+    )?.flight || null;
+    const selectedReturnFlight = tripFlights?.find(
+      (tf) => tf.flight?.flight_type === 'return'
+    )?.flight || null;
+
+    const { data: tripHotels } = await supabase
+      .from('trip_hotel')
+      .select(
+        `
+        hotel_id,
+        is_selected,
+        hotel:hotel(*)
+      `
+      )
+      .eq('trip_id', tripId)
+      .eq('is_selected', true);
+
+    const selectedHotel = tripHotels?.[0]?.hotel || null;
+
+    if (days.length > 0) {
+      const lastDayIndex = days.length - 1;
+      if (selectedOutboundFlight) {
+        days[0].outbound_flight = {
+          departure_id: selectedOutboundFlight.departure_id,
+          arrival_id: selectedOutboundFlight.arrival_id,
+          price: selectedOutboundFlight.price,
+          total_duration: selectedOutboundFlight.total_duration,
+          flights: selectedOutboundFlight.flights,
+          layovers: selectedOutboundFlight.layovers,
+        };
+      }
+
+      if (selectedReturnFlight) {
+        days[lastDayIndex].return_flight = {
+          departure_id: selectedReturnFlight.departure_id,
+          arrival_id: selectedReturnFlight.arrival_id,
+          price: selectedReturnFlight.price,
+          total_duration: selectedReturnFlight.total_duration,
+          flights: selectedReturnFlight.flights,
+          layovers: selectedReturnFlight.layovers,
+        };
+      }
+
+      if (selectedHotel) {
+        days.forEach((day) => {
+          day.hotel = {
+            hotel_id: selectedHotel.hotel_id,
+            name: selectedHotel.name,
+            location: selectedHotel.location,
+            rate_per_night: selectedHotel.rate_per_night_lowest,
+            rate_per_night_formatted: selectedHotel.rate_per_night_formatted,
+            link: selectedHotel.link,
+            overall_rating: selectedHotel.overall_rating,
+            check_in_time: selectedHotel.check_in_time,
+            check_out_time: selectedHotel.check_out_time,
+          };
+        });
+      }
+    }
+
     res.status(200).json({
       success: true,
       days,
@@ -1921,6 +1996,192 @@ router.get('/:tripId/itinerary', authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch itinerary',
+      error: error.message,
+    });
+  }
+});
+
+// Fetch the final itinerary (persisted day-by-day itinerary + selected flights/hotel)
+router.get('/:tripId/final-itinerary', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+
+    // Ensure the trip belongs to the user
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id, title, destination')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found',
+      });
+    }
+
+    const { data: tripPreferences, error: prefError } = await supabase
+      .from('trip_preference')
+      .select('*')
+      .eq('trip_id', tripId)
+      .maybeSingle();
+
+    if (prefError) {
+      throw prefError;
+    }
+
+    const { data, error } = await supabase
+      .from('itinerary')
+      .select(
+        `
+        itinerary_id,
+        day_number,
+        date,
+        summary,
+        itinerary_activity (
+          order_index,
+          activity:activity (
+            activity_id,
+            name,
+            location,
+            category,
+            duration,
+            cost_estimate,
+            source_url,
+            image_url,
+            description,
+            source
+          )
+        )
+      `
+      )
+      .eq('trip_id', tripId)
+      .order('day_number', { ascending: true });
+
+    if (error) {
+      throw error;
+    }
+
+    const days =
+      data?.map((row) => {
+        const acts = Array.isArray(row.itinerary_activity)
+          ? row.itinerary_activity
+              .slice()
+              .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+              .map((ia) => ia.activity || {})
+          : [];
+
+        return {
+          day_number: row.day_number,
+          date: row.date,
+          summary: row.summary,
+          activities: acts,
+        };
+      }) || [];
+
+    if (days.length === 0) {
+      return res.status(200).json({
+        success: true,
+        itinerary: null,
+      });
+    }
+
+    const { data: tripFlights } = await supabase
+      .from('trip_flight')
+      .select(
+        `
+        flight_id,
+        is_selected,
+        flight:flight(*)
+      `
+      )
+      .eq('trip_id', tripId)
+      .eq('is_selected', true);
+
+    const selectedOutboundFlight = tripFlights?.find(
+      (tf) => tf.flight?.flight_type === 'outbound'
+    )?.flight || null;
+    const selectedReturnFlight = tripFlights?.find(
+      (tf) => tf.flight?.flight_type === 'return'
+    )?.flight || null;
+
+    const { data: tripHotels } = await supabase
+      .from('trip_hotel')
+      .select(
+        `
+        hotel_id,
+        is_selected,
+        hotel:hotel(*)
+      `
+      )
+      .eq('trip_id', tripId)
+      .eq('is_selected', true);
+
+    const selectedHotel = tripHotels?.[0]?.hotel || null;
+
+    if (days.length > 0) {
+      const lastDayIndex = days.length - 1;
+      if (selectedOutboundFlight) {
+        days[0].outbound_flight = {
+          departure_id: selectedOutboundFlight.departure_id,
+          arrival_id: selectedOutboundFlight.arrival_id,
+          price: selectedOutboundFlight.price,
+          total_duration: selectedOutboundFlight.total_duration,
+          flights: selectedOutboundFlight.flights,
+          layovers: selectedOutboundFlight.layovers,
+        };
+      }
+
+      if (selectedReturnFlight) {
+        days[lastDayIndex].return_flight = {
+          departure_id: selectedReturnFlight.departure_id,
+          arrival_id: selectedReturnFlight.arrival_id,
+          price: selectedReturnFlight.price,
+          total_duration: selectedReturnFlight.total_duration,
+          flights: selectedReturnFlight.flights,
+          layovers: selectedReturnFlight.layovers,
+        };
+      }
+
+      if (selectedHotel) {
+        days.forEach((day) => {
+          day.hotel = {
+            hotel_id: selectedHotel.hotel_id,
+            name: selectedHotel.name,
+            location: selectedHotel.location,
+            rate_per_night: selectedHotel.rate_per_night_lowest,
+            rate_per_night_formatted: selectedHotel.rate_per_night_formatted,
+            link: selectedHotel.link,
+            overall_rating: selectedHotel.overall_rating,
+            check_in_time: selectedHotel.check_in_time,
+            check_out_time: selectedHotel.check_out_time,
+          };
+        });
+      }
+    }
+
+    const itinerary = {
+      trip_id: tripId,
+      trip_title: trip.title,
+      destination: trip.destination,
+      start_date: tripPreferences?.start_date || null,
+      end_date: tripPreferences?.end_date || null,
+      num_days: tripPreferences?.num_days || days.length,
+      total_budget: tripPreferences?.max_budget || null,
+      days,
+    };
+
+    res.status(200).json({
+      success: true,
+      itinerary,
+    });
+  } catch (error) {
+    console.error('Error fetching final itinerary:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch final itinerary',
       error: error.message,
     });
   }
@@ -2570,6 +2831,67 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
         console.warn(`[final-itinerary] Date mismatch! Last day is ${lastDayDate} but end_date is ${expectedEndDate}`);
         // Ensure the last day matches the end_date
         dailyActivities[dailyActivities.length - 1].date = expectedEndDate;
+      }
+    }
+
+    // Persist the day-by-day itinerary so we can reuse it later
+    const { error: deleteItineraryError } = await supabase
+      .from('itinerary')
+      .delete()
+      .eq('trip_id', tripId);
+
+    if (deleteItineraryError) {
+      throw deleteItineraryError;
+    }
+
+    for (const dayData of dailyActivities) {
+      const activityNames = Array.isArray(dayData.activities)
+        ? dayData.activities
+            .map((activity) => activity?.name)
+            .filter(Boolean)
+            .slice(0, 4)
+        : [];
+      const summary =
+        activityNames.length > 0
+          ? `Day ${dayData.day_number}: ${activityNames.join(', ')}`
+          : `Day ${dayData.day_number} in ${trip.destination || 'your destination'}`;
+
+      const { data: itineraryRow, error: itineraryError } = await supabase
+        .from('itinerary')
+        .insert({
+          trip_id: tripId,
+          day_number: dayData.day_number,
+          date: dayData.date,
+          summary,
+        })
+        .select()
+        .single();
+
+      if (itineraryError || !itineraryRow) {
+        throw itineraryError || new Error('Failed to insert itinerary day');
+      }
+
+      const activityLinks = Array.isArray(dayData.activities)
+        ? dayData.activities
+            .map((activity, index) => ({
+              activity_id: activity?.activity_id,
+              order_index: index,
+            }))
+            .filter((link) => typeof link.activity_id === 'number')
+        : [];
+
+      if (activityLinks.length > 0) {
+        const { error: linkError } = await supabase.from('itinerary_activity').insert(
+          activityLinks.map((link) => ({
+            itinerary_id: itineraryRow.itinerary_id,
+            activity_id: link.activity_id,
+            order_index: link.order_index,
+          }))
+        );
+
+        if (linkError) {
+          throw linkError;
+        }
       }
     }
 

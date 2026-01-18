@@ -8,6 +8,7 @@ import Signup from "./pages/Signup";
 import Login from "./pages/Login";
 import NotFound from "./pages/NotFound";
 import Dashboard from "./pages/Dashboard";
+import FinalItinerary from "./pages/FinalItinerary";
 import TripPlanning from "./pages/TripPlanning";
 import Contact from "./pages/Contact";
 import Team from "./pages/Team";
@@ -28,6 +29,7 @@ const App = () => (
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/trip/new" element={<TripPlanning />} />
           <Route path="/trip/:tripId" element={<TripPlanning />} />
+          <Route path="/trip/:tripId/final-itinerary" element={<FinalItinerary />} />
           <Route path="/contact" element={<Contact />} />
           <Route path="/team" element={<Team />} />
           <Route path="/features" element={<Features />} />

@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { getApiUrl } from "@/lib/api";
 import DashboardHeader from "@/components/DashboardHeader";
 import DashboardSidebar from "@/components/DashboardSidebar";
-import { ArrowLeft, Save, Bookmark } from "lucide-react";
+import { ArrowLeft, Save, Bookmark, Map } from "lucide-react";
 
 interface Trip {
   trip_id: number;
@@ -213,6 +213,14 @@ const TripPlanning = () => {
 
             {trip && (
               <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => navigate(`/trip/${trip.trip_id}/final-itinerary`)}
+                  className="flex items-center gap-2"
+                >
+                  <Map className="h-4 w-4" />
+                  View Final Itinerary
+                </Button>
                 <Button
                   variant="outline"
                   onClick={() => updateTripStatus("draft")}
