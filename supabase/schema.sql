@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS itinerary (
     day_number INT NOT NULL,
     date DATE,
     summary TEXT,
+    city VARCHAR(255), -- City for this day (extracted from activities)
     progress VARCHAR(50) DEFAULT 'pending',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
@@ -165,6 +166,7 @@ CREATE TABLE IF NOT EXISTS flight_return_mapping (
 
 CREATE INDEX IF NOT EXISTS idx_trip_user_id ON trip(user_id);
 CREATE INDEX IF NOT EXISTS idx_itinerary_trip_id ON itinerary(trip_id);
+CREATE INDEX IF NOT EXISTS idx_itinerary_city ON itinerary(trip_id, city);
 CREATE INDEX IF NOT EXISTS idx_itinerary_activity_ids ON itinerary_activity(itinerary_id, activity_id);
 CREATE INDEX IF NOT EXISTS idx_trip_preference_trip_id ON trip_preference(trip_id);
 CREATE INDEX IF NOT EXISTS idx_chat_message_user_id ON chat_message(user_id);
@@ -240,10 +242,16 @@ CREATE TABLE IF NOT EXISTS hotel (
 
 -- Maps hotels to trips (similar to trip_flight)
 -- Tracks which hotels are associated with which trips and their selection status
+-- Supports multi-city trips: one hotel per city/day range
 CREATE TABLE IF NOT EXISTS trip_hotel (
     trip_id BIGINT NOT NULL REFERENCES trip(trip_id) ON DELETE CASCADE,
     hotel_id BIGINT NOT NULL REFERENCES hotel(hotel_id) ON DELETE CASCADE,
-    -- Whether this hotel is selected for the trip (only one hotel should be selected per trip)
+    -- City this hotel is for (for multi-city trips)
+    city VARCHAR(255),
+    -- Day range this hotel covers (for multi-city trips)
+    start_day INT, -- First day in this city
+    end_day INT,   -- Last day in this city
+    -- Whether this hotel is selected for the trip (one hotel per city/day range)
     is_selected BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
@@ -258,7 +266,8 @@ CREATE INDEX IF NOT EXISTS idx_hotel_property_token ON hotel(property_token) WHE
 CREATE INDEX IF NOT EXISTS idx_hotel_search_dates ON hotel(check_in_date, check_out_date);
 CREATE INDEX IF NOT EXISTS idx_trip_hotel_trip_id ON trip_hotel(trip_id);
 CREATE INDEX IF NOT EXISTS idx_trip_hotel_hotel_id ON trip_hotel(hotel_id);
--- Note: Application logic should ensure only one selected hotel per trip
+CREATE INDEX IF NOT EXISTS idx_trip_hotel_city ON trip_hotel(trip_id, city);
+-- Note: Application logic should ensure only one selected hotel per city/day range
 -- This can be enforced via a trigger or application-level checks
 CREATE INDEX IF NOT EXISTS idx_trip_hotel_selected ON trip_hotel(trip_id, is_selected) WHERE is_selected = TRUE;
 

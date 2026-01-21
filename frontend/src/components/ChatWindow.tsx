@@ -128,12 +128,19 @@ const ChatWindow = ({
   const [selectedReturnIndex, setSelectedReturnIndex] = useState<number | null>(null);
   const [expandedLayovers, setExpandedLayovers] = useState<Record<number, boolean>>({});
   const [hasConfirmedFlights, setHasConfirmedFlights] = useState(false);
+  const [showTempItinerary, setShowTempItinerary] = useState(false);
   const [hasStartedHotels, setHasStartedHotels] = useState(false);
   const [hotels, setHotels] = useState<any[]>([]);
   const [isFetchingHotels, setIsFetchingHotels] = useState(false);
   const [selectedHotelIndex, setSelectedHotelIndex] = useState<number | null>(null);
   const [hasConfirmedHotels, setHasConfirmedHotels] = useState(false);
   const [hotelIds, setHotelIds] = useState<Record<number, number>>({}); // Map index to hotel_id
+  // Multi-city hotel support
+  const [currentHotelCity, setCurrentHotelCity] = useState<string | null>(null);
+  const [currentCityStartDay, setCurrentCityStartDay] = useState<number | null>(null);
+  const [currentCityEndDay, setCurrentCityEndDay] = useState<number | null>(null);
+  const [citiesWithHotels, setCitiesWithHotels] = useState<Set<string>>(new Set());
+  const [cityGroups, setCityGroups] = useState<Array<{city: string, startDay: number, endDay: number}>>([]);
   const [propertyDetails, setPropertyDetails] = useState<Record<number, any>>({});
   const [isFetchingPropertyDetails, setIsFetchingPropertyDetails] = useState<Record<number, boolean>>({});
   const [expandedBookingOptions, setExpandedBookingOptions] = useState<Record<number, boolean>>({});
@@ -748,6 +755,116 @@ const ChatWindow = ({
     }
   };
 
+  // Helper function to extract city name from location string
+  // Handles formats like "Athens, Greece" -> "Athens", "Santorini" -> "Santorini", "Greece" -> null
+  const extractCityName = (location: string | null | undefined): string | null => {
+    if (!location) return null;
+    
+    const locationLower = location.toLowerCase().trim();
+    
+    // Common country names (expanded list)
+    const countries = [
+      'greece', 'italy', 'france', 'spain', 'portugal', 'germany', 
+      'united states', 'usa', 'us', 'uk', 'united kingdom', 'japan', 
+      'thailand', 'india', 'brazil', 'mexico', 'canada', 'australia',
+      'netherlands', 'belgium', 'switzerland', 'austria', 'croatia',
+      'turkey', 'egypt', 'morocco', 'south africa', 'argentina', 'chile',
+      'peru', 'colombia', 'vietnam', 'indonesia', 'philippines', 'china'
+    ];
+    
+    // Check if entire location is just a country
+    if (countries.includes(locationLower)) {
+      return null;
+    }
+    
+    // Split by comma
+    const parts = location.split(',').map(p => p.trim()).filter(p => p.length > 0);
+    
+    if (parts.length === 0) return null;
+    
+    // If we have multiple parts, check if first is country
+    if (parts.length > 1) {
+      const firstPart = parts[0].toLowerCase();
+      if (countries.includes(firstPart)) {
+        // First part is country, second part should be city
+        return parts[1] || null;
+      }
+      // First part is likely the city
+      return parts[0];
+    }
+    
+    // Single part - check if it's a country
+    const singlePart = parts[0].toLowerCase();
+    if (countries.includes(singlePart)) {
+      return null; // It's a country, not a city
+    }
+    
+    // Single part that's not a country - likely a city
+    return parts[0];
+  };
+
+  // Helper function to get city for a specific day
+  const getCityForDay = (dayNumber: number): string | null => {
+    const day = itineraryDays.find(d => d.day_number === dayNumber);
+    if (day?.city) return day.city;
+    
+    // Fallback: extract from activities
+    if (day?.activities && day.activities.length > 0) {
+      const location = day.activities[0].location;
+      return extractCityName(location);
+    }
+    
+    return null;
+  };
+
+  // Group days by city
+  const groupDaysByCity = (): Array<{city: string, startDay: number, endDay: number}> => {
+    const groups: Array<{city: string, startDay: number, endDay: number}> = [];
+    const cityMap = new Map<number, string>();
+    
+    // Build city map from itinerary days
+    itineraryDays.forEach(day => {
+      const city = day.city || getCityForDay(day.day_number) || tripDestination;
+      if (city) {
+        cityMap.set(day.day_number, city);
+      }
+    });
+    
+    // Group consecutive days by city
+    let currentCity: string | null = null;
+    let startDay: number | null = null;
+    
+    const sortedDays = Array.from(cityMap.entries()).sort((a, b) => a[0] - b[0]);
+    
+    sortedDays.forEach(([dayNumber, city]) => {
+      if (city !== currentCity) {
+        // Save previous group
+        if (currentCity !== null && startDay !== null) {
+          groups.push({
+            city: currentCity,
+            startDay: startDay,
+            endDay: dayNumber - 1
+          });
+        }
+        // Start new group
+        currentCity = city;
+        startDay = dayNumber;
+      }
+    });
+    
+    // Save last group
+    if (currentCity !== null && startDay !== null) {
+      const lastDay = sortedDays[sortedDays.length - 1]?.[0] || startDay;
+      groups.push({
+        city: currentCity,
+        startDay: startDay,
+        endDay: lastDay
+      });
+    }
+    
+    return groups;
+  };
+
   // Extract arrival location from day 1 of the itinerary, or from trip destination/activities
   const getArrivalLocation = (): string | null => {
     // First, try to get from itinerary days (if they exist)
@@ -1161,18 +1278,16 @@ const ChatWindow = ({
     }
   };
 
-  // Fetch hotels from SerpAPI
-  const fetchHotels = async () => {
+  // Fetch hotels for a specific city
+  const fetchHotelsForCity = async (city: string, startDay: number, endDay: number) => {
     if (!tripId || !tripPreferences?.start_date || !tripPreferences?.end_date) {
       return;
     }
 
-    // Get hotel location from day 1 of itinerary
-    const hotelLocation = getArrivalLocation();
-    if (!hotelLocation) {
+    if (!city) {
       const errorMessage: Message = {
         role: "assistant",
-        content: "Could not determine hotel location from your trip sketch. Please ensure your trip has location information.",
+        content: "Could not determine hotel location. Please ensure your trip has location information.",
         timestamp: formatTime(),
       };
       setMessages((prev) => [...prev, errorMessage]);
@@ -1184,16 +1299,28 @@ const ChatWindow = ({
       const token = getAuthToken();
       if (!token) return;
 
+      // Calculate check-in and check-out dates for this city
+      const startDate = new Date(tripPreferences.start_date);
+      startDate.setDate(startDate.getDate() + (startDay - 1));
+      
+      const endDate = new Date(tripPreferences.start_date);
+      endDate.setDate(endDate.getDate() + endDay);
+
+      const checkInDate = startDate.toISOString().split('T')[0];
+      const checkOutDate = endDate.toISOString().split('T')[0];
+
       const params = new URLSearchParams({
-        location: hotelLocation,
-        check_in_date: tripPreferences.start_date,
-        check_out_date: tripPreferences.end_date,
+        location: city,
+        check_in_date: checkInDate,
+        check_out_date: checkOutDate,
       });
 
-      console.log("Fetching hotels with params:", {
-        location: hotelLocation,
-        check_in_date: tripPreferences.start_date,
-        check_out_date: tripPreferences.end_date,
+      console.log("Fetching hotels for city:", {
+        city,
+        startDay,
+        endDay,
+        check_in_date: checkInDate,
+        check_out_date: checkOutDate,
       });
 
       const response = await fetch(getApiUrl(`api/hotels/search?${params.toString()}`), {
@@ -1210,10 +1337,13 @@ const ChatWindow = ({
       if (response.ok && result.success && Array.isArray(result.properties)) {
         const hotelsToSet = result.properties;
         setHotels(hotelsToSet);
+        setCurrentHotelCity(city);
+        setCurrentCityStartDay(startDay);
+        setCurrentCityEndDay(endDay);
 
-        // Save hotels to database - save ALL hotels returned from API
+        // Save hotels to database with city and day range
         try {
-          console.log(`Saving ${hotelsToSet.length} hotels to database...`);
+          console.log(`Saving ${hotelsToSet.length} hotels to database for ${city}...`);
           const saveResponse = await fetch(getApiUrl("api/hotels/save"), {
             method: "POST",
             headers: {
@@ -1222,19 +1352,22 @@ const ChatWindow = ({
             },
             body: JSON.stringify({
               trip_id: tripId,
-              properties: hotelsToSet, // Send all hotels
+              properties: hotelsToSet,
               search_params: {
-                location: hotelLocation,
-                check_in_date: tripPreferences.start_date,
-                check_out_date: tripPreferences.end_date,
+                location: city,
+                check_in_date: checkInDate,
+                check_out_date: checkOutDate,
                 currency: "USD",
               },
+              city: city,
+              start_day: startDay,
+              end_day: endDay,
             }),
           });
 
           const saveResult = await saveResponse.json();
           if (saveResult.success && saveResult.hotel_ids) {
-            console.log(`Saved ${saveResult.saved_count || saveResult.hotel_ids.length} hotels to database (out of ${saveResult.total_hotels || hotelsToSet.length} total):`, saveResult);
+            console.log(`Saved ${saveResult.saved_count || saveResult.hotel_ids.length} hotels to database for ${city}`);
             // Map hotel indices to hotel_ids
             const hotelIdMap: Record<number, number> = {};
             saveResult.hotel_ids.forEach((hotelId: number, idx: number) => {
@@ -1243,16 +1376,11 @@ const ChatWindow = ({
               }
             });
             setHotelIds(hotelIdMap);
-            
-            if (saveResult.saved_count < hotelsToSet.length) {
-              console.warn(`Warning: Only ${saveResult.saved_count} out of ${hotelsToSet.length} hotels were saved successfully`);
-            }
           } else {
             console.error("Failed to save hotels:", saveResult);
           }
         } catch (saveError) {
           console.error("Error saving hotels:", saveError);
-          // Don't show error to user, just log it
         }
       } else {
         const errorMessage: Message = {
@@ -1272,6 +1400,84 @@ const ChatWindow = ({
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setIsFetchingHotels(false);
+    }
+  };
+
+  // Fetch hotels from SerpAPI - now supports multi-city
+  const fetchHotels = async () => {
+    if (!tripId || !tripPreferences?.start_date || !tripPreferences?.end_date) {
+      return;
+    }
+
+    // Group days by city
+    const groups = groupDaysByCity();
+    setCityGroups(groups);
+
+    if (groups.length === 0) {
+      // Fallback to old behavior if no city groups found
+      const hotelLocation = getArrivalLocation();
+      if (!hotelLocation) {
+        const errorMessage: Message = {
+          role: "assistant",
+          content: "Could not determine hotel location from your trip sketch. Please ensure your trip has location information.",
+          timestamp: formatTime(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+        return;
+      }
+      
+      // Use first day to last day as fallback
+      const firstDay = itineraryDays.length > 0 ? itineraryDays[0].day_number : 1;
+      const lastDay = itineraryDays.length > 0 ? itineraryDays[itineraryDays.length - 1].day_number : tripPreferences.num_days || 1;
+      await fetchHotelsForCity(hotelLocation, firstDay, lastDay);
+      return;
+    }
+
+    // Check which cities already have hotels selected
+    try {
+      const token = getAuthToken();
+      if (!token) return;
+
+      const citiesResponse = await fetch(getApiUrl(`api/hotels/trip/${tripId}/cities`), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      const citiesResult = await citiesResponse.json();
+      if (citiesResult.success && Array.isArray(citiesResult.cities)) {
+        const citiesWithHotelsSet = new Set(
+          citiesResult.cities
+            .filter((c: any) => c.hasHotel)
+            .map((c: any) => c.city)
+        );
+        setCitiesWithHotels(citiesWithHotelsSet);
+
+        // Find first city that needs hotels
+        const nextCityGroup = groups.find(g => !citiesWithHotelsSet.has(g.city));
+        
+        if (nextCityGroup) {
+          await fetchHotelsForCity(nextCityGroup.city, nextCityGroup.startDay, nextCityGroup.endDay);
+        } else {
+          // All cities have hotels
+          setHasConfirmedHotels(true);
+          const message: Message = {
+            role: "assistant",
+            content: "Great! You've selected hotels for all cities in your trip.",
+            timestamp: formatTime(),
+          };
+          setMessages((prev) => [...prev, message]);
+        }
+      } else {
+        // Fallback: fetch hotels for first city
+        await fetchHotelsForCity(groups[0].city, groups[0].startDay, groups[0].endDay);
+      }
+    } catch (error) {
+      console.error("Error checking cities:", error);
+      // Fallback: fetch hotels for first city
+      await fetchHotelsForCity(groups[0].city, groups[0].startDay, groups[0].endDay);
     }
   };
 
@@ -1622,7 +1828,7 @@ const ChatWindow = ({
             setHasConfirmedTripSketch(true);
             if (flightsResult.selected_outbound_index !== null || flightsResult.selected_return_index !== null) {
               setHasConfirmedFlights(true);
-              setHasStartedHotels(true);
+              setShowTempItinerary(true);
             } else if (flightsResult.outbound_flights.length > 0) {
               // Flights were fetched but not selected yet
               setHasConfirmedTripSketch(true);
@@ -3422,10 +3628,10 @@ const ChatWindow = ({
                           className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
                           onClick={() => {
                             setHasConfirmedFlights(true);
-                            setHasStartedHotels(true);
+                            setShowTempItinerary(true);
                           }}
                         >
-                          I&apos;m done planning flights. Now let&apos;s move on to hotels
+                          I&apos;m done planning flights
                         </Button>
                       </div>
                     )}
@@ -3434,38 +3640,304 @@ const ChatWindow = ({
               </div>
             </div>
           )}
+          {hasConfirmedFlights && !hasStartedHotels && showTempItinerary && (
+            <div className="flex justify-start">
+              <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-5 py-4 shadow-sm space-y-4">
+                <p className="text-sm font-semibold text-slate-700 mb-3">Your Trip Preview</p>
+                
+{(() => {
+                  // Try to use itineraryDays first
+                  if (itineraryDays.length > 0) {
+                    return (
+                      <div className="space-y-3">
+                        {itineraryDays.map((day) => {
+                          // Extract city name, handling cases where city might be a country
+                          let city: string | null = null;
+                          
+                          // Try day.city first
+                          if (day.city) {
+                            city = extractCityName(day.city);
+                          }
+                          
+                          // Try getCityForDay
+                          if (!city) {
+                            city = getCityForDay(day.day_number);
+                          }
+                          
+                          // Try extracting from activities
+                          if (!city && day.activities && day.activities.length > 0) {
+                            for (const activity of day.activities) {
+                              city = extractCityName(activity.location);
+                              if (city) break;
+                            }
+                          }
+                          
+                          // Final fallback - but don't use country names
+                          if (!city || city === tripDestination) {
+                            // If tripDestination is a country, try to get city from activities
+                            if (day.activities && day.activities.length > 0) {
+                              const locations = day.activities
+                                .map(a => a.location)
+                                .filter(Boolean)
+                                .map(loc => extractCityName(loc))
+                                .filter(Boolean);
+                              if (locations.length > 0) {
+                                city = locations[0];
+                              }
+                            }
+                          }
+                          
+                          city = city || "TBD";
+                          const date = day.date ? new Date(day.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : null;
+                          
+                          return (
+                            <div key={day.day_number} className="border border-blue-200 rounded-md p-3 bg-blue-50/30">
+                              <div className="flex items-center justify-between mb-2">
+                                <div>
+                                  <p className="text-xs font-semibold text-slate-800">Day {day.day_number}</p>
+                                  {date && <p className="text-[10px] text-slate-500">{date}</p>}
+                                </div>
+                                <p className="text-xs font-medium text-blue-600">{city}</p>
+                              </div>
+                              
+                              {day.activities && day.activities.length > 0 ? (
+                                <div className="space-y-1 mt-2">
+                                  {day.activities.map((activity: any, idx: number) => (
+                                    <p key={idx} className="text-[11px] text-slate-600">
+                                      • {activity.name || "Activity"}
+                                    </p>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-[11px] text-slate-400 italic">No activities planned yet</p>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  }
+                  
+                  // Fallback: Group activities by location/city and create days
+                  if (activities.length > 0) {
+                    // Group activities by city (extract city name from location)
+                    const activitiesByCity = new Map<string, typeof activities>();
+                    const activitiesWithoutCity: typeof activities = [];
+                    activities.forEach(activity => {
+                      const city = extractCityName(activity.location);
+                      if (city) {
+                        // Only use extracted city (not country)
+                        if (!activitiesByCity.has(city)) {
+                          activitiesByCity.set(city, []);
+                        }
+                        activitiesByCity.get(city)!.push(activity);
+                      } else {
+                        // Activities without extractable city - we'll assign them later
+                        activitiesWithoutCity.push(activity);
+                      }
+                    });
+                    
+                    // Get number of days
+                    const numDays = tripPreferences?.num_days || Math.max(activitiesByCity.size, 1);
+                    const days: Array<{day_number: number, city: string, activities: typeof activities}> = [];
+                    
+                    // Strategy: Distribute activities more evenly, with 3-4 activities per day
+                    const targetActivitiesPerDay = 3; // Target 3 activities per day
+                    const cities = Array.from(activitiesByCity.keys());
+                    const allActivities: Array<{activity: typeof activities[0], city: string}> = [];
+                    
+                    // Flatten activities with their cities
+                    cities.forEach(city => {
+                      const cityActivities = activitiesByCity.get(city) || [];
+                      cityActivities.forEach(activity => {
+                        allActivities.push({ activity, city });
+                      });
+                    });
+                    
+                    // Add activities without cities, distributing them across existing cities
+                    activitiesWithoutCity.forEach((activity, idx) => {
+                      const assignedCity = cities.length > 0 ? cities[idx % cities.length] : null;
+                      if (assignedCity) {
+                        allActivities.push({ activity, city: assignedCity });
+                      }
+                    });
+                    
+                    // Distribute activities across days
+                    let activityIndex = 0;
+                    for (let dayNum = 1; dayNum <= numDays; dayNum++) {
+                      const dayActivities: Array<{activity: typeof activities[0], city: string}> = [];
+                      
+                      // Get activities for this day (target 3 per day)
+                      const activitiesForThisDay = Math.min(
+                        targetActivitiesPerDay,
+                        allActivities.length - activityIndex
+                      );
+                      
+                      for (let i = 0; i < activitiesForThisDay && activityIndex < allActivities.length; i++) {
+                        dayActivities.push(allActivities[activityIndex]);
+                        activityIndex++;
+                      }
+                      
+                      // If we don't have enough activities (either ran out or need more), add placeholder activities
+                      if (dayActivities.length < targetActivitiesPerDay) {
+                        const activityCategories = tripPreferences?.activity_categories || [];
+                        const placeholderCount = targetActivitiesPerDay - dayActivities.length;
+                        
+                        // Determine city for placeholder activities
+                        let placeholderCity = "TBD";
+                        if (dayActivities.length > 0) {
+                          placeholderCity = dayActivities[0].city;
+                        } else if (cities.length > 0) {
+                          // Use cities in rotation
+                          placeholderCity = cities[(dayNum - 1) % cities.length];
+                        }
+                        
+                        for (let i = 0; i < placeholderCount; i++) {
+                          const category = activityCategories.length > 0 
+                            ? activityCategories[i % activityCategories.length] 
+                            : 'activities';
+                          dayActivities.push({
+                            activity: {
+                              name: `${category.charAt(0).toUpperCase() + category.slice(1)} activities`,
+                              location: null,
+                              category: category,
+                            } as any,
+                            city: placeholderCity
+                          });
+                        }
+                      }
+                      
+                      // Get the most common city for this day's activities
+                      const cityCounts = new Map<string, number>();
+                      dayActivities.forEach(({ city }) => {
+                        cityCounts.set(city, (cityCounts.get(city) || 0) + 1);
+                      });
+                      
+                      let mostCommonCity = "TBD";
+                      let maxCount = 0;
+                      cityCounts.forEach((count, city) => {
+                        if (count > maxCount) {
+                          maxCount = count;
+                          mostCommonCity = city;
+                        }
+                      });
+                      
+                      // Ensure we have a valid city (extract if needed, but don't use country names)
+                      const extractedCity = extractCityName(mostCommonCity);
+                      if (extractedCity) {
+                        mostCommonCity = extractedCity;
+                      } else if (mostCommonCity === tripDestination) {
+                        // If mostCommonCity is the destination and it's a country, try to get city from activities
+                        const cityFromActivities = dayActivities
+                          .map(({ activity }) => extractCityName(activity.location))
+                          .filter(Boolean)[0];
+                        mostCommonCity = cityFromActivities || "TBD";
+                      }
+                      
+                      days.push({
+                        day_number: dayNum,
+                        city: mostCommonCity,
+                        activities: dayActivities.map(({ activity }) => activity)
+                      });
+                    }
+                    
+                    return (
+                      <div className="space-y-3">
+                        {days.map((day) => {
+                          const date = tripPreferences?.start_date 
+                            ? (() => {
+                                const startDate = new Date(tripPreferences.start_date);
+                                startDate.setDate(startDate.getDate() + (day.day_number - 1));
+                                return startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                              })()
+                            : null;
+                          
+                          // Extract city name to ensure we show city, not country
+                          const displayCity = extractCityName(day.city) || day.city || "TBD";
+                          
+                          return (
+                            <div key={day.day_number} className="border border-blue-200 rounded-md p-3 bg-blue-50/30">
+                              <div className="flex items-center justify-between mb-2">
+                                <div>
+                                  <p className="text-xs font-semibold text-slate-800">Day {day.day_number}</p>
+                                  {date && <p className="text-[10px] text-slate-500">{date}</p>}
+                                </div>
+                                <p className="text-xs font-medium text-blue-600">{displayCity}</p>
+                              </div>
+                              
+                              {day.activities.length > 0 ? (
+                                <div className="space-y-1 mt-2">
+                                  {day.activities.map((activity: any, idx: number) => (
+                                    <p key={idx} className="text-[11px] text-slate-600">
+                                      • {activity.name || "Activity"}
+                                    </p>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-[11px] text-slate-400 italic">No activities planned yet</p>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  }
+                  
+                  // Last resort: Show days based on trip preferences
+                  if (tripPreferences?.num_days) {
+                    return (
+                      <div className="space-y-3">
+                        {Array.from({ length: tripPreferences.num_days }, (_, i) => {
+                          const dayNumber = i + 1;
+                          const date = tripPreferences.start_date 
+                            ? (() => {
+                                const startDate = new Date(tripPreferences.start_date);
+                                startDate.setDate(startDate.getDate() + i);
+                                return startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                              })()
+                            : null;
+                          
+                          return (
+                            <div key={dayNumber} className="border border-blue-200 rounded-md p-3 bg-blue-50/30">
+                              <div className="flex items-center justify-between mb-2">
+                                <div>
+                                  <p className="text-xs font-semibold text-slate-800">Day {dayNumber}</p>
+                                  {date && <p className="text-[10px] text-slate-500">{date}</p>}
+                                </div>
+                                <p className="text-xs font-medium text-blue-600">{tripDestination || "Unknown"}</p>
+                              </div>
+                              <p className="text-[11px] text-slate-400 italic">Activities will be planned</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  }
+                  
+                  return <p className="text-xs text-slate-500">No itinerary information available yet.</p>;
+                })()}
+                
+                <div className="pt-2 border-t border-blue-200">
+                  <Button
+                    size="sm"
+                    className="w-full h-9 bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-sm font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400"
+                    onClick={() => {
+                      setHasStartedHotels(true);
+                      fetchHotels();
+                    }}
+                  >
+                    Now let&apos;s book hotels
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
           {hasStartedHotels && (
             <div className="flex justify-start">
               <div className="w-full max-w-xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
                 <p className="text-xs font-semibold text-slate-600">
-                  Phase 4 Part 2: Book your hotels
+                  Book your hotels
                 </p>
-
-                {/* Hotel Location and Dates Info */}
-                {(() => {
-                  const hotelLocation = getArrivalLocation();
-                  return (
-                    <div className="space-y-2">
-                      <div className="text-[11px] text-slate-500 space-y-1">
-                        <p>Location: <span className="text-slate-800">{hotelLocation || "Extracting from trip..."}</span></p>
-                        {tripPreferences?.start_date && tripPreferences?.end_date && (
-                          <>
-                            <p>Check-in: <span className="text-slate-800">{tripPreferences.start_date}</span></p>
-                            <p>Check-out: <span className="text-slate-800">{tripPreferences.end_date}</span></p>
-                          </>
-                        )}
-                      </div>
-                      <Button
-                        size="sm"
-                        className="w-full h-8 bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-xs font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400 disabled:opacity-60"
-                        disabled={isFetchingHotels || !hotelLocation}
-                        onClick={fetchHotels}
-                      >
-                        {isFetchingHotels ? "Searching for hotels..." : "Search for hotels"}
-                      </Button>
-                    </div>
-                  );
-                })()}
 
                 {/* Loading Indicator */}
                 {isFetchingHotels && (
@@ -3477,6 +3949,23 @@ const ChatWindow = ({
                 {/* Hotel Results */}
                 {hotels.length > 0 && (
                   <div className="space-y-3 pt-2 border-t border-blue-200">
+                    {currentHotelCity && (
+                      <div className="mb-2">
+                        <p className="text-xs font-semibold text-slate-600">
+                          Hotels in {currentHotelCity}
+                          {currentCityStartDay && currentCityEndDay && (
+                            <span className="text-slate-500 font-normal">
+                              {" "}(Days {currentCityStartDay}-{currentCityEndDay})
+                            </span>
+                          )}
+                        </p>
+                        {cityGroups.length > 1 && (
+                          <p className="text-[10px] text-slate-400 mt-1">
+                            {cityGroups.length - citiesWithHotels.size - 1} more {cityGroups.length - citiesWithHotels.size - 1 === 1 ? 'city' : 'cities'} to go
+                          </p>
+                        )}
+                      </div>
+                    )}
                     <p className="text-xs font-semibold text-slate-600">Available hotels</p>
                     <div className="space-y-3">
                       {hotels.map((hotel, index) => {
@@ -3531,12 +4020,55 @@ const ChatWindow = ({
                                       trip_id: tripId,
                                       hotel_id: hotelId,
                                       is_selected: true,
+                                      city: currentHotelCity, // Include city for multi-city support
                                     }),
                                   });
                                   
                                   const result = await response.json();
                                   if (result.success) {
-                                    console.log("Successfully updated hotel selection");
+                                    console.log(`Successfully updated hotel selection for ${currentHotelCity}`);
+                                    
+                                    // Mark this city as having a hotel and find next city
+                                    setCitiesWithHotels(prev => {
+                                      const updated = new Set([...prev, currentHotelCity || '']);
+                                      
+                                      // Find next city that needs hotels
+                                      const groups = groupDaysByCity();
+                                      const nextCityGroup = groups.find(g => 
+                                        !updated.has(g.city) && g.city !== currentHotelCity
+                                      );
+                                      
+                                      if (nextCityGroup) {
+                                        // Move to next city
+                                        setTimeout(async () => {
+                                          setSelectedHotelIndex(null);
+                                          setHotels([]);
+                                          setHotelIds({});
+                                          await fetchHotelsForCity(
+                                            nextCityGroup.city,
+                                            nextCityGroup.startDay,
+                                            nextCityGroup.endDay
+                                          );
+                                          
+                                          const message: Message = {
+                                            role: "assistant",
+                                            content: `Great choice! Now let's find hotels for ${nextCityGroup.city} (days ${nextCityGroup.startDay}-${nextCityGroup.endDay}).`,
+                                            timestamp: formatTime(),
+                                          };
+                                          setMessages((prev) => [...prev, message]);
+                                        }, 1000);
+                                      } else {
+                                        // All cities have hotels selected
+                                        const message: Message = {
+                                          role: "assistant",
+                                          content: "Perfect! You've selected hotels for all cities in your trip.",
+                                          timestamp: formatTime(),
+                                        };
+                                        setMessages((prev) => [...prev, message]);
+                                      }
+                                      
+                                      return updated;
+                                    });
                                   }
                                 } catch (error) {
                                   console.error("Error updating hotel selection:", error);
@@ -3557,6 +4089,7 @@ const ChatWindow = ({
                                           trip_id: tripId,
                                           hotel_id: retryHotelId,
                                           is_selected: true,
+                                          city: currentHotelCity,
                                         }),
                                       });
                                     } catch (error) {
@@ -3708,22 +4241,33 @@ const ChatWindow = ({
                       })}
                     </div>
 
-                    {/* Done Button */}
-                    {selectedHotelIndex !== null && (
-                      <div className="pt-2 flex justify-end">
-                        <Button
-                          size="sm"
-                          className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                          onClick={() => {
-                            setHasConfirmedHotels(true);
-                            // Automatically generate final itinerary when hotels are confirmed
-                            generateFinalItinerary();
-                          }}
-                        >
-                          I&apos;m done planning hotels
-                        </Button>
-                      </div>
-                    )}
+                    {/* Done Button - Only show when all cities have hotels */}
+                    {(() => {
+                      // Check if all cities have hotels selected
+                      // A city has a hotel if it's in citiesWithHotels OR if it's the current city and a hotel is selected
+                      const allCitiesHaveHotels = cityGroups.length > 0 && 
+                        cityGroups.every(g => {
+                          const hasHotel = citiesWithHotels.has(g.city);
+                          const isCurrentCityWithSelection = g.city === currentHotelCity && selectedHotelIndex !== null;
+                          return hasHotel || isCurrentCityWithSelection;
+                        });
+                      
+                      return selectedHotelIndex !== null && allCitiesHaveHotels && (
+                        <div className="pt-2 flex justify-end">
+                          <Button
+                            size="sm"
+                            className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                            onClick={() => {
+                              setHasConfirmedHotels(true);
+                              // Automatically generate final itinerary when hotels are confirmed
+                              generateFinalItinerary();
+                            }}
+                          >
+                            I&apos;m done choosing hotels for my trip
+                          </Button>
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
               </div>

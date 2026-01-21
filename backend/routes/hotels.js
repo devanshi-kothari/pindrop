@@ -6,6 +6,134 @@ import supabase from '../supabaseClient.js';
 
 const router = express.Router();
 
+// Helper function to extract city from activities in a day
+function getMostCommonCity(cities) {
+  if (!cities || cities.length === 0) return null;
+  
+  // Count occurrences
+  const cityCount = {};
+  cities.forEach(city => {
+    if (city) {
+      const normalized = city.trim();
+      cityCount[normalized] = (cityCount[normalized] || 0) + 1;
+    }
+  });
+  
+  // Return most common city
+  let maxCount = 0;
+  let mostCommon = null;
+  Object.entries(cityCount).forEach(([city, count]) => {
+    if (count > maxCount) {
+      maxCount = count;
+      mostCommon = city;
+    }
+  });
+  
+  return mostCommon || cities[0] || null;
+}
+
+// Helper function to extract cities per day from itinerary
+async function extractCitiesPerDay(tripId) {
+  try {
+    const { data: itineraryDays, error } = await supabase
+      .from('itinerary')
+      .select(`
+        itinerary_id,
+        day_number,
+        date,
+        city,
+        itinerary_activity (
+          activity:activity (
+            location
+          )
+        )
+      `)
+      .eq('trip_id', tripId)
+      .order('day_number', { ascending: true });
+
+    if (error) {
+      console.error('Error fetching itinerary for city extraction:', error);
+      return new Map();
+    }
+
+    const cityMap = new Map(); // day_number -> city
+    
+    itineraryDays?.forEach(day => {
+      // If city is already set in itinerary, use it
+      if (day.city) {
+        cityMap.set(day.day_number, day.city);
+        return;
+      }
+      
+      // Otherwise, extract from activities
+      const activities = day.itinerary_activity || [];
+      const cities = activities
+        .map(ia => ia.activity?.location)
+        .filter(Boolean);
+      
+      if (cities.length > 0) {
+        const city = getMostCommonCity(cities);
+        if (city) {
+          cityMap.set(day.day_number, city);
+          
+          // Update itinerary table with city
+          supabase
+            .from('itinerary')
+            .update({ city })
+            .eq('itinerary_id', day.itinerary_id)
+            .then(({ error: updateError }) => {
+              if (updateError) {
+                console.error(`Error updating city for day ${day.day_number}:`, updateError);
+              }
+            });
+        }
+      }
+    });
+    
+    return cityMap;
+  } catch (error) {
+    console.error('Error extracting cities per day:', error);
+    return new Map();
+  }
+}
+
+// Helper function to group consecutive days by city
+function groupDaysByCity(cityMap) {
+  const groups = []; // Array of { city, startDay, endDay }
+  let currentCity = null;
+  let startDay = null;
+  
+  const sortedDays = Array.from(cityMap.entries()).sort((a, b) => a[0] - b[0]);
+  
+  sortedDays.forEach(([dayNumber, city]) => {
+    if (city !== currentCity) {
+      // Save previous group if exists
+      if (currentCity !== null && startDay !== null) {
+        groups.push({
+          city: currentCity,
+          startDay: startDay,
+          endDay: dayNumber - 1
+        });
+      }
+      // Start new group
+      currentCity = city;
+      startDay = dayNumber;
+    }
+  });
+  
+  // Save last group
+  if (currentCity !== null && startDay !== null) {
+    const lastDay = sortedDays[sortedDays.length - 1][0];
+    groups.push({
+      city: currentCity,
+      startDay: startDay,
+      endDay: lastDay
+    });
+  }
+  
+  return groups;
+}
+
 // Search for hotels using SerpAPI Google Hotels
 router.get('/search', authenticateToken, async (req, res) => {
   try {
@@ -244,10 +372,11 @@ router.get('/details', authenticateToken, async (req, res) => {
 // It saves each hotel option to:
 // 1. The 'hotel' table (individual hotel records)
 // 2. The 'trip_hotel' table (associates hotels with trips)
+// Now supports multi-city trips with city and day range
 router.post('/save', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-    const { trip_id, properties, search_params } = req.body;
+    const { trip_id, properties, search_params, city, start_day, end_day } = req.body;
 
     if (!trip_id || !Array.isArray(properties) || properties.length === 0) {
       return res.status(400).json({
@@ -353,13 +482,27 @@ router.post('/save', authenticateToken, async (req, res) => {
 
         // Associate hotel with trip in trip_hotel table
         // Use upsert to handle duplicates (if hotel already associated with trip)
+        // Include city and day range for multi-city support
+        const tripHotelData = {
+          trip_id: trip_id,
+          hotel_id: hotel.hotel_id,
+          is_selected: false
+        };
+        
+        // Add city and day range if provided (for multi-city trips)
+        if (city) {
+          tripHotelData.city = city;
+        }
+        if (start_day !== undefined && start_day !== null) {
+          tripHotelData.start_day = parseInt(start_day);
+        }
+        if (end_day !== undefined && end_day !== null) {
+          tripHotelData.end_day = parseInt(end_day);
+        }
+        
         const { error: tripHotelError } = await supabase
           .from('trip_hotel')
-          .upsert([{
-            trip_id: trip_id,
-            hotel_id: hotel.hotel_id,
-            is_selected: false
-          }], {
+          .upsert([tripHotelData], {
             onConflict: 'trip_id,hotel_id'
           });
 
@@ -394,10 +537,11 @@ router.post('/save', authenticateToken, async (req, res) => {
 });
 
 // Update hotel selection status
+// Now supports multi-city: when selecting a hotel for a city, only unselects other hotels for that same city
 router.put('/select', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-    const { trip_id, hotel_id, is_selected } = req.body;
+    const { trip_id, hotel_id, is_selected, city } = req.body;
 
     if (!trip_id || !hotel_id || typeof is_selected !== 'boolean') {
       return res.status(400).json({
@@ -421,12 +565,25 @@ router.put('/select', authenticateToken, async (req, res) => {
       });
     }
 
-    // If selecting this hotel, unselect other hotels for this trip
-    if (is_selected) {
-      console.log(`Selecting hotel ${hotel_id} for trip ${trip_id}`);
+    // Get the hotel's city if not provided (for backward compatibility)
+    let hotelCity = city;
+    if (!hotelCity) {
+      const { data: tripHotel } = await supabase
+        .from('trip_hotel')
+        .select('city')
+        .eq('trip_id', trip_id)
+        .eq('hotel_id', hotel_id)
+        .maybeSingle();
       
-      // Unselect all other hotels for this trip
-      const { error: unselectError } = await supabase
+      hotelCity = tripHotel?.city || null;
+    }
+
+    // If selecting this hotel, unselect other hotels for this city (or entire trip if no city)
+    if (is_selected) {
+      console.log(`Selecting hotel ${hotel_id} for trip ${trip_id}${hotelCity ? ` in city ${hotelCity}` : ''}`);
+      
+      // Build unselect query - unselect hotels for the same city, or all hotels if no city specified
+      let unselectQuery = supabase
         .from('trip_hotel')
         .update({ 
           is_selected: false, 
@@ -434,11 +591,18 @@ router.put('/select', authenticateToken, async (req, res) => {
         })
         .eq('trip_id', trip_id)
         .neq('hotel_id', hotel_id);
+      
+      // If city is specified, only unselect hotels for that city
+      if (hotelCity) {
+        unselectQuery = unselectQuery.eq('city', hotelCity);
+      }
+      
+      const { error: unselectError } = await unselectQuery;
 
       if (unselectError) {
         console.error('Error unselecting other hotels:', unselectError);
       } else {
-        console.log('Successfully unselected other hotels for this trip');
+        console.log(`Successfully unselected other hotels for ${hotelCity ? `city ${hotelCity}` : 'this trip'}`);
       }
     }
 
@@ -586,6 +750,199 @@ router.get('/trip/:tripId', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Error loading hotels for trip:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while loading hotels',
+      error: error.message
+    });
+  }
+});
+
+// Get cities that need hotels for a trip
+// Returns list of cities with their day ranges and whether they already have selected hotels
+router.get('/trip/:tripId/cities', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+
+    if (!tripId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid trip_id'
+      });
+    }
+
+    // Verify trip belongs to user
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found'
+      });
+    }
+
+    // Extract cities from itinerary
+    const cityMap = await extractCitiesPerDay(tripId);
+    const cityGroups = groupDaysByCity(cityMap);
+
+    // Get selected hotels per city
+    const { data: selectedHotels } = await supabase
+      .from('trip_hotel')
+      .select('city, start_day, end_day')
+      .eq('trip_id', tripId)
+      .eq('is_selected', true);
+
+    const citiesWithHotels = new Set();
+    selectedHotels?.forEach(h => {
+      if (h.city) {
+        citiesWithHotels.add(h.city);
+      }
+    });
+
+    // Build response with city info and whether hotels are needed
+    const cities = cityGroups.map(group => ({
+      city: group.city,
+      startDay: group.startDay,
+      endDay: group.endDay,
+      hasHotel: citiesWithHotels.has(group.city)
+    }));
+
+    res.status(200).json({
+      success: true,
+      cities: cities
+    });
+  } catch (error) {
+    console.error('Error fetching cities for trip:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while fetching cities',
+      error: error.message
+    });
+  }
+});
+
+// Get hotels for a specific city/day range
+router.get('/trip/:tripId/city/:city', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+    const city = decodeURIComponent(req.params.city);
+
+    if (!tripId || !city) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid trip_id or city'
+      });
+    }
+
+    // Verify trip belongs to user
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found'
+      });
+    }
+
+    // Get hotels for this city
+    const { data: tripHotels, error: tripHotelsError } = await supabase
+      .from('trip_hotel')
+      .select(`
+        hotel_id,
+        city,
+        start_day,
+        end_day,
+        is_selected,
+        hotel:hotel(*)
+      `)
+      .eq('trip_id', tripId)
+      .eq('city', city)
+      .order('created_at', { ascending: true });
+
+    if (tripHotelsError) {
+      throw tripHotelsError;
+    }
+
+    // Reconstruct hotel properties from database columns
+    const hotels = [];
+    const hotelIdMap = {};
+    let selectedHotelIndex = null;
+    let selectedHotelId = null;
+
+    tripHotels?.forEach((th, index) => {
+      if (th.hotel) {
+        const hotelProperty = {
+          name: th.hotel.name,
+          type: th.hotel.type,
+          description: th.hotel.description,
+          link: th.hotel.link,
+          logo: th.hotel.logo,
+          sponsored: th.hotel.sponsored,
+          eco_certified: th.hotel.eco_certified,
+          gps_coordinates: th.hotel.latitude && th.hotel.longitude ? {
+            latitude: th.hotel.latitude,
+            longitude: th.hotel.longitude
+          } : null,
+          check_in_time: th.hotel.check_in_time,
+          check_out_time: th.hotel.check_out_time,
+          rate_per_night: th.hotel.rate_per_night_lowest ? {
+            extracted_lowest: th.hotel.rate_per_night_lowest,
+            lowest: th.hotel.rate_per_night_formatted
+          } : null,
+          total_rate: th.hotel.total_rate_lowest ? {
+            extracted_lowest: th.hotel.total_rate_lowest,
+            lowest: th.hotel.total_rate_formatted
+          } : null,
+          hotel_class: th.hotel.hotel_class,
+          extracted_hotel_class: th.hotel.extracted_hotel_class,
+          overall_rating: th.hotel.overall_rating,
+          reviews: th.hotel.reviews,
+          location_rating: th.hotel.location_rating,
+          prices: th.hotel.prices,
+          nearby_places: th.hotel.nearby_places,
+          images: th.hotel.images,
+          ratings: th.hotel.ratings,
+          reviews_breakdown: th.hotel.reviews_breakdown,
+          amenities: th.hotel.amenities || [],
+          excluded_amenities: th.hotel.excluded_amenities || [],
+          essential_info: th.hotel.essential_info || [],
+          health_and_safety: th.hotel.health_and_safety,
+          property_token: th.hotel.property_token,
+          serpapi_property_details_link: th.hotel.serpapi_property_details_link,
+          ...(th.hotel.additional_data || {})
+        };
+
+        hotels.push(hotelProperty);
+        hotelIdMap[index] = th.hotel_id;
+        if (th.is_selected) {
+          selectedHotelId = th.hotel_id;
+          selectedHotelIndex = index;
+        }
+      }
+    });
+
+    res.status(200).json({
+      success: true,
+      city: city,
+      hotels: hotels,
+      hotel_ids: hotelIdMap,
+      selected_hotel_index: selectedHotelIndex,
+      selected_hotel_id: selectedHotelId
+    });
+  } catch (error) {
+    console.error('Error loading hotels for city:', error);
     res.status(500).json({
       success: false,
       message: 'An error occurred while loading hotels',
