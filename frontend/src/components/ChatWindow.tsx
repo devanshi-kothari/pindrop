@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { Send, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,6 +20,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { ChevronDown } from "lucide-react";
 import { getApiUrl } from "@/lib/api";
 import ActivitySwipeCard from "./ActivitySwipeCard";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface Message {
   role: "user" | "assistant";
@@ -72,6 +74,7 @@ const ChatWindow = ({
   planningMode = "known",
   hasDestinationLocked = false,
 }: ChatWindowProps) => {
+  const navigate = useNavigate();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -164,6 +167,9 @@ const ChatWindow = ({
   const [isLockingDestination, setIsLockingDestination] = useState(false);
   const [hasLockedDestination, setHasLockedDestination] = useState(
     planningMode === "known" || hasDestinationLocked
+  );
+  const [activeTab, setActiveTab] = useState<"activities" | "flights" | "hotels" | "summary">(
+    "activities"
   );
 
   useEffect(() => {
@@ -754,7 +760,7 @@ const ChatWindow = ({
     if (itineraryDays.length > 0) {
     // Find day 1 (could be day_number === 1 or the first day in the array)
     const day1 = itineraryDays.find((day) => day.day_number === 1) || itineraryDays[0];
-    
+
       if (day1) {
     // Try to get location from activities
     if (Array.isArray(day1.activities) && day1.activities.length > 0) {
@@ -763,7 +769,7 @@ const ChatWindow = ({
         return firstActivity.location;
       }
     }
-    
+
     // Try to extract location from summary
     if (day1.summary) {
       // Look for common location patterns in the summary
@@ -774,7 +780,7 @@ const ChatWindow = ({
         }
       }
     }
-    
+
     // Fallback: try to get from activities (if we have any)
     if (activities.length > 0) {
       const firstActivity = activities.find(a => a.location) || activities[0];
@@ -782,7 +788,7 @@ const ChatWindow = ({
         return firstActivity.location;
       }
     }
-    
+
     // Last resort: use trip destination
     return tripDestination;
   };
@@ -790,10 +796,10 @@ const ChatWindow = ({
   // Fetch flights from SerpAPI for all departure airports
   const fetchFlights = async () => {
     console.log("fetchFlights called", { tripId, departureId, departureAirportCodes, arrivalId, tripPreferences });
-    
+
     // Use all departure airport codes if available, otherwise fall back to single departureId
     const airportsToSearch = departureAirportCodes.length > 0 ? departureAirportCodes : (departureId ? [departureId] : []);
-    
+
     if (!tripId || airportsToSearch.length === 0 || !arrivalId) {
       const errorMessage: Message = {
         role: "assistant",
@@ -880,7 +886,7 @@ const ChatWindow = ({
       });
 
       const results = await Promise.all(flightPromises);
-      
+
       // Group flights by departure airport code
       const flightsByAirportMap: Record<string, any[]> = {};
       const allFlights: any[] = [];
@@ -932,7 +938,7 @@ const ChatWindow = ({
               }
             });
             setOutboundFlightIds(flightIdMap);
-            
+
             if (saveResult.saved_count < allFlightsToSave.length) {
               console.warn(`Warning: Only ${saveResult.saved_count} out of ${allFlightsToSave.length} flights were saved successfully`);
             }
@@ -1070,9 +1076,9 @@ const ChatWindow = ({
         } else if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
           flightsToSet = result.other_flights;
         }
-        
+
         console.log(`Found ${flightsToSet.length} return flights to display`);
-        
+
         if (flightsToSet.length > 0) {
           // Cache the return flights by departure_token
           setReturnFlightsCache(prev => ({
@@ -1243,7 +1249,7 @@ const ChatWindow = ({
               }
             });
             setHotelIds(hotelIdMap);
-            
+
             if (saveResult.saved_count < hotelsToSet.length) {
               console.warn(`Warning: Only ${saveResult.saved_count} out of ${hotelsToSet.length} hotels were saved successfully`);
             }
@@ -1364,7 +1370,7 @@ const ChatWindow = ({
         // Return the primary (closest) airport code for backward compatibility
         return result.airport_code || null;
       }
-      
+
       return null;
     } catch (error) {
       console.error(`Error fetching ${isDeparture ? "departure" : "arrival"} airport code:`, error);
@@ -1504,7 +1510,7 @@ const ChatWindow = ({
 
         // Load itinerary to restore trip sketch state
         await loadItineraryDays(tripId);
-        
+
         // Check if itinerary exists - if so, user has confirmed trip sketch
         const itineraryResponse = await fetch(getApiUrl(`api/trips/${tripId}/itinerary`), {
           method: "GET",
@@ -1552,25 +1558,25 @@ const ChatWindow = ({
             flightsResult.outbound_flights.forEach((flight: any, idx: number) => {
               console.log(`Flight ${idx} departure_token:`, flight?.departure_token, "Type:", typeof flight?.departure_token);
             });
-            
+
             // Group flights by departure airport code
             const flightsByAirportMap: Record<string, any[]> = {};
             flightsResult.outbound_flights.forEach((flight: any) => {
               // Try to get departure airport code from flight data
-              const departureCode = flight.departure_airport_code || 
+              const departureCode = flight.departure_airport_code ||
                                    flight.flights?.[0]?.departure_airport?.id ||
-                                   flightsResult.departure_id || 
+                                   flightsResult.departure_id ||
                                    'UNKNOWN';
               if (!flightsByAirportMap[departureCode]) {
                 flightsByAirportMap[departureCode] = [];
               }
               flightsByAirportMap[departureCode].push(flight);
             });
-            
+
             setFlightsByAirport(flightsByAirportMap);
             setBestFlights(flightsResult.outbound_flights);
             setOutboundFlightIds(flightsResult.outbound_flight_ids || {});
-            
+
             // Restore selected outbound flight
             if (flightsResult.selected_outbound_index !== null && flightsResult.selected_outbound_index !== undefined) {
               setSelectedOutboundIndex(flightsResult.selected_outbound_index);
@@ -1646,15 +1652,15 @@ const ChatWindow = ({
             console.log("Restoring hotels from database:", hotelsResult.hotels);
             setHotels(hotelsResult.hotels);
             setHotelIds(hotelsResult.hotel_ids || {});
-            
+
             // Restore selected hotel
             if (hotelsResult.selected_hotel_index !== null && hotelsResult.selected_hotel_index !== undefined) {
               setSelectedHotelIndex(hotelsResult.selected_hotel_index);
             }
-            
+
             // If hotels exist, user has started hotels phase
             setHasStartedHotels(true);
-            
+
             // If hotel is selected, user has confirmed hotels
             if (hotelsResult.selected_hotel_index !== null) {
               setHasConfirmedHotels(true);
@@ -2391,16 +2397,28 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {tripId && activities.length > 0 && (
-            <div className="flex justify-start">
-              <div className="w-full max-w-md bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm">
+          {tripId && (
+            <div className="mt-6 mb-3 flex items-center justify-center">
+              <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="w-full max-w-xl">
+                <TabsList className="grid grid-cols-4 w-full">
+                  <TabsTrigger value="activities" className="text-xs">Activities</TabsTrigger>
+                  <TabsTrigger value="flights" className="text-xs">Flights</TabsTrigger>
+                  <TabsTrigger value="hotels" className="text-xs">Hotels</TabsTrigger>
+                  <TabsTrigger value="summary" className="text-xs">Summary</TabsTrigger>
+                </TabsList>
+              </Tabs>
+            </div>
+          )}
+          {tripId && activities.length > 0 && activeTab === "activities" && (
+            <div className="flex justify-center">
+              <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm">
                 <p className="text-xs font-semibold text-slate-600 mb-1">
                   Phase 2: Explore activities
                 </p>
                 <p className="text-[11px] text-slate-600 mb-4">
                   Swipe right to like, left to pass, or use the buttons below. Swipe up for maybe.
                 </p>
-                
+
                 {/* Swipe Card Stack */}
                 <div className="relative h-[600px] w-full">
                   {activities
@@ -2451,7 +2469,7 @@ const ChatWindow = ({
                         />
                       );
                     })}
-                  
+
                   {/* Empty state when all activities are reviewed */}
                   {activities.filter((a) => a.preference === "pending").length === 0 && (
                     <div className="flex h-full items-center justify-center">
@@ -2491,7 +2509,7 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {itinerarySummary && (
+          {itinerarySummary && activeTab === "summary" && (
             <div className="flex justify-start">
               <div className="bg-white border border-emerald-500/60 text-slate-900 rounded-lg px-4 py-3 shadow-sm max-w-[75%]">
                 <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
@@ -2500,9 +2518,9 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {itineraryDays.length > 0 && (
-            <div className="flex justify-start">
-              <div className="w-full max-w-xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
+          {itineraryDays.length > 0 && activeTab === "summary" && (
+            <div className="flex justify-center">
+              <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
                 <p className="text-xs font-semibold text-slate-600">
                   Phase 3: Day-by-day trip sketch
                 </p>
@@ -2604,13 +2622,13 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {hasConfirmedTripSketch && (
-            <div className="flex justify-start">
-              <div className="w-full max-w-xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
+          {hasConfirmedTripSketch && activeTab === "flights" && (
+            <div className="flex justify-center">
+              <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
                 <p className="text-xs font-semibold text-slate-600">
                   Phase 4 Part 1: Plan your flights
                 </p>
-                
+
                 {/* Departure Location */}
                 <div className="space-y-2">
                   <Label className="text-slate-800 text-xs">Departure location (your home town)</Label>
@@ -2792,7 +2810,7 @@ const ChatWindow = ({
                 {bestFlights.length > 0 && returnFlights.length === 0 && (
                   <div className="space-y-4 pt-2 border-t border-blue-200">
                     <p className="text-xs font-semibold text-slate-600">Step 1: Select your outbound flight</p>
-                    
+
                     {/* Group flights by departure airport */}
                     {Object.keys(flightsByAirport).length > 0 ? (
                       // Display flights grouped by departure airport
@@ -2819,8 +2837,8 @@ const ChatWindow = ({
                               // Fallback to object reference or other matching
                               if (globalIndex < 0) {
                                 globalIndex = bestFlights.findIndex(
-                                  f => f === flightOption || 
-                                  (f.departure_airport_code === airportCode && 
+                                  f => f === flightOption ||
+                                  (f.departure_airport_code === airportCode &&
                                    f.price === flightOption.price &&
                                    f.total_duration === flightOption.total_duration &&
                                    JSON.stringify(f.flights) === JSON.stringify(flightOption.flights))
@@ -2854,7 +2872,7 @@ const ChatWindow = ({
                                 setSelectedReturnIndex(null);
                                 setReturnFlights([]);
                               }
-                              
+
                               setSelectedOutboundIndex(index);
                               // Update selection in database
                               // Wait a bit for flight_id to be available if save is still in progress
@@ -2862,7 +2880,7 @@ const ChatWindow = ({
                               if (!token || !tripId) return;
 
                               let flightId = outboundFlightIds[index];
-                              
+
                               // If flight_id not available yet, wait a moment and check again
                               if (!flightId) {
                                 await new Promise(resolve => setTimeout(resolve, 500));
@@ -2884,7 +2902,7 @@ const ChatWindow = ({
                                       is_selected: true,
                                     }),
                                   });
-                                  
+
                                   const result = await response.json();
                                   if (result.success) {
                                     console.log("Successfully updated outbound flight selection");
@@ -2919,7 +2937,7 @@ const ChatWindow = ({
                                             is_selected: true,
                                           }),
                                         });
-                                        
+
                                         const result = await response.json();
                                         if (result.success && selectedReturnIndex !== null) {
                                           setSelectedReturnIndex(null);
@@ -3007,7 +3025,7 @@ const ChatWindow = ({
                                 setSelectedReturnIndex(null);
                                 setReturnFlights([]);
                               }
-                              
+
                               setSelectedOutboundIndex(index);
                               // Update selection in database
                               // Wait a bit for flight_id to be available if save is still in progress
@@ -3015,7 +3033,7 @@ const ChatWindow = ({
                               if (!token || !tripId) return;
 
                               let flightId = outboundFlightIds[index];
-                              
+
                               // If flight_id not available yet, wait a moment and check again
                               if (!flightId) {
                                 await new Promise(resolve => setTimeout(resolve, 500));
@@ -3037,7 +3055,7 @@ const ChatWindow = ({
                                       is_selected: true,
                                     }),
                                   });
-                                  
+
                                   const result = await response.json();
                                   if (result.success) {
                                     console.log("Successfully updated outbound flight selection");
@@ -3094,7 +3112,7 @@ const ChatWindow = ({
                         })}
                       </div>
                     )}
-                    
+
                     {/* Choose Return Flight Button - Show when return flights are NOT loaded or when user wants to refresh */}
                     {selectedOutboundIndex !== null && bestFlights[selectedOutboundIndex] && returnFlights.length === 0 && (
                       <div className="pt-2 flex justify-end">
@@ -3133,7 +3151,7 @@ const ChatWindow = ({
                             console.log("Departure token truthy:", !!selectedFlight?.departure_token);
                             console.log("Current returnFlights.length:", returnFlights.length);
                             console.log("isFetchingReturnFlights:", isFetchingReturnFlights);
-                            
+
                             // Check if departure_token exists - handle both null and undefined
                             const departureToken = selectedFlight?.departure_token;
                             if (!departureToken || departureToken === null || departureToken === undefined || departureToken === '') {
@@ -3217,7 +3235,7 @@ const ChatWindow = ({
                         </Button>
                       </div>
                     </div>
-                    
+
                     {/* Show Selected Outbound */}
                     {bestFlights[selectedOutboundIndex] && (() => {
                       const selectedOutbound = bestFlights[selectedOutboundIndex];
@@ -3274,7 +3292,7 @@ const ChatWindow = ({
                               if (!token || !tripId) return;
 
                               let flightId = returnFlightIds[index];
-                              
+
                               // If flight_id not available yet, wait a moment and check again
                               if (!flightId) {
                                 await new Promise(resolve => setTimeout(resolve, 500));
@@ -3406,7 +3424,7 @@ const ChatWindow = ({
                         <div className="mt-3 pt-3 border-t border-emerald-500/30">
                           <p className="text-sm font-semibold text-emerald-400">
                             Total: ${(
-                              (bestFlights[selectedOutboundIndex]?.price || 0) + 
+                              (bestFlights[selectedOutboundIndex]?.price || 0) +
                               (returnFlights[selectedReturnIndex]?.price || 0)
                             ).toLocaleString()}
                           </p>
@@ -3434,9 +3452,9 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {hasStartedHotels && (
-            <div className="flex justify-start">
-              <div className="w-full max-w-xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
+          {hasStartedHotels && activeTab === "hotels" && (
+            <div className="flex justify-center">
+              <div className="w-full max-w-4xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
                 <p className="text-xs font-semibold text-slate-600">
                   Phase 4 Part 2: Book your hotels
                 </p>
@@ -3481,17 +3499,17 @@ const ChatWindow = ({
                     <div className="space-y-3">
                       {hotels.map((hotel, index) => {
                         const isSelected = selectedHotelIndex === index;
-                        const hotelImage = hotel.images && hotel.images.length > 0 
-                          ? hotel.images[0].original_image || hotel.images[0].thumbnail 
+                        const hotelImage = hotel.images && hotel.images.length > 0
+                          ? hotel.images[0].original_image || hotel.images[0].thumbnail
                           : null;
-                        
+
                         // Extract rate per night - prioritize rate_per_night over total_rate
                         // Use extracted_lowest (Float) first, then fall back to lowest (String with currency)
-                        const ratePerNight = 
+                        const ratePerNight =
                           (hotel.rate_per_night?.extracted_lowest !== undefined && hotel.rate_per_night?.extracted_lowest !== null)
                             ? hotel.rate_per_night.extracted_lowest
                             : hotel.rate_per_night?.lowest || null;
-                        
+
                         const rating = hotel.overall_rating ? `${hotel.overall_rating.toFixed(1)} ⭐` : null;
                         const reviews = hotel.reviews ? `${hotel.reviews.toLocaleString()} reviews` : null;
 
@@ -3505,13 +3523,13 @@ const ChatWindow = ({
                             }`}
                             onClick={async () => {
                               setSelectedHotelIndex(index);
-                              
+
                               // Update selection in database
                               const token = getAuthToken();
                               if (!token || !tripId) return;
 
                               let hotelId = hotelIds[index];
-                              
+
                               // If hotel_id not available yet, wait a moment and check again
                               if (!hotelId) {
                                 await new Promise(resolve => setTimeout(resolve, 500));
@@ -3533,7 +3551,7 @@ const ChatWindow = ({
                                       is_selected: true,
                                     }),
                                   });
-                                  
+
                                   const result = await response.json();
                                   if (result.success) {
                                     console.log("Successfully updated hotel selection");
@@ -3581,7 +3599,7 @@ const ChatWindow = ({
                                   />
                                 </div>
                               )}
-                              
+
                               {/* Hotel Info */}
                               <div className="flex-1 space-y-2">
                                 <div>
@@ -3590,7 +3608,7 @@ const ChatWindow = ({
                                     <p className="text-[11px] text-slate-500">{hotel.hotel_class}</p>
                                   )}
                                 </div>
-                                
+
                                 {hotel.description && (
                                   <p className="text-[11px] text-slate-500 line-clamp-2">{hotel.description}</p>
                                 )}
@@ -3636,10 +3654,10 @@ const ChatWindow = ({
                                           (() => {
                                             const details = propertyDetails[index];
                                             // Extract booking options only from featured_prices array
-                                            const bookingOptions = details.featured_prices && Array.isArray(details.featured_prices) 
-                                              ? details.featured_prices 
+                                            const bookingOptions = details.featured_prices && Array.isArray(details.featured_prices)
+                                              ? details.featured_prices
                                               : [];
-                                            
+
                                             if (bookingOptions.length === 0) {
                                               return (
                                                 <p className="text-[11px] text-slate-500">No booking options available</p>
@@ -3652,7 +3670,7 @@ const ChatWindow = ({
                                                   const source = option.source || 'Booking site';
                                                   const price = option.rate_per_night?.lowest || null;
                                                   const link = option.link || option.url || null;
-                                                  
+
                                                   return (
                                                     <div key={optionIdx} className="flex items-center justify-between p-2 bg-blue-50 rounded border border-blue-200">
                                                       <div className="flex-1 min-w-0">
@@ -3729,8 +3747,8 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {hasConfirmedHotels && (
-            <div className="flex justify-start">
+          {hasConfirmedHotels && activeTab === "summary" && (
+            <div className="flex justify-center">
               <div className="w-full max-w-4xl bg-white border border-blue-100 text-slate-900 rounded-lg px-6 py-5 shadow-lg space-y-4">
                 {isGeneratingFinalItinerary ? (
                   <div className="flex items-center gap-3 py-8">
@@ -3877,6 +3895,18 @@ const ChatWindow = ({
                         </div>
                       );
                     })}
+                    {tripId && (
+                      <div className="mt-6 flex justify-end">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 px-3 border-blue-200 bg-white text-xs text-slate-900 hover:bg-blue-50"
+                          onClick={() => navigate(`/trip/${tripId}/final-itinerary`)}
+                        >
+                          View / edit full itinerary
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="text-center py-8">
@@ -3899,7 +3929,7 @@ const ChatWindow = ({
         </div>
       </ScrollArea>
 
-      {/* Input Area */}
+      {/* Input Area - always available for quick chat-style questions */}
       <div className="p-4 border-t border-blue-500 bg-blue-800/30">
         <div className="relative flex items-center gap-2">
           <div className="absolute left-3 z-10">
