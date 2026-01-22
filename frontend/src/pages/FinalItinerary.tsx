@@ -5,8 +5,51 @@ import DashboardSidebar from "@/components/DashboardSidebar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from "@/components/ui/dialog";
 import { getApiUrl } from "@/lib/api";
 import { ArrowLeft, Plus, Trash2, X } from "lucide-react";
+
+type FlightLeg = {
+  departure_airport?: {
+    id?: string;
+    name?: string;
+    time?: string;
+  };
+  arrival_airport?: {
+    id?: string;
+    name?: string;
+    time?: string;
+  };
+  airline?: string;
+};
+
+type FlightLayover = {
+  id?: string;
+  name?: string;
+  duration?: number;
+  overnight?: boolean;
+};
+
+type FinalItineraryFlight = {
+  departure_id?: string;
+  arrival_id?: string;
+  price?: number;
+  total_duration?: number;
+  flights?: FlightLeg[];
+  layovers?: FlightLayover[];
+};
+
+type FinalItineraryHotel = {
+  hotel_id?: number;
+  name?: string;
+  location?: string;
+  rate_per_night?: number;
+  rate_per_night_formatted?: string;
+  link?: string;
+  overall_rating?: number;
+  check_in_time?: string;
+  check_out_time?: string;
+};
 
 type FinalItineraryDay = {
   day_number: number;
@@ -23,33 +66,9 @@ type FinalItineraryDay = {
     source?: string;
     description?: string;
   }>;
-  outbound_flight?: {
-    departure_id?: string;
-    arrival_id?: string;
-    price?: number;
-    total_duration?: number;
-    flights?: unknown;
-    layovers?: unknown;
-  };
-  return_flight?: {
-    departure_id?: string;
-    arrival_id?: string;
-    price?: number;
-    total_duration?: number;
-    flights?: unknown;
-    layovers?: unknown;
-  };
-  hotel?: {
-    hotel_id?: number;
-    name?: string;
-    location?: string;
-    rate_per_night?: number;
-    rate_per_night_formatted?: string;
-    link?: string;
-    overall_rating?: number;
-    check_in_time?: string;
-    check_out_time?: string;
-  };
+  outbound_flight?: FinalItineraryFlight;
+  return_flight?: FinalItineraryFlight;
+  hotel?: FinalItineraryHotel;
 };
 
 type FinalItineraryData = {
@@ -72,6 +91,13 @@ const formatDate = (dateString?: string | null) => {
     month: "long",
     day: "numeric",
   });
+};
+
+const formatDuration = (minutes?: number) => {
+  if (!minutes || minutes <= 0) return null;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${hours}h ${mins}m`;
 };
 
 const FinalItinerary = () => {
@@ -125,7 +151,7 @@ const FinalItinerary = () => {
 
   const handleAddActivity = async (dayNumber: number) => {
     if (!tripId) return;
-    
+
     const form = formData[dayNumber];
     if (!form || !form.name.trim()) {
       alert("Please provide an activity name (short description)");
@@ -344,17 +370,144 @@ const FinalItinerary = () => {
                           )}
 
                           {day.outbound_flight && (
-                            <div className="mt-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-slate-600">
-                              <span className="text-blue-600 font-semibold">✈️ Outbound</span>{" "}
-                              {day.outbound_flight.departure_id} → {day.outbound_flight.arrival_id}
-                            </div>
+                            <Dialog>
+                              <DialogTrigger asChild>
+                                <button className="mt-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-slate-600 text-left w-full hover:border-blue-300 hover:bg-blue-50/80 transition-colors">
+                                  <span className="text-blue-600 font-semibold">✈️ Outbound</span>{" "}
+                                  {day.outbound_flight.departure_id} → {day.outbound_flight.arrival_id}
+                                </button>
+                              </DialogTrigger>
+                              <DialogContent className="max-w-lg">
+                                <DialogHeader>
+                                  <DialogTitle>Outbound flight details</DialogTitle>
+                                  <DialogDescription>
+                                    Saved at booking time for this trip.
+                                  </DialogDescription>
+                                </DialogHeader>
+                                <div className="space-y-2 text-sm text-slate-700">
+                                  <p>
+                                    <span className="font-semibold">Route:</span>{" "}
+                                    {day.outbound_flight.departure_id} → {day.outbound_flight.arrival_id}
+                                  </p>
+                                  {typeof day.outbound_flight.price === "number" && (
+                                    <p>
+                                      <span className="font-semibold">Price:</span>{" "}
+                                      ${day.outbound_flight.price.toLocaleString()}
+                                    </p>
+                                  )}
+                                  {formatDuration(day.outbound_flight.total_duration) && (
+                                    <p>
+                                      <span className="font-semibold">Total duration:</span>{" "}
+                                      {formatDuration(day.outbound_flight.total_duration)}
+                                    </p>
+                                  )}
+                                  {Array.isArray(day.outbound_flight.flights) && day.outbound_flight.flights.length > 0 && (
+                                    <div className="mt-2">
+                                      <p className="font-semibold text-xs text-slate-600 mb-1">
+                                        Flight segments
+                                      </p>
+                                      <ul className="space-y-1.5 text-xs">
+                                        {day.outbound_flight.flights.map((leg, idx) => (
+                                          <li key={idx} className="rounded border border-blue-100 bg-blue-50/60 px-2 py-1">
+                                            <div className="font-medium">
+                                              {leg.departure_airport?.id} → {leg.arrival_airport?.id}
+                                            </div>
+                                            <div className="text-slate-600">
+                                              {leg.departure_airport?.time} → {leg.arrival_airport?.time}
+                                            </div>
+                                            {leg.airline && (
+                                              <div className="text-slate-500">
+                                                {leg.airline}
+                                              </div>
+                                            )}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                  {Array.isArray(day.outbound_flight.layovers) && day.outbound_flight.layovers.length > 0 && (
+                                    <div className="mt-2">
+                                      <p className="font-semibold text-xs text-slate-600 mb-1">
+                                        Layovers
+                                      </p>
+                                      <ul className="space-y-1 text-xs text-slate-600">
+                                        {day.outbound_flight.layovers.map((layover, idx) => (
+                                          <li key={idx}>
+                                            {layover.name || layover.id}{" "}
+                                            {formatDuration(layover.duration) && `• ${formatDuration(layover.duration)}`}
+                                            {layover.overnight && " • overnight"}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                </div>
+                              </DialogContent>
+                            </Dialog>
                           )}
 
                           {day.hotel && (
-                            <div className="mt-2 rounded-md border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs text-slate-700">
-                              <span className="text-yellow-700 font-semibold">🏨 Hotel</span>{" "}
-                              {day.hotel.name}
-                            </div>
+                            <Dialog>
+                              <DialogTrigger asChild>
+                                <button className="mt-2 rounded-md border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs text-slate-700 text-left w-full hover:border-yellow-300 hover:bg-yellow-50/80 transition-colors">
+                                  <span className="text-yellow-700 font-semibold">🏨 Hotel</span>{" "}
+                                  {day.hotel.name}
+                                </button>
+                              </DialogTrigger>
+                              <DialogContent className="max-w-lg">
+                                <DialogHeader>
+                                  <DialogTitle>Hotel details</DialogTitle>
+                                  <DialogDescription>
+                                    Saved at booking time for this trip.
+                                  </DialogDescription>
+                                </DialogHeader>
+                                <div className="space-y-2 text-sm text-slate-700">
+                                  <p className="font-semibold text-base">{day.hotel.name}</p>
+                                  {day.hotel.location && (
+                                    <p>
+                                      <span className="font-semibold">Location:</span>{" "}
+                                      {day.hotel.location}
+                                    </p>
+                                  )}
+                                  {typeof day.hotel.overall_rating === "number" && (
+                                    <p>
+                                      <span className="font-semibold">Rating:</span>{" "}
+                                      {day.hotel.overall_rating.toFixed(1)} ⭐
+                                    </p>
+                                  )}
+                                  {typeof day.hotel.rate_per_night === "number" && (
+                                    <p>
+                                      <span className="font-semibold">Rate per night:</span>{" "}
+                                      ${day.hotel.rate_per_night.toLocaleString()}
+                                    </p>
+                                  )}
+                                  {day.hotel.check_in_time && (
+                                    <p>
+                                      <span className="font-semibold">Check-in:</span>{" "}
+                                      {day.hotel.check_in_time}
+                                    </p>
+                                  )}
+                                  {day.hotel.check_out_time && (
+                                    <p>
+                                      <span className="font-semibold">Check-out:</span>{" "}
+                                      {day.hotel.check_out_time}
+                                    </p>
+                                  )}
+                                  {day.hotel.link && (
+                                    <div className="pt-2">
+                                      <a
+                                        href={day.hotel.link}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-xs text-blue-600 hover:text-blue-700 underline"
+                                      >
+                                        View booking / property page →
+                                      </a>
+                                    </div>
+                                  )}
+                                </div>
+                              </DialogContent>
+                            </Dialog>
                           )}
 
                           <div className="mt-3 space-y-2">
@@ -528,10 +681,80 @@ const FinalItinerary = () => {
                           </div>
 
                           {day.return_flight && (
-                            <div className="mt-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-slate-600">
-                              <span className="text-blue-600 font-semibold">✈️ Return</span>{" "}
-                              {day.return_flight.departure_id} → {day.return_flight.arrival_id}
-                            </div>
+                            <Dialog>
+                              <DialogTrigger asChild>
+                                <button className="mt-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-slate-600 text-left w-full hover:border-blue-300 hover:bg-blue-50/80 transition-colors">
+                                  <span className="text-blue-600 font-semibold">✈️ Return</span>{" "}
+                                  {day.return_flight.departure_id} → {day.return_flight.arrival_id}
+                                </button>
+                              </DialogTrigger>
+                              <DialogContent className="max-w-lg">
+                                <DialogHeader>
+                                  <DialogTitle>Return flight details</DialogTitle>
+                                  <DialogDescription>
+                                    Saved at booking time for this trip.
+                                  </DialogDescription>
+                                </DialogHeader>
+                                <div className="space-y-2 text-sm text-slate-700">
+                                  <p>
+                                    <span className="font-semibold">Route:</span>{" "}
+                                    {day.return_flight.departure_id} → {day.return_flight.arrival_id}
+                                  </p>
+                                  {typeof day.return_flight.price === "number" && (
+                                    <p>
+                                      <span className="font-semibold">Price:</span>{" "}
+                                      ${day.return_flight.price.toLocaleString()}
+                                    </p>
+                                  )}
+                                  {formatDuration(day.return_flight.total_duration) && (
+                                    <p>
+                                      <span className="font-semibold">Total duration:</span>{" "}
+                                      {formatDuration(day.return_flight.total_duration)}
+                                    </p>
+                                  )}
+                                  {Array.isArray(day.return_flight.flights) && day.return_flight.flights.length > 0 && (
+                                    <div className="mt-2">
+                                      <p className="font-semibold text-xs text-slate-600 mb-1">
+                                        Flight segments
+                                      </p>
+                                      <ul className="space-y-1.5 text-xs">
+                                        {day.return_flight.flights.map((leg, idx) => (
+                                          <li key={idx} className="rounded border border-blue-100 bg-blue-50/60 px-2 py-1">
+                                            <div className="font-medium">
+                                              {leg.departure_airport?.id} → {leg.arrival_airport?.id}
+                                            </div>
+                                            <div className="text-slate-600">
+                                              {leg.departure_airport?.time} → {leg.arrival_airport?.time}
+                                            </div>
+                                            {leg.airline && (
+                                              <div className="text-slate-500">
+                                                {leg.airline}
+                                              </div>
+                                            )}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                  {Array.isArray(day.return_flight.layovers) && day.return_flight.layovers.length > 0 && (
+                                    <div className="mt-2">
+                                      <p className="font-semibold text-xs text-slate-600 mb-1">
+                                        Layovers
+                                      </p>
+                                      <ul className="space-y-1 text-xs text-slate-600">
+                                        {day.return_flight.layovers.map((layover, idx) => (
+                                          <li key={idx}>
+                                            {layover.name || layover.id}{" "}
+                                            {formatDuration(layover.duration) && `• ${formatDuration(layover.duration)}`}
+                                            {layover.overnight && " • overnight"}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                </div>
+                              </DialogContent>
+                            </Dialog>
                           )}
                         </div>
                       );
