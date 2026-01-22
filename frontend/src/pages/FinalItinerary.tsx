@@ -74,6 +74,15 @@ type FinalItineraryDay = {
   hotel?: FinalItineraryHotel;
 };
 
+type MealSlot = "breakfast" | "lunch" | "dinner";
+
+type MealInfo = {
+  name: string;
+  location: string;
+  link?: string;
+  cost?: number;
+};
+
 type FinalItineraryData = {
   trip_id: number;
   trip_title: string;
@@ -148,6 +157,18 @@ const FinalItinerary = () => {
   const [activeTab, setActiveTab] = useState<"overview" | "map" | "budget" | "calendar">("overview");
   const [selectedMapDayIndex, setSelectedMapDayIndex] = useState(0);
   const mapRef = useRef<HTMLDivElement | null>(null);
+  const [travelInfoByDay, setTravelInfoByDay] = useState<
+    Record<number, { segments: { fromLabel: string; toLabel: string; distanceText: string; durationText: string }[] }>
+  >({});
+  const [mealsByDay, setMealsByDay] = useState<Record<number, Partial<Record<MealSlot, MealInfo>>>>({});
+  const [editingMeal, setEditingMeal] = useState<{ dayNumber: number; slot: MealSlot } | null>(null);
+  const [mealForm, setMealForm] = useState<{ name: string; location: string; link: string; cost: string }>({
+    name: "",
+    location: "",
+    link: "",
+    cost: "",
+  });
+  const [dragActivity, setDragActivity] = useState<{ dayNumber: number; index: number } | null>(null);
 
   useEffect(() => {
     const loadFinalItinerary = async () => {
@@ -321,9 +342,10 @@ const FinalItinerary = () => {
     }
   };
 
-  // Simple per-day budget breakdown derived from itinerary
+  // Simple per-day budget breakdown derived from itinerary + user-entered meals
   const computeBudgetData = () => {
-    if (!itinerary) return { daily: [], totals: { flights: 0, hotels: 0, activities: 0, total: 0 } };
+    if (!itinerary)
+      return { daily: [], totals: { flights: 0, hotels: 0, activities: 0, meals: 0, total: 0 } };
 
     const daily = itinerary.days.map((day) => {
       const activityTotal = (day.activities || []).reduce(
@@ -331,6 +353,14 @@ const FinalItinerary = () => {
         0
       );
       const hotelTotal = typeof day.hotel?.rate_per_night === "number" ? day.hotel.rate_per_night : 0;
+      const mealTotal = (() => {
+        const meals = mealsByDay[day.day_number];
+        if (!meals) return 0;
+        return (["breakfast", "lunch", "dinner"] as MealSlot[]).reduce((sum, slot) => {
+          const m = meals[slot];
+          return sum + (m && typeof m.cost === "number" ? m.cost : 0);
+        }, 0);
+      })();
       let flightTotal = 0;
       if (typeof day.outbound_flight?.price === "number") {
         flightTotal += day.outbound_flight.price;
@@ -338,12 +368,13 @@ const FinalItinerary = () => {
       if (typeof day.return_flight?.price === "number") {
         flightTotal += day.return_flight.price;
       }
-      const total = activityTotal + hotelTotal + flightTotal;
+      const total = activityTotal + hotelTotal + flightTotal + mealTotal;
       return {
         day_number: day.day_number,
         date: day.date,
         activityTotal,
         hotelTotal,
+        mealTotal,
         flightTotal,
         total,
       };
@@ -353,11 +384,12 @@ const FinalItinerary = () => {
       (acc, d) => {
         acc.activities += d.activityTotal;
         acc.hotels += d.hotelTotal;
+        acc.meals += d.mealTotal;
         acc.flights += d.flightTotal;
         acc.total += d.total;
         return acc;
       },
-      { flights: 0, hotels: 0, activities: 0, total: 0 }
+      { flights: 0, hotels: 0, activities: 0, meals: 0, total: 0 }
     );
 
     return { daily, totals };
@@ -365,7 +397,6 @@ const FinalItinerary = () => {
 
   useEffect(() => {
     if (!itinerary || activeTab !== "map") return;
-    if (!mapRef.current) return;
     if (!GOOGLE_MAPS_API_KEY) return;
 
     let cancelled = false;
@@ -374,7 +405,17 @@ const FinalItinerary = () => {
       try {
         await loadGoogleMapsApi();
         if (cancelled) return;
-        if (!window.google || !window.google.maps || !mapRef.current) return;
+        if (!window.google || !window.google.maps) return;
+
+        // Wait for the map container to be mounted and visible
+        if (!mapRef.current) {
+          setTimeout(() => {
+            if (!cancelled) {
+              void initMap();
+            }
+          }, 50);
+          return;
+        }
 
         const day = itinerary.days[selectedMapDayIndex] || itinerary.days[0];
         const map = new window.google.maps.Map(mapRef.current, {
@@ -382,6 +423,7 @@ const FinalItinerary = () => {
           zoom: 12,
         });
         const geocoder = new window.google.maps.Geocoder();
+        const distanceMatrix = new window.google.maps.DistanceMatrixService();
         const bounds = new window.google.maps.LatLngBounds();
 
         const locations: { label: string; address: string }[] = [];
@@ -391,6 +433,19 @@ const FinalItinerary = () => {
           .forEach((a) => {
             locations.push({ label: a.name || "Activity", address: a.location! });
           });
+
+        const meals = mealsByDay[day.day_number];
+        if (meals) {
+          (["breakfast", "lunch", "dinner"] as MealSlot[]).forEach((slot) => {
+            const meal = meals[slot];
+            if (meal?.location) {
+              locations.push({
+                label: meal.name || slot.charAt(0).toUpperCase() + slot.slice(1),
+                address: meal.location,
+              });
+            }
+          });
+        }
 
         if (day.hotel?.location) {
           locations.push({ label: day.hotel.name || "Hotel", address: day.hotel.location });
@@ -415,6 +470,40 @@ const FinalItinerary = () => {
             }
           });
         });
+
+        // Also compute travel time/distance between consecutive locations using Distance Matrix
+        if (locations.length > 1) {
+          distanceMatrix.getDistanceMatrix(
+            {
+              origins: locations.map((l) => l.address),
+              destinations: locations.map((l) => l.address),
+              travelMode: window.google.maps.TravelMode.DRIVING,
+              unitSystem: window.google.maps.UnitSystem.IMPERIAL,
+            },
+            (response: any, status: any) => {
+              if (status !== "OK" || !response?.rows) return;
+              const segments: { fromLabel: string; toLabel: string; distanceText: string; durationText: string }[] = [];
+              for (let i = 0; i < locations.length - 1; i++) {
+                const row = response.rows[i];
+                const element = row?.elements?.[i + 1];
+                if (element && element.status === "OK") {
+                  segments.push({
+                    fromLabel: locations[i].label,
+                    toLabel: locations[i + 1].label,
+                    distanceText: element.distance?.text || "",
+                    durationText: element.duration?.text || "",
+                  });
+                }
+              }
+              if (segments.length > 0) {
+                setTravelInfoByDay((prev) => ({
+                  ...prev,
+                  [day.day_number]: { segments },
+                }));
+              }
+            }
+          );
+        }
       } catch (e) {
         console.error("Error initializing Google Maps:", e);
       }
@@ -428,7 +517,7 @@ const FinalItinerary = () => {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [itinerary, activeTab, selectedMapDayIndex]);
+  }, [itinerary, activeTab, selectedMapDayIndex, mealsByDay]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -974,6 +1063,7 @@ const FinalItinerary = () => {
                           { name: "Flights", key: "flights", value: totals.flights },
                           { name: "Hotels", key: "hotels", value: totals.hotels },
                           { name: "Activities", key: "activities", value: totals.activities },
+                          { name: "Meals", key: "meals", value: totals.meals },
                         ].filter((d) => d.value > 0);
 
                         const chartData =
@@ -994,6 +1084,7 @@ const FinalItinerary = () => {
                                     <th className="px-3 py-2 text-right font-semibold text-slate-700">Flights</th>
                                     <th className="px-3 py-2 text-right font-semibold text-slate-700">Hotel</th>
                                     <th className="px-3 py-2 text-right font-semibold text-slate-700">Activities</th>
+                                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Meals</th>
                                     <th className="px-3 py-2 text-right font-semibold text-slate-700">Total</th>
                                   </tr>
                                 </thead>
@@ -1009,6 +1100,9 @@ const FinalItinerary = () => {
                                       </td>
                                       <td className="px-3 py-2 text-right text-slate-600">
                                         {d.activityTotal ? `$${d.activityTotal.toLocaleString()}` : "—"}
+                                      </td>
+                                      <td className="px-3 py-2 text-right text-slate-600">
+                                        {d.mealTotal ? `$${d.mealTotal.toLocaleString()}` : "—"}
                                       </td>
                                       <td className="px-3 py-2 text-right font-semibold text-slate-800">
                                         {d.total ? `$${d.total.toLocaleString()}` : "—"}
@@ -1026,6 +1120,7 @@ const FinalItinerary = () => {
                                     flights: { label: "Flights", color: "#0ea5e9" }, // sky-500
                                     hotels: { label: "Hotels", color: "#f97316" },  // orange-500
                                     activities: { label: "Activities", color: "#22c55e" }, // emerald-500
+                                    meals: { label: "Meals", color: "#6366f1" }, // indigo-500
                                     unused: { label: "Unused budget", color: "#94a3b8" }, // slate-400
                                   }}
                                   className="h-[260px]"
@@ -1050,6 +1145,8 @@ const FinalItinerary = () => {
                                               ? "var(--color-hotels)"
                                               : entry.key === "activities"
                                               ? "var(--color-activities)"
+                                              : entry.key === "meals"
+                                              ? "var(--color-meals)"
                                               : "var(--color-unused)"
                                           }
                                         />
@@ -1109,32 +1206,338 @@ const FinalItinerary = () => {
                               </div>
                             </div>
                             <div className="space-y-1.5 mt-1">
-                              {(day.activities || []).map((act, idx) => {
-                                const slot =
-                                  idx === 0 ? "Morning" : idx === 1 ? "Afternoon" : idx === 2 ? "Evening" : "Anytime";
-                                return (
-                                  <div
-                                    key={idx}
-                                    className="flex items-start gap-2 rounded-md border border-blue-100 bg-white px-2 py-1.5 text-[11px]"
-                                  >
-                                    <span className="mt-[1px] inline-flex rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
-                                      {slot}
-                                    </span>
-                                    <div className="flex-1">
-                                      <p className="font-semibold text-slate-900">
-                                        {act.name || "Activity"}
-                                      </p>
-                                      {act.location && (
-                                        <p className="text-[10px] text-slate-500">📍 {act.location}</p>
-                                      )}
+                              {(() => {
+                                const activities = day.activities || [];
+                                const morningActs = activities.slice(0, 1).map((act, i) => ({
+                                  act,
+                                  index: i,
+                                }));
+                                const afternoonActs = activities.slice(1, 2).map((act, i) => ({
+                                  act,
+                                  index: 1 + i,
+                                }));
+                                const eveningActs = activities.slice(2, 3).map((act, i) => ({
+                                  act,
+                                  index: 2 + i,
+                                }));
+                                const anytimeActs = activities.slice(3).map((act, i) => ({
+                                  act,
+                                  index: 3 + i,
+                                }));
+
+                                const dayMeals = mealsByDay[day.day_number] || {};
+                                const travelSegments = travelInfoByDay[day.day_number]?.segments || [];
+
+                                type Row =
+                                  | { kind: "meal"; slot: MealSlot; label: string; location?: string }
+                                  | {
+                                      kind: "activity";
+                                      slotLabel: string;
+                                      label: string;
+                                      location?: string;
+                                      activityIndex: number;
+                                    };
+
+                                const rows: Row[] = [];
+
+                                const pushMeal = (slot: MealSlot) => {
+                                  const meal = dayMeals[slot];
+                                  const label = slot.charAt(0).toUpperCase() + slot.slice(1);
+                                  rows.push({
+                                    kind: "meal",
+                                    slot,
+                                    label: meal?.name || label,
+                                    location: meal?.location,
+                                  });
+                                };
+
+                                const pushActs = (
+                                  acts: { act: FinalItineraryDay["activities"][number]; index: number }[],
+                                  slotLabel: string
+                                ) => {
+                                  acts.forEach(({ act, index }) => {
+                                    rows.push({
+                                      kind: "activity",
+                                      slotLabel,
+                                      label: act?.name || "Activity",
+                                      location: act?.location,
+                                      activityIndex: index,
+                                    });
+                                  });
+                                };
+
+                                // Build chronological rows: breakfast → morning → lunch → afternoon → dinner → evening → anytime
+                                pushMeal("breakfast");
+                                pushActs(morningActs, "Morning");
+                                pushMeal("lunch");
+                                pushActs(afternoonActs, "Afternoon");
+                                pushMeal("dinner");
+                                pushActs(eveningActs, "Evening");
+                                pushActs(anytimeActs, "Anytime");
+
+                                const renderRow = (row: Row, idx: number) => {
+                                  if (row.kind === "meal") {
+                                    const slot = row.slot;
+                                    const label = slot.charAt(0).toUpperCase() + slot.slice(1);
+                                    const meal = dayMeals[slot];
+                                    return (
+                                      <button
+                                        key={`row-${idx}`}
+                                        type="button"
+                                        className="flex w-full items-start gap-2 rounded-md border border-dashed border-amber-200 bg-amber-50/60 px-2 py-1.5 text-[11px] text-left hover:border-amber-300 hover:bg-amber-50"
+                                        onClick={() => {
+                                          setEditingMeal({ dayNumber: day.day_number, slot });
+                                          setMealForm({
+                                            name: meal?.name || "",
+                                            location: meal?.location || (itinerary.destination || ""),
+                                            link: meal?.link || "",
+                                            cost: typeof meal?.cost === "number" ? String(meal.cost) : "",
+                                          });
+                                        }}
+                                      >
+                                        <span className="mt-[1px] inline-flex rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
+                                          {label}
+                                        </span>
+                                        <div className="flex-1">
+                                          {meal ? (
+                                            <>
+                                              <p className="font-semibold text-slate-900">
+                                                {meal.name || `${label} spot`}
+                                              </p>
+                                              {meal.location && (
+                                                <p className="text-[10px] text-slate-500">📍 {meal.location}</p>
+                                              )}
+                                            </>
+                                          ) : (
+                                            <p className="text-[10px] text-slate-500">
+                                              Add a {label.toLowerCase()} restaurant (name & location)
+                                            </p>
+                                          )}
+                                        </div>
+                                      </button>
+                                    );
+                                  }
+
+                                  return (
+                                    <div
+                                      key={`row-${idx}`}
+                                      draggable
+                                      onDragStart={() =>
+                                        setDragActivity(
+                                          row.activityIndex != null
+                                            ? { dayNumber: day.day_number, index: row.activityIndex }
+                                            : null
+                                        )
+                                      }
+                                      onDragOver={(e) => {
+                                        if (dragActivity && dragActivity.dayNumber === day.day_number) {
+                                          e.preventDefault();
+                                        }
+                                      }}
+                                      onDrop={() => {
+                                        if (
+                                          !dragActivity ||
+                                          dragActivity.dayNumber !== day.day_number ||
+                                          row.activityIndex == null ||
+                                          dragActivity.index === row.activityIndex
+                                        ) {
+                                          return;
+                                        }
+                                        setItinerary((prev) => {
+                                          if (!prev) return prev;
+                                          const days = prev.days.map((d) => {
+                                            if (d.day_number !== day.day_number) return d;
+                                            const acts = d.activities ? [...d.activities] : [];
+                                            if (
+                                              dragActivity.index < 0 ||
+                                              dragActivity.index >= acts.length ||
+                                              row.activityIndex == null ||
+                                              row.activityIndex < 0 ||
+                                              row.activityIndex >= acts.length
+                                            ) {
+                                              return d;
+                                            }
+                                            const [moved] = acts.splice(dragActivity.index, 1);
+                                            acts.splice(row.activityIndex, 0, moved);
+                                            return { ...d, activities: acts };
+                                          });
+                                          return { ...prev, days };
+                                        });
+                                        setDragActivity(null);
+                                      }}
+                                      className="flex items-start gap-2 rounded-md border border-blue-100 bg-white px-2 py-1.5 text-[11px] cursor-move"
+                                    >
+                                      <span className="mt-[1px] inline-flex rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
+                                        {row.slotLabel}
+                                      </span>
+                                      <div className="flex-1">
+                                        <p className="font-semibold text-slate-900">
+                                          {row.label || "Activity"}
+                                        </p>
+                                        {row.location && (
+                                          <p className="text-[10px] text-slate-500">📍 {row.location}</p>
+                                        )}
+                                      </div>
                                     </div>
-                                  </div>
-                                );
-                              })}
+                                  );
+                                };
+
+                                const renderTransit = (fromLabel: string, toLabel: string, idx: number) => {
+                                  const seg = travelSegments.find(
+                                    (s) => s.fromLabel === fromLabel && s.toLabel === toLabel
+                                  );
+                                  if (!seg) return null;
+                                  return (
+                                    <div
+                                      key={`transit-${idx}`}
+                                      className="flex items-center gap-2 rounded-md border border-dashed border-slate-200 bg-slate-50 px-2 py-1 text-[10px] text-slate-600"
+                                    >
+                                      <span className="inline-flex rounded-full bg-slate-200 px-1.5 py-0.5 text-[9px] font-semibold text-slate-700">
+                                        Transit
+                                      </span>
+                                      <span>
+                                        {seg.fromLabel} → {seg.toLabel}: {seg.durationText} ({seg.distanceText})
+                                      </span>
+                                    </div>
+                                  );
+                                };
+
+                                const elements: JSX.Element[] = [];
+                                rows.forEach((row, idx) => {
+                                  elements.push(renderRow(row, idx));
+                                  if (idx < rows.length - 1) {
+                                    const next = rows[idx + 1];
+                                    elements.push(renderTransit(row.label, next.label, idx) as any);
+                                  }
+                                });
+
+                                return elements;
+                              })()}
                             </div>
                           </div>
                         ))}
                       </div>
+
+                      {/* Meal edit dialog (shared across days) */}
+                      <Dialog
+                        open={!!editingMeal}
+                        onOpenChange={(open) => {
+                          if (!open) setEditingMeal(null);
+                        }}
+                      >
+                        <DialogContent className="max-w-sm">
+                          <DialogHeader>
+                            <DialogTitle>
+                              {editingMeal
+                                ? `Edit ${
+                                    editingMeal.slot.charAt(0).toUpperCase() + editingMeal.slot.slice(1)
+                                  } spot for Day ${editingMeal.dayNumber}`
+                                : "Edit meal"}
+                            </DialogTitle>
+                            <DialogDescription>
+                              Add a restaurant name, location, and optional link. This will appear in your calendar and
+                              on the map.
+                            </DialogDescription>
+                          </DialogHeader>
+                          <div className="space-y-3 mt-2">
+                            <div>
+                              <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                                Restaurant name
+                              </label>
+                              <Input
+                                value={mealForm.name}
+                                onChange={(e) => setMealForm((prev) => ({ ...prev, name: e.target.value }))}
+                                placeholder="e.g., Joe's Diner"
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                                Location (street address or place)
+                              </label>
+                              <Input
+                                value={mealForm.location}
+                                onChange={(e) => setMealForm((prev) => ({ ...prev, location: e.target.value }))}
+                                placeholder={itinerary.destination || "e.g., 123 Main St, City"}
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                                Link (optional)
+                              </label>
+                              <Input
+                                type="url"
+                                value={mealForm.link}
+                                onChange={(e) => setMealForm((prev) => ({ ...prev, link: e.target.value }))}
+                                placeholder="https://..."
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                                Estimated price (optional)
+                              </label>
+                              <Input
+                                type="number"
+                                min="0"
+                                value={mealForm.cost}
+                                onChange={(e) => setMealForm((prev) => ({ ...prev, cost: e.target.value }))}
+                                placeholder="e.g., 25"
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                          </div>
+                          <div className="mt-4 flex justify-between items-center">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-3 text-xs"
+                              onClick={() => {
+                                if (!editingMeal) return;
+                                setMealsByDay((prev) => {
+                                  const copy = { ...prev };
+                                  const dayMeals = { ...(copy[editingMeal.dayNumber] || {}) };
+                                  delete dayMeals[editingMeal.slot];
+                                  copy[editingMeal.dayNumber] = dayMeals;
+                                  return copy;
+                                });
+                                setEditingMeal(null);
+                              }}
+                            >
+                              Clear
+                            </Button>
+                            <Button
+                              size="sm"
+                              className="h-7 px-3 text-xs"
+                              onClick={() => {
+                                if (!editingMeal) return;
+                                if (!mealForm.location.trim() && !mealForm.name.trim()) {
+                                  // Nothing meaningful to save
+                                  setEditingMeal(null);
+                                  return;
+                                }
+                                const parsedCost = parseFloat(mealForm.cost);
+                                setMealsByDay((prev) => ({
+                                  ...prev,
+                                  [editingMeal.dayNumber]: {
+                                    ...(prev[editingMeal.dayNumber] || {}),
+                                    [editingMeal.slot]: {
+                                      name: mealForm.name.trim() || "",
+                                      location: mealForm.location.trim(),
+                                      link: mealForm.link.trim() || undefined,
+                                      cost: !Number.isNaN(parsedCost) && parsedCost >= 0 ? parsedCost : undefined,
+                                    },
+                                  },
+                                }));
+                                setEditingMeal(null);
+                              }}
+                            >
+                              Save
+                            </Button>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
                     </TabsContent>
                   </Tabs>
                 </div>

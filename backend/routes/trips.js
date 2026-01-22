@@ -18,6 +18,7 @@ const DEFAULT_MODEL = process.env.OPENAI_MODEL || 'gpt-3.5-turbo';
 
 const GOOGLE_CUSTOM_SEARCH_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
 const GOOGLE_CUSTOM_SEARCH_CX = process.env.GOOGLE_CUSTOM_SEARCH_CX;
+const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 
 async function generateTripTitleFromMessage(message) {
   if (!message || typeof message !== 'string') return null;
@@ -555,6 +556,38 @@ async function extractActivityDetails(name, snippet, link) {
   return { priceRange, costEstimate, duration };
 }
 
+// Use Google Places Text Search to get a precise street address for an activity
+async function fetchActivityAddress(name, destination) {
+  if (!GOOGLE_MAPS_API_KEY) {
+    return null;
+  }
+
+  try {
+    const parts = [];
+    if (name) parts.push(name);
+    if (destination) parts.push(destination);
+    if (parts.length === 0) return null;
+
+    const query = encodeURIComponent(parts.join(' '));
+    const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${query}&key=${GOOGLE_MAPS_API_KEY}`;
+
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error('Failed to fetch activity address from Google Places:', res.status, res.statusText);
+      return null;
+    }
+
+    const data = await res.json();
+    const place = data?.results && data.results[0];
+    if (!place) return null;
+
+    return place.formatted_address || null;
+  } catch (err) {
+    console.error('Error fetching activity address from Google Places:', err);
+    return null;
+  }
+}
+
 async function fetchActivityImage(activityName, destination) {
   if (!GOOGLE_CUSTOM_SEARCH_API_KEY || !GOOGLE_CUSTOM_SEARCH_CX) {
     return null;
@@ -643,7 +676,7 @@ function matchesAvoidCategory(activityName, activityCategory, snippet, avoidCate
 }
 
 async function upsertReusableActivityFromSearchItem(item, destination, preferences = null, userProfile = null) {
-  const location = destination || null;
+  let location = destination || null;
   const snippet = item.snippet || '';
   const originalLink = item.link || '';
 
@@ -693,7 +726,41 @@ async function upsertReusableActivityFromSearchItem(item, destination, preferenc
   // At this point, we ALWAYS have some non-empty name string
 
   // Extract additional details
-  const { priceRange, costEstimate, duration } = await extractActivityDetails(name, snippet, originalLink);
+  let { priceRange, costEstimate, duration } = await extractActivityDetails(name, snippet, originalLink);
+
+  // Normalize details so final itinerary has concrete values
+  // If we don't get a numeric estimate, infer a rough cost from priceRange or fall back to a default.
+  if (costEstimate === null || costEstimate === undefined) {
+    const lower = (priceRange || '').toLowerCase();
+    if (lower.includes('free') || lower.includes('no cost')) {
+      costEstimate = 0;
+    } else if (lower.includes('budget')) {
+      costEstimate = 20;
+    } else if (lower.includes('moderate')) {
+      costEstimate = 50;
+    } else if (lower.includes('expensive') || lower.includes('luxury')) {
+      costEstimate = 100;
+    } else {
+      // Generic fallback so activities always have a non-null cost for budgeting
+      costEstimate = 30;
+    }
+  }
+
+  if (!duration) {
+    // Provide a reasonable default specific duration for mapping / calendar views
+    duration = '2 hours';
+  }
+
+  // Make location more specific so maps and distances work better:
+  // Prefer an exact street address from Google Places; fall back to "Activity Name, Destination".
+  if (destination && name) {
+    const preciseAddress = await fetchActivityAddress(name, destination);
+    if (preciseAddress) {
+      location = preciseAddress;
+    } else if (!location || location === destination) {
+      location = `${name}, ${destination}`;
+    }
+  }
 
   // Use LLM to accurately categorize the activity
   let category = 'other';
