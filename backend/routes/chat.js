@@ -371,15 +371,47 @@ router.post('/chat', authenticateToken, async (req, res) => {
       console.error('Error loading user profile for chat context:', profileError);
     }
 
-    // Use provided model or default
-    const chatModel = model || DEFAULT_MODEL;
+    // Optionally load trip context if we're chatting inside an existing trip
+    let tripContext = 'No specific trip is currently selected.';
+    let tripDestination = null;
+    if (parsedTripId) {
+      try {
+        const { data: tripData } = await supabase
+          .from('trip')
+          .select('title, destination')
+          .eq('trip_id', parsedTripId)
+          .maybeSingle();
 
-    // Build messages array from conversation history + new message
-    const messages = [
-      // System prompt for travel assistant
-      {
-        role: 'system',
-        content: `You are a helpful travel planning assistant for PinDrop. Help users plan their trips, suggest destinations, activities, and itineraries. Be friendly, informative, and provide practical travel advice.
+        if (tripData) {
+          tripDestination = tripData.destination || null;
+          const title = tripData.title || 'Your trip';
+          tripContext = `Current trip: ${title}. Destination: ${tripData.destination || 'not specified'}.`;
+        }
+      } catch (tripLoadError) {
+        console.error('Error loading trip context for chat:', tripLoadError);
+      }
+    }
+
+    // Build system prompt differently depending on whether we're exploring destinations
+    // or chatting inside a specific trip.
+    let systemPrompt;
+    if (parsedTripId) {
+      systemPrompt = `You are a helpful travel planning assistant for PinDrop.
+
+The user is already planning a specific trip. ${tripContext}
+
+Your job is to answer concrete questions and help refine THIS trip only (activities, logistics, tips, neighborhoods, safety, etc.).
+
+- Do NOT suggest alternative destinations unless the user explicitly says they want to change where they are going.
+- Do NOT use any "Destination Idea 1/2/3" style format or propose multiple destination ideas.
+- Treat the destination above as fixed and answer the user's specific question as directly and practically as possible.
+
+Here is the user's saved profile and preferences (from the app_user table):
+${userProfileContext}
+
+When you recommend activities, explain briefly why they fit these preferences.`;
+    } else {
+      systemPrompt = `You are a helpful travel planning assistant for PinDrop. Help users plan their trips, suggest destinations, activities, and itineraries. Be friendly, informative, and provide practical travel advice.
 
 Here is the user's saved profile and preferences (from the app_user table):
 ${userProfileContext}
@@ -395,7 +427,18 @@ Destination Idea 2: <short destination name>
 Destination Idea 3: <short destination name>
 <one or two short sentences explaining why this destination fits their preferences>
 
-When you recommend activities, also explain briefly why they fit these preferences.`,
+When you recommend activities, also explain briefly why they fit these preferences.`;
+    }
+
+    // Use provided model or default
+    const chatModel = model || DEFAULT_MODEL;
+
+    // Build messages array from conversation history + new message
+    const messages = [
+      // System prompt for travel assistant (varies based on trip context)
+      {
+        role: 'system',
+        content: systemPrompt,
       },
       // Add conversation history from database
       ...trimmedHistory,
@@ -535,22 +578,45 @@ router.post('/chat/stream', authenticateToken, async (req, res) => {
       console.error('Error loading user profile for chat stream context:', profileError);
     }
 
-    // To avoid hitting TPM / context limits on the model, only send the
-    // most recent slice of the conversation to the LLM.
-    const MAX_CONTEXT_MESSAGES = 12;
-    const trimmedHistory =
-      conversationHistory.length > MAX_CONTEXT_MESSAGES
-        ? conversationHistory.slice(-MAX_CONTEXT_MESSAGES)
-        : conversationHistory;
+    // Optionally load trip context if we're chatting inside an existing trip
+    let tripContext = 'No specific trip is currently selected.';
+    if (parsedTripId) {
+      try {
+        const { data: tripData } = await supabase
+          .from('trip')
+          .select('title, destination')
+          .eq('trip_id', parsedTripId)
+          .maybeSingle();
 
-    // Use provided model or default
-    const chatModel = model || DEFAULT_MODEL;
+        if (tripData) {
+          const title = tripData.title || 'Your trip';
+          tripContext = `Current trip: ${title}. Destination: ${tripData.destination || 'not specified'}.`;
+        }
+      } catch (tripLoadError) {
+        console.error('Error loading trip context for chat stream:', tripLoadError);
+      }
+    }
 
-    // Build messages array
-    const messages = [
-      {
-        role: 'system',
-        content: `You are a helpful travel planning assistant for PinDrop. Help users plan their trips, suggest destinations, activities, and itineraries. Be friendly, informative, and provide practical travel advice.
+    // Build system prompt differently depending on whether we're exploring destinations
+    // or chatting inside a specific trip.
+    let systemPrompt;
+    if (parsedTripId) {
+      systemPrompt = `You are a helpful travel planning assistant for PinDrop.
+
+The user is already planning a specific trip. ${tripContext}
+
+Your job is to answer concrete questions and help refine THIS trip only (activities, logistics, tips, neighborhoods, safety, etc.).
+
+- Do NOT suggest alternative destinations unless the user explicitly says they want to change where they are going.
+- Do NOT use any "Destination Idea 1/2/3" style format or propose multiple destination ideas.
+- Treat the destination above as fixed and answer the user's specific question as directly and practically as possible.
+
+Here is the user's saved profile and preferences (from the app_user table):
+${userProfileContext}
+
+When you recommend activities, explain briefly why they fit these preferences.`;
+    } else {
+      systemPrompt = `You are a helpful travel planning assistant for PinDrop. Help users plan their trips, suggest destinations, activities, and itineraries. Be friendly, informative, and provide practical travel advice.
 
 Here is the user's saved profile and preferences (from the app_user table):
 ${userProfileContext}
@@ -566,7 +632,25 @@ Destination Idea 2: <short destination name>
 Destination Idea 3: <short destination name>
 <one or two short sentences explaining why this destination fits their preferences>
 
-When you recommend activities, also explain briefly why they fit these preferences.`,
+When you recommend activities, also explain briefly why they fit these preferences.`;
+    }
+
+    // To avoid hitting TPM / context limits on the model, only send the
+    // most recent slice of the conversation to the LLM.
+    const MAX_CONTEXT_MESSAGES = 12;
+    const trimmedHistory =
+      conversationHistory.length > MAX_CONTEXT_MESSAGES
+        ? conversationHistory.slice(-MAX_CONTEXT_MESSAGES)
+        : conversationHistory;
+
+    // Use provided model or default
+    const chatModel = model || DEFAULT_MODEL;
+
+    // Build messages array
+    const messages = [
+      {
+        role: 'system',
+        content: systemPrompt,
       },
       ...trimmedHistory,
       {
@@ -678,11 +762,11 @@ If you cannot find 3 airports, return as many as you can find (minimum 1). Only 
 
     const response = completion.choices[0]?.message?.content || '';
     let airports = [];
-    
+
     try {
       // Parse JSON response
       const parsed = JSON.parse(response);
-      
+
       if (parsed.airports && Array.isArray(parsed.airports)) {
         // Extract valid airport codes (3-letter uppercase)
         airports = parsed.airports
@@ -701,7 +785,7 @@ If you cannot find 3 airports, return as many as you can find (minimum 1). Only 
       const uniqueCodes = [...new Set(Array.from(codeMatches).map(m => m[1]))]
         .filter(code => code !== 'UNKNOWN')
         .slice(0, 3);
-      
+
       airports = uniqueCodes.map(code => ({
         code: code,
         name: '',

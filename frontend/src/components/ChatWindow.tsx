@@ -294,15 +294,10 @@ const ChatWindow = ({
       const raw = (overrideContent ?? inputMessage).trim();
       if (!raw || isLoading) return;
 
-      // If we're already planning a specific trip, wrap the message in context
-      const content =
-        tripId && tripDestination
-          ? `I'm already planning a trip to ${tripDestination}. Please answer this specific question about that trip (do NOT suggest new destinations):\n\n${raw}`
-          : raw;
-
+      // What the user sees in the bubble
       const userMessage: Message = {
         role: "user",
-        content,
+        content: raw,
         timestamp: formatTime(),
       };
 
@@ -312,13 +307,19 @@ const ChatWindow = ({
       }
       setIsLoading(true);
 
+      // What we actually send to the LLM (can include extra context)
+      const contentForLLM =
+        tripId && tripDestination
+          ? `I'm already planning a trip to ${tripDestination}. Please answer this specific question about that trip (do NOT suggest new destinations):\n\n${raw}`
+          : raw;
+
       const isTripRequest = /want.*go|plan.*trip|visit|travel|to\s+[A-Za-z]/i.test(
-        content
+        raw
       );
       if (
         planningMode === "known" &&
         !tripId &&
-        (isTripRequest || content === initialMessage)
+        (isTripRequest || raw === initialMessage)
       ) {
         setIsCreatingTrip(true);
       }
@@ -337,7 +338,7 @@ const ChatWindow = ({
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            message: content,
+            message: contentForLLM,
             tripId,
           }),
         });
