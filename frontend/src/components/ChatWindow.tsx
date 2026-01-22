@@ -2265,7 +2265,7 @@ const ChatWindow = ({
                 </p>
 
                 {/* Swipe Card Stack */}
-                <div className="relative h-[600px] w-full">
+                <div className="relative h-[600px] w-full flex items-center justify-center">
                   {activities
                     .filter((a) => a.preference === "pending")
                     .slice(0, 3)
