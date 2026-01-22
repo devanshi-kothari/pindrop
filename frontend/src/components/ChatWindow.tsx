@@ -171,6 +171,7 @@ const ChatWindow = ({
   const [activeTab, setActiveTab] = useState<"activities" | "flights" | "hotels" | "summary">(
     "activities"
   );
+  const [isChatOpen, setIsChatOpen] = useState(false);
 
   useEffect(() => {
     setHasLockedDestination(planningMode === "known" || hasDestinationLocked);
@@ -290,8 +291,14 @@ const ChatWindow = ({
 
   const sendMessage = useCallback(
     async (overrideContent?: string) => {
-      const content = (overrideContent ?? inputMessage).trim();
-      if (!content || isLoading) return;
+      const raw = (overrideContent ?? inputMessage).trim();
+      if (!raw || isLoading) return;
+
+      // If we're already planning a specific trip, wrap the message in context
+      const content =
+        tripId && tripDestination
+          ? `I'm already planning a trip to ${tripDestination}. Please answer this specific question about that trip (do NOT suggest new destinations):\n\n${raw}`
+          : raw;
 
       const userMessage: Message = {
         role: "user",
@@ -2188,215 +2195,9 @@ const ChatWindow = ({
           </Card>
         </div>
       )}
-      {/* Messages Area */}
+      {/* Main planning scroll area (tabs + phases) */}
       <ScrollArea className="flex-1 p-4">
         <div className="space-y-4">
-          {isLoadingHistory && (
-            <div className="flex justify-start">
-              <div className="bg-white border border-blue-200 text-slate-900 rounded-lg px-4 py-3 shadow-sm">
-                <p className="text-sm">Loading conversation history...</p>
-              </div>
-            </div>
-          )}
-
-          {(() => {
-            const firstAssistantIndex = messages.findIndex(
-              (m) => m.role === "assistant"
-            );
-            return messages.map((message, index) => (
-            <div
-              key={index}
-              className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
-            >
-              <div
-                className={`max-w-[75%] rounded-lg px-4 py-3 shadow-sm ${
-                  message.role === "user"
-                    ? "bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 shadow-lg"
-                    : "bg-white border border-blue-200 text-slate-900"
-                }`}
-              >
-                <div className="text-sm whitespace-pre-wrap break-words leading-relaxed">
-                  {(() => {
-                    // Lightweight markdown-style bold (**word**) rendering
-                    const renderWithBold = (text: string) => {
-                      const parts = text.split("**");
-                      return parts.map((part, idx) =>
-                        idx % 2 === 1 ? (
-                          <strong key={idx}>{part}</strong>
-                        ) : (
-                          <span key={idx}>{part}</span>
-                        )
-                      );
-                    };
-
-                    // For the *first* assistant message, when the LLM returns structured
-                    // "Destination Idea {number}:" sections, show:
-                    // - an intro paragraph
-                    // - a single white "card" at a time with < / > navigation
-                    // - a closing "What do you think?" prompt
-                    if (
-                      message.role === "assistant" &&
-                      index === firstAssistantIndex
-                    ) {
-                      const parts = message.content.split(/(?=Destination Idea\s+\d+:)/i);
-                      if (parts.length > 1) {
-                        const intro = parts[0].trim();
-                        let suggestionSections = parts
-                          .slice(1)
-                          .map((p) => p.trim())
-                          .filter(Boolean)
-                          .slice(0, 3);
-
-                        // If the last suggestion block contains trailing global
-                        // notes like "Tips and Recommendations" or "What do you
-                        // girls think?", separate that tail out so it doesn't
-                        // appear inside the destination card.
-                        let globalTail: string | null = null;
-                        if (suggestionSections.length > 0) {
-                          const tailPatterns = [
-                            /Tips and Recommendations/i,
-                            /Itinerary Suggestions/i,
-                            /Tips & Recommendations/i,
-                            /What do you girls think\?/i,
-                            /What do you think\?/i,
-                            /Which of these destinations sparks your interest\?/i,
-                            /Would you like me to recommend activities/i,
-                          ];
-                          const lastIdx = suggestionSections.length - 1;
-                          const last = suggestionSections[lastIdx];
-                          let cutIndex = -1;
-
-                          for (const pat of tailPatterns) {
-                            const match = last.match(pat);
-                            if (match) {
-                              cutIndex = last.toLowerCase().indexOf(match[0].toLowerCase());
-                              break;
-                            }
-                          }
-
-                          if (cutIndex >= 0) {
-                            globalTail = last.slice(cutIndex).trim();
-                            suggestionSections[lastIdx] = last.slice(0, cutIndex).trim();
-                            if (!suggestionSections[lastIdx]) {
-                              suggestionSections = suggestionSections.slice(0, lastIdx);
-                            }
-                          }
-                        }
-
-                        if (suggestionSections.length > 0) {
-                          const maxIndex = suggestionSections.length - 1;
-                          const activeIndex =
-                            destinationCarouselIndices[index] !== undefined
-                              ? Math.min(destinationCarouselIndices[index], maxIndex)
-                              : 0;
-
-                          const setActiveIndex = (next: number) => {
-                            const clamped = Math.max(0, Math.min(maxIndex, next));
-                            setDestinationCarouselIndices((prev) => ({
-                              ...prev,
-                              [index]: clamped,
-                            }));
-                          };
-
-                          const current = suggestionSections[activeIndex];
-                          const [headerLine, ...restLines] = current.split("\n");
-                          const rawTitle = headerLine || "";
-                          const titleText = rawTitle.replace(
-                            /^Destination Idea\s+\d+:\s*/i,
-                            ""
-                          );
-                          const bodyText = restLines.join("\n").trim();
-
-                          return (
-                            <div className="space-y-3">
-                              {intro && (
-                                <div className="text-xs text-slate-800">
-                                  {renderWithBold(intro)}
-                                </div>
-                              )}
-
-                              <div className="rounded-lg bg-white text-slate-900 p-3 shadow-sm space-y-2">
-                                <div className="font-semibold">
-                                  {renderWithBold(titleText || rawTitle)}
-                                </div>
-                                {bodyText && (
-                                  <div className="text-xs whitespace-pre-wrap">
-                                    {renderWithBold(bodyText)}
-                                  </div>
-                                )}
-                                <div className="mt-2 flex items-center justify-between gap-2">
-                                  <button
-                                    type="button"
-                                    className="px-2 py-1 text-xs rounded-full border border-slate-300 disabled:opacity-40"
-                                    onClick={() => setActiveIndex(activeIndex - 1)}
-                                    disabled={activeIndex === 0}
-                                  >
-                                    ‹
-                                  </button>
-                                  <span className="text-[11px] text-slate-600">
-                                    Destination {activeIndex + 1} of {suggestionSections.length}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    className="px-2 py-1 text-xs rounded-full border border-slate-300 disabled:opacity-40"
-                                    onClick={() => setActiveIndex(activeIndex + 1)}
-                                    disabled={activeIndex === maxIndex}
-                                  >
-                                    ›
-                                  </button>
-                                </div>
-                              </div>
-
-                              <div className="space-y-1">
-                                {globalTail ? (
-                                  <p className="text-[11px] text-slate-500 whitespace-pre-wrap">
-                                    {renderWithBold(globalTail)}
-                                  </p>
-                                ) : (
-                                  <p className="text-xs text-slate-800">
-                                    What do you think? Tell me which ideas you like, or what you&apos;d
-                                    like to change.
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        }
-                      }
-                    }
-
-                    // Fallback: render the whole message with bold support.
-                    return renderWithBold(message.content);
-                  })()}
-                </div>
-                <p className={`text-xs mt-2 ${
-                  message.role === "user" ? "text-teal-100" : "text-muted-foreground"
-                }`}>
-                  {message.timestamp}
-                </p>
-                {message.role === "user" && (
-                  <div className="flex justify-end mt-1">
-                    <span className="text-xs text-teal-100">✓✓</span>
-                  </div>
-                )}
-              </div>
-            </div>
-            ));
-          })()}
-          {isCreatingTrip && (
-            <div className="flex justify-start">
-              <div className="bg-white border border-blue-200 text-slate-900 rounded-lg px-4 py-3 shadow-sm">
-                <p className="text-sm">Creating your trip...</p>
-              </div>
-            </div>
-          )}
-          {isLoading && !isCreatingTrip && (
-            <div className="flex justify-start">
-              <div className="bg-white border border-blue-200 text-slate-900 rounded-lg px-4 py-3 shadow-sm">
-                <p className="text-sm">Thinking...</p>
-              </div>
-            </div>
-          )}
           {tripId && (
             <div className="mt-6 mb-3 flex items-center justify-center">
               <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="w-full max-w-xl">
@@ -3929,31 +3730,111 @@ const ChatWindow = ({
         </div>
       </ScrollArea>
 
-      {/* Input Area - always available for quick chat-style questions */}
-      <div className="p-4 border-t border-blue-500 bg-blue-800/30">
-        <div className="relative flex items-center gap-2">
-          <div className="absolute left-3 z-10">
-            <div className="w-6 h-6 rounded-full bg-gradient-to-br from-pink-400 to-pink-500" />
-          </div>
-          <Input
-            type="text"
-            placeholder="Type your message here..."
-            value={inputMessage}
-            onChange={(e) => setInputMessage(e.target.value)}
-            onKeyPress={handleKeyPress}
-            disabled={isLoading}
-            className="pl-12 pr-14 h-12 rounded-full border-2 bg-white text-slate-900 placeholder:text-slate-400 border-blue-200 focus:border-blue-500"
-          />
-          <Button
-            type="button"
-            onClick={() => sendMessage()}
-            disabled={!inputMessage.trim() || isLoading}
-            className="absolute right-2 h-8 w-8 rounded-full bg-yellow-400 hover:bg-yellow-300 text-slate-900 p-0 disabled:opacity-50 disabled:cursor-not-allowed"
-            id="chat-send-button"
-          >
-            <Send className="h-4 w-4" />
-          </Button>
+      {/* Chat popup */}
+      {isChatOpen && (
+        <div className="fixed bottom-20 right-4 z-40 w-full max-w-md">
+          <Card className="shadow-xl border border-blue-200 bg-white/95 backdrop-blur">
+            <CardHeader className="flex flex-row items-center justify-between py-2">
+              <CardTitle className="text-sm">Chat with Pindrop</CardTitle>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-slate-500 hover:text-slate-800"
+                onClick={() => setIsChatOpen(false)}
+              >
+                <span className="text-lg leading-none">×</span>
+              </Button>
+            </CardHeader>
+            <CardContent className="pt-1">
+              <ScrollArea className="h-64 pr-2">
+                <div className="space-y-3">
+                  {isLoadingHistory && (
+                    <div className="flex justify-start">
+                      <div className="bg-white border border-blue-200 text-slate-900 rounded-lg px-3 py-2 shadow-sm">
+                        <p className="text-xs">Loading conversation history...</p>
+                      </div>
+                    </div>
+                  )}
+                  {messages.map((message, index) => (
+                    <div
+                      key={index}
+                      className={`flex ${
+                        message.role === "user" ? "justify-end" : "justify-start"
+                      }`}
+                    >
+                      <div
+                        className={`max-w-[80%] rounded-lg px-3 py-2 shadow-sm text-xs ${
+                          message.role === "user"
+                            ? "bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 shadow-lg"
+                            : "bg-white border border-blue-200 text-slate-900"
+                        }`}
+                      >
+                        <div className="whitespace-pre-wrap break-words leading-relaxed">
+                          {message.content}
+                        </div>
+                        <p
+                          className={`text-[10px] mt-1 ${
+                            message.role === "user"
+                              ? "text-teal-100"
+                              : "text-muted-foreground"
+                          }`}
+                        >
+                          {message.timestamp}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                  {isCreatingTrip && (
+                    <div className="flex justify-start">
+                      <div className="bg-white border border-blue-200 text-slate-900 rounded-lg px-3 py-2 shadow-sm text-xs">
+                        <p>Creating your trip...</p>
+                      </div>
+                    </div>
+                  )}
+                  {isLoading && !isCreatingTrip && (
+                    <div className="flex justify-start">
+                      <div className="bg-white border border-blue-200 text-slate-900 rounded-lg px-3 py-2 shadow-sm text-xs">
+                        <p>Thinking...</p>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={messagesEndRef} />
+                </div>
+              </ScrollArea>
+              <div className="mt-3 flex gap-2">
+                <Input
+                  type="text"
+                  placeholder="Ask a quick question about this trip..."
+                  value={inputMessage}
+                  onChange={(e) => setInputMessage(e.target.value)}
+                  onKeyPress={handleKeyPress}
+                  disabled={isLoading}
+                  className="h-9 text-xs"
+                />
+                <Button
+                  type="button"
+                  onClick={() => sendMessage()}
+                  disabled={!inputMessage.trim() || isLoading}
+                  className="h-9 px-3 text-xs bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                  id="chat-send-button"
+                >
+                  Send
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
+      )}
+
+      {/* Floating chat launcher */}
+      <div className="fixed bottom-6 right-6 z-30">
+        <Button
+          size="sm"
+          className="rounded-full shadow-lg bg-yellow-400 hover:bg-yellow-300 text-slate-900 text-xs px-4 py-2"
+          onClick={() => setIsChatOpen(true)}
+        >
+          Chat with Pindrop
+        </Button>
       </div>
     </div>
   );
