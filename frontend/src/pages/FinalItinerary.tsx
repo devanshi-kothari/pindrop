@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import DashboardHeader from "@/components/DashboardHeader";
 import DashboardSidebar from "@/components/DashboardSidebar";
@@ -6,6 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from "@/components/ui/dialog";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
+import { PieChart, Pie, Cell, Legend } from "recharts";
 import { getApiUrl } from "@/lib/api";
 import { ArrowLeft, Plus, Trash2, X } from "lucide-react";
 
@@ -82,6 +85,38 @@ type FinalItineraryData = {
   days: FinalItineraryDay[];
 };
 
+declare global {
+  interface Window {
+    google?: any;
+  }
+}
+
+const GOOGLE_MAPS_API_KEY =
+  (import.meta as any).env.VITE_GOOGLE_MAPS_API_KEY ||
+  (import.meta as any).env.GOOGLE_MAPS_API_KEY ||
+  "";
+
+let googleMapsPromise: Promise<void> | null = null;
+
+const loadGoogleMapsApi = () => {
+  if (typeof window === "undefined") return Promise.resolve();
+  if (window.google && window.google.maps) return Promise.resolve();
+  if (!GOOGLE_MAPS_API_KEY) return Promise.resolve();
+
+  if (!googleMapsPromise) {
+    googleMapsPromise = new Promise<void>((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&libraries=places`;
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("Failed to load Google Maps"));
+      document.head.appendChild(script);
+    });
+  }
+
+  return googleMapsPromise;
+};
+
 const formatDate = (dateString?: string | null) => {
   if (!dateString) return null;
   const parsed = new Date(dateString);
@@ -110,6 +145,9 @@ const FinalItinerary = () => {
   const [addingActivity, setAddingActivity] = useState<Record<number, boolean>>({});
   const [deletingActivity, setDeletingActivity] = useState<Record<string, boolean>>({});
   const [formData, setFormData] = useState<Record<number, { name: string; description: string; source_url: string; location: string }>>({});
+  const [activeTab, setActiveTab] = useState<"overview" | "map" | "budget" | "calendar">("overview");
+  const [selectedMapDayIndex, setSelectedMapDayIndex] = useState(0);
+  const mapRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const loadFinalItinerary = async () => {
@@ -283,6 +321,115 @@ const FinalItinerary = () => {
     }
   };
 
+  // Simple per-day budget breakdown derived from itinerary
+  const computeBudgetData = () => {
+    if (!itinerary) return { daily: [], totals: { flights: 0, hotels: 0, activities: 0, total: 0 } };
+
+    const daily = itinerary.days.map((day) => {
+      const activityTotal = (day.activities || []).reduce(
+        (sum, act) => sum + (typeof act.cost_estimate === "number" ? act.cost_estimate : 0),
+        0
+      );
+      const hotelTotal = typeof day.hotel?.rate_per_night === "number" ? day.hotel.rate_per_night : 0;
+      let flightTotal = 0;
+      if (typeof day.outbound_flight?.price === "number") {
+        flightTotal += day.outbound_flight.price;
+      }
+      if (typeof day.return_flight?.price === "number") {
+        flightTotal += day.return_flight.price;
+      }
+      const total = activityTotal + hotelTotal + flightTotal;
+      return {
+        day_number: day.day_number,
+        date: day.date,
+        activityTotal,
+        hotelTotal,
+        flightTotal,
+        total,
+      };
+    });
+
+    const totals = daily.reduce(
+      (acc, d) => {
+        acc.activities += d.activityTotal;
+        acc.hotels += d.hotelTotal;
+        acc.flights += d.flightTotal;
+        acc.total += d.total;
+        return acc;
+      },
+      { flights: 0, hotels: 0, activities: 0, total: 0 }
+    );
+
+    return { daily, totals };
+  };
+
+  useEffect(() => {
+    if (!itinerary || activeTab !== "map") return;
+    if (!mapRef.current) return;
+    if (!GOOGLE_MAPS_API_KEY) return;
+
+    let cancelled = false;
+
+    const initMap = async () => {
+      try {
+        await loadGoogleMapsApi();
+        if (cancelled) return;
+        if (!window.google || !window.google.maps || !mapRef.current) return;
+
+        const day = itinerary.days[selectedMapDayIndex] || itinerary.days[0];
+        const map = new window.google.maps.Map(mapRef.current, {
+          center: { lat: 0, lng: 0 },
+          zoom: 12,
+        });
+        const geocoder = new window.google.maps.Geocoder();
+        const bounds = new window.google.maps.LatLngBounds();
+
+        const locations: { label: string; address: string }[] = [];
+
+        (day.activities || [])
+          .filter((a) => a.location)
+          .forEach((a) => {
+            locations.push({ label: a.name || "Activity", address: a.location! });
+          });
+
+        if (day.hotel?.location) {
+          locations.push({ label: day.hotel.name || "Hotel", address: day.hotel.location });
+        }
+
+        // If no specific locations, fall back to itinerary destination
+        if (locations.length === 0 && itinerary.destination) {
+          locations.push({ label: itinerary.destination, address: itinerary.destination });
+        }
+
+        locations.forEach((loc) => {
+          geocoder.geocode({ address: loc.address }, (results: any, status: any) => {
+            if (status === "OK" && results && results[0]) {
+              const position = results[0].geometry.location;
+              new window.google.maps.Marker({
+                map,
+                position,
+                title: loc.label,
+              });
+              bounds.extend(position);
+              map.fitBounds(bounds);
+            }
+          });
+        });
+      } catch (e) {
+        console.error("Error initializing Google Maps:", e);
+      }
+    };
+
+    const timeoutId = window.setTimeout(() => {
+      void initMap();
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [itinerary, activeTab, selectedMapDayIndex]);
+
   return (
     <div className="min-h-screen bg-background">
       <DashboardHeader />
@@ -328,7 +475,9 @@ const FinalItinerary = () => {
               <div className="w-full">
                 <div className="flex items-center justify-between gap-4 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-900 mb-4">
                   <span className="font-semibold">Editable layout</span>
-                  <span className="text-green-700">Click activities to edit • Use + button to add new activities</span>
+                  <span className="text-green-700">
+                    Click activities to edit • Use + button to add new activities
+                  </span>
                 </div>
                 <div className="rounded-lg border border-blue-100 bg-white/80 p-4 shadow-sm">
                   <div className="flex flex-wrap items-center justify-between gap-4 border-b border-blue-100 pb-4">
@@ -345,14 +494,31 @@ const FinalItinerary = () => {
                     )}
                   </div>
 
-                  <div className="mt-4 grid gap-4 lg:grid-cols-[repeat(auto-fit,minmax(240px,1fr))]">
-                    {itinerary.days.map((day) => {
-                      const dateLabel = formatDate(day.date) || `Day ${day.day_number}`;
-                      return (
-                        <div
-                          key={day.day_number}
-                          className="flex flex-col rounded-lg border border-dashed border-blue-200 bg-blue-50/60 p-4"
-                        >
+                  <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="mt-4">
+                    <TabsList className="grid w-full grid-cols-3 sm:grid-cols-4 mb-4">
+                      <TabsTrigger value="overview" className="text-xs">
+                        Overview
+                      </TabsTrigger>
+                      <TabsTrigger value="map" className="text-xs">
+                        Map
+                      </TabsTrigger>
+                      <TabsTrigger value="budget" className="text-xs">
+                        Budget
+                      </TabsTrigger>
+                      <TabsTrigger value="calendar" className="hidden sm:inline-flex text-xs">
+                        Calendar
+                      </TabsTrigger>
+                    </TabsList>
+
+                    <TabsContent value="overview" className="mt-0">
+                      <div className="grid gap-4 lg:grid-cols-[repeat(auto-fit,minmax(240px,1fr))]">
+                        {itinerary.days.map((day) => {
+                          const dateLabel = formatDate(day.date) || `Day ${day.day_number}`;
+                          return (
+                            <div
+                              key={day.day_number}
+                              className="flex flex-col rounded-lg border border-dashed border-blue-200 bg-blue-50/60 p-4"
+                            >
                           <div className="flex items-start justify-between gap-2 border-b border-blue-100 pb-2">
                             <div>
                               <p className="text-xs uppercase tracking-wide text-blue-500">
@@ -758,8 +924,219 @@ const FinalItinerary = () => {
                           )}
                         </div>
                       );
-                    })}
-                  </div>
+                        })}
+                      </div>
+                    </TabsContent>
+
+                    <TabsContent value="map" className="mt-0">
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-semibold text-slate-600">
+                            Day map: activities, hotel, and nearby points
+                          </p>
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="text-slate-500">Day:</span>
+                            <select
+                              className="h-7 rounded border border-blue-200 bg-white px-2 text-xs text-slate-700"
+                              value={selectedMapDayIndex}
+                              onChange={(e) => setSelectedMapDayIndex(Number(e.target.value))}
+                            >
+                              {itinerary.days.map((d, idx) => (
+                                <option key={d.day_number} value={idx}>
+                                  Day {d.day_number}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                        {!GOOGLE_MAPS_API_KEY && (
+                          <p className="text-[11px] text-rose-500">
+                            Google Maps API key is not configured. Please set GOOGLE_MAPS_API_KEY/VITE_GOOGLE_MAPS_API_KEY to
+                            see the map.
+                          </p>
+                        )}
+                        <div
+                          ref={mapRef}
+                          className="mt-2 h-[360px] w-full rounded-md border border-blue-100 bg-blue-50/40"
+                        />
+                      </div>
+                    </TabsContent>
+
+                    <TabsContent value="budget" className="mt-0">
+                      {(() => {
+                        const { daily, totals } = computeBudgetData();
+                        const remaining =
+                          typeof itinerary.total_budget === "number"
+                            ? itinerary.total_budget - totals.total
+                            : null;
+
+                        const baseChartData = [
+                          { name: "Flights", key: "flights", value: totals.flights },
+                          { name: "Hotels", key: "hotels", value: totals.hotels },
+                          { name: "Activities", key: "activities", value: totals.activities },
+                        ].filter((d) => d.value > 0);
+
+                        const chartData =
+                          remaining !== null && remaining > 0
+                            ? [
+                                ...baseChartData,
+                                { name: "Unused budget", key: "unused", value: remaining },
+                              ]
+                            : baseChartData;
+
+                        return (
+                          <div className="space-y-4">
+                            <div className="overflow-x-auto rounded-md border border-blue-100">
+                              <table className="min-w-full border-collapse text-xs">
+                                <thead className="bg-blue-50">
+                                  <tr>
+                                    <th className="px-3 py-2 text-left font-semibold text-slate-700">Day</th>
+                                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Flights</th>
+                                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Hotel</th>
+                                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Activities</th>
+                                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Total</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {daily.map((d) => (
+                                    <tr key={d.day_number} className="border-t border-blue-50">
+                                      <td className="px-3 py-2 text-slate-700">Day {d.day_number}</td>
+                                      <td className="px-3 py-2 text-right text-slate-600">
+                                        {d.flightTotal ? `$${d.flightTotal.toLocaleString()}` : "—"}
+                                      </td>
+                                      <td className="px-3 py-2 text-right text-slate-600">
+                                        {d.hotelTotal ? `$${d.hotelTotal.toLocaleString()}` : "—"}
+                                      </td>
+                                      <td className="px-3 py-2 text-right text-slate-600">
+                                        {d.activityTotal ? `$${d.activityTotal.toLocaleString()}` : "—"}
+                                      </td>
+                                      <td className="px-3 py-2 text-right font-semibold text-slate-800">
+                                        {d.total ? `$${d.total.toLocaleString()}` : "—"}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+
+                            <div className="grid gap-4 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] items-start">
+                              {chartData.length > 0 && (
+                                <ChartContainer
+                                  config={{
+                                    flights: { label: "Flights", color: "#0ea5e9" }, // sky-500
+                                    hotels: { label: "Hotels", color: "#f97316" },  // orange-500
+                                    activities: { label: "Activities", color: "#22c55e" }, // emerald-500
+                                    unused: { label: "Unused budget", color: "#94a3b8" }, // slate-400
+                                  }}
+                                  className="h-[260px]"
+                                >
+                                  <PieChart>
+                                    <Pie
+                                      data={chartData}
+                                      dataKey="value"
+                                      nameKey="name"
+                                      cx="50%"
+                                      cy="50%"
+                                      outerRadius={80}
+                                      label
+                                    >
+                                      {chartData.map((entry) => (
+                                        <Cell
+                                          key={entry.key}
+                                          fill={
+                                            entry.key === "flights"
+                                              ? "var(--color-flights)"
+                                              : entry.key === "hotels"
+                                              ? "var(--color-hotels)"
+                                              : entry.key === "activities"
+                                              ? "var(--color-activities)"
+                                              : "var(--color-unused)"
+                                          }
+                                        />
+                                      ))}
+                                    </Pie>
+                                    <ChartTooltip content={<ChartTooltipContent />} />
+                                    <Legend />
+                                  </PieChart>
+                                </ChartContainer>
+                              )}
+
+                              <div className="rounded-md border border-blue-100 bg-blue-50/60 p-3 text-xs text-slate-700 space-y-2">
+                                <p className="font-semibold text-slate-800">Trip budget summary</p>
+                                <p>
+                                  <span className="font-semibold">Total planned spend:</span>{" "}
+                                  {totals.total ? `$${totals.total.toLocaleString()}` : "—"}
+                                </p>
+                                {typeof itinerary.total_budget === "number" && (
+                                  <p>
+                                    <span className="font-semibold">Overall budget:</span>{" "}
+                                    ${itinerary.total_budget.toLocaleString()}
+                                  </p>
+                                )}
+                                {remaining !== null && (
+                                  <p
+                                    className={
+                                      remaining >= 0 ? "text-emerald-600 font-semibold" : "text-rose-500 font-semibold"
+                                    }
+                                  >
+                                    {remaining >= 0
+                                      ? `Remaining budget: $${remaining.toLocaleString()}`
+                                      : `Over budget by $${Math.abs(remaining).toLocaleString()}`}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </TabsContent>
+
+                    <TabsContent value="calendar" className="mt-0">
+                      <div className="grid gap-4 lg:grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
+                        {itinerary.days.map((day) => (
+                          <div
+                            key={day.day_number}
+                            className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 space-y-2"
+                          >
+                            <div className="flex items-center justify-between border-b border-blue-100 pb-1.5">
+                              <div>
+                                <p className="text-[11px] uppercase tracking-wide text-blue-500">
+                                  Day {day.day_number}
+                                </p>
+                                <p className="text-xs font-semibold text-slate-900">
+                                  {formatDate(day.date) || `Day ${day.day_number}`}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="space-y-1.5 mt-1">
+                              {(day.activities || []).map((act, idx) => {
+                                const slot =
+                                  idx === 0 ? "Morning" : idx === 1 ? "Afternoon" : idx === 2 ? "Evening" : "Anytime";
+                                return (
+                                  <div
+                                    key={idx}
+                                    className="flex items-start gap-2 rounded-md border border-blue-100 bg-white px-2 py-1.5 text-[11px]"
+                                  >
+                                    <span className="mt-[1px] inline-flex rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
+                                      {slot}
+                                    </span>
+                                    <div className="flex-1">
+                                      <p className="font-semibold text-slate-900">
+                                        {act.name || "Activity"}
+                                      </p>
+                                      {act.location && (
+                                        <p className="text-[10px] text-slate-500">📍 {act.location}</p>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </TabsContent>
+                  </Tabs>
                 </div>
               </div>
             )}

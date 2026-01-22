@@ -3691,6 +3691,7 @@ const ChatWindow = ({
                             setHasConfirmedHotels(true);
                             // Automatically generate final itinerary when hotels are confirmed
                             generateFinalItinerary();
+                            setActiveTab("summary");
                           }}
                         >
                           I&apos;m done planning hotels
