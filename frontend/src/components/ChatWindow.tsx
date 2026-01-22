@@ -2369,7 +2369,7 @@ const ChatWindow = ({
             <div className="flex justify-center">
               <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
                 <p className="text-xs font-semibold text-slate-600">
-                  Phase 3: Day-by-day trip sketch
+                  Phase 5: Day-by-day trip sketch
                 </p>
                 {(() => {
                   const maxIndex = itineraryDays.length - 1;
@@ -2473,7 +2473,7 @@ const ChatWindow = ({
             <div className="flex justify-center">
               <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
                 <p className="text-xs font-semibold text-slate-600">
-                  Phase 4 Part 1: Plan your flights
+                  Phase 3: Plan your flights
                 </p>
 
                 {/* Departure Location */}
@@ -3303,7 +3303,7 @@ const ChatWindow = ({
             <div className="flex justify-center">
               <div className="w-full max-w-4xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
                 <p className="text-xs font-semibold text-slate-600">
-                  Phase 4 Part 2: Book your hotels
+                  Phase 4: Book your hotels
                 </p>
 
                 {/* Hotel Location and Dates Info */}
