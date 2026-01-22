@@ -215,6 +215,24 @@ async function generateRefinedSearchQuery(trip, preferences, userProfile, activi
   try {
     const destination = trip?.destination || '';
 
+    // Derive season/month context from preferences.start_date if available
+    let seasonalQualifier = '';
+    if (preferences?.start_date) {
+      const date = new Date(preferences.start_date);
+      if (!Number.isNaN(date.getTime())) {
+        const month = date.getMonth() + 1; // 1-12
+        const monthName = date.toLocaleString('default', { month: 'long' });
+        let season = '';
+        if (month >= 12 || month <= 2) season = 'winter';
+        else if (month >= 3 && month <= 5) season = 'spring';
+        else if (month >= 6 && month <= 8) season = 'summer';
+        else season = 'fall';
+
+        // e.g. "winter (December)" or "summer (July)"
+        seasonalQualifier = `${season} (${monthName})`;
+      }
+    }
+
     // Build queries that diversify categories
     let queries = [];
 
@@ -233,7 +251,12 @@ async function generateRefinedSearchQuery(trip, preferences, userProfile, activi
       // Create one query per category to ensure we get diverse results
       for (const category of includeCategories.slice(0, 5)) { // Limit to 5 categories max
         if (destination) {
-          queries.push(`${category} ${destination}`);
+          if (seasonalQualifier) {
+            // e.g. "winter things to do in New York, museums"
+            queries.push(`${seasonalQualifier} ${category} ${destination}`);
+          } else {
+            queries.push(`${category} ${destination}`);
+          }
         } else {
           queries.push(category);
         }
@@ -243,7 +266,11 @@ async function generateRefinedSearchQuery(trip, preferences, userProfile, activi
     // If no specific categories, create a general query
     if (queries.length === 0) {
       if (destination) {
-        queries.push(`things to do ${destination}`);
+        if (seasonalQualifier) {
+          queries.push(`${seasonalQualifier} things to do ${destination}`);
+        } else {
+          queries.push(`things to do ${destination}`);
+        }
       } else {
         queries.push('travel activities');
       }
@@ -341,17 +368,19 @@ USER CONTEXT:
 - Liked tags: ${Array.isArray(userProfile?.liked_tags) && userProfile.liked_tags.length > 0 ? userProfile.liked_tags.join(', ') : 'none'}
 
 INSTRUCTIONS:
-1. Extract ANY activity name from the search result that could be at "${destination}"
-2. If it's a list article, extract the FIRST activity mentioned in the snippet or title
-3. If the title looks like an activity name, use it (even if it's not perfect)
-4. Be very lenient - it's better to extract something than return "SKIP"
-5. Keep it 2-10 words
-6. Only return "SKIP" if the search result is completely unrelated to activities or travel
+1. Extract ANY activity name from the search result that could be at "${destination}".
+2. If it's a list article, extract the FIRST activity mentioned in the snippet or title.
+3. If the title looks like an activity name, use it (even if it's not perfect).
+4. **When season or dates are specified, strongly prefer activities, events, or experiences that are especially relevant to that time of year** (for example, winter villages, holiday markets, seasonal light shows, cherry blossom festivals, summer-only rooftop events).
+5. Be very lenient - it's better to extract something than return "SKIP".
+6. Keep it 2-10 words.
+7. Only return "SKIP" if the search result is completely unrelated to activities or travel.
 
 Examples of good extractions:
 - "10 Best Things to Do in Paris" → "Eiffel Tower" or "Visit the Eiffel Tower"
 - "Paris Museums Guide" → "Louvre Museum" or "Explore Paris Museums"
-- "Things to Do in Paris" → "Paris Activities" or extract first activity from snippet
+- "Things to Do in Paris in December" → "Christmas market at Champs-Élysées" or another clearly seasonal December activity
+- "Winter in New York City: What to Do" → "Bryant Park Winter Village" or "Rockefeller Center Christmas Tree"
 
 Return ONLY the activity name or "SKIP", nothing else. No quotes, no explanations.`;
 

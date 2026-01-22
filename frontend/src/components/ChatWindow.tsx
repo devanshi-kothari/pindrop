@@ -115,8 +115,12 @@ const ChatWindow = ({
   const [departureLocation, setDepartureLocation] = useState("");
   const [departureId, setDepartureId] = useState<string | null>(null);
   const [departureAirportCodes, setDepartureAirportCodes] = useState<string[]>([]); // All departure airport codes
+  const [selectedDepartureAirportCodes, setSelectedDepartureAirportCodes] = useState<string[]>([]); // User-selected departure airport codes
   const [departureAirports, setDepartureAirports] = useState<Array<{code: string; name: string; distance_miles: number | null}>>([]); // Full airport details
   const [arrivalId, setArrivalId] = useState<string | null>(null);
+  const [arrivalAirportCodes, setArrivalAirportCodes] = useState<string[]>([]); // All arrival airport codes
+  const [selectedArrivalAirportCodes, setSelectedArrivalAirportCodes] = useState<string[]>([]); // User-selected arrival airport codes
+  const [arrivalAirports, setArrivalAirports] = useState<Array<{code: string; name: string; distance_miles: number | null}>>([]); // Full arrival airport details
   const [isFetchingDepartureCode, setIsFetchingDepartureCode] = useState(false);
   const [isFetchingArrivalCode, setIsFetchingArrivalCode] = useState(false);
   const [bestFlights, setBestFlights] = useState<any[]>([]);
@@ -805,10 +809,17 @@ const ChatWindow = ({
   const fetchFlights = async () => {
     console.log("fetchFlights called", { tripId, departureId, departureAirportCodes, arrivalId, tripPreferences });
 
-    // Use all departure airport codes if available, otherwise fall back to single departureId
-    const airportsToSearch = departureAirportCodes.length > 0 ? departureAirportCodes : (departureId ? [departureId] : []);
+    // Use selected departure airport codes if available, otherwise fall back to all, then single departureId
+    const airportsToSearch =
+      selectedDepartureAirportCodes.length > 0
+        ? selectedDepartureAirportCodes
+        : departureAirportCodes.length > 0
+        ? departureAirportCodes
+        : departureId
+        ? [departureId]
+        : [];
 
-    if (!tripId || airportsToSearch.length === 0 || !arrivalId) {
+    if (!tripId || airportsToSearch.length === 0 || (!arrivalId && arrivalAirportCodes.length === 0)) {
       const errorMessage: Message = {
         role: "assistant",
         content: "Please set both departure and arrival airport codes before searching for flights.",
@@ -834,17 +845,27 @@ const ChatWindow = ({
       if (!token) return;
 
       // Fetch flights for each departure airport in parallel
-      const flightPromises = airportsToSearch.map(async (departureAirportCode) => {
+      const targetArrivalCodes =
+        selectedArrivalAirportCodes.length > 0
+          ? selectedArrivalAirportCodes
+          : arrivalAirportCodes.length > 0
+          ? arrivalAirportCodes
+          : arrivalId
+          ? [arrivalId]
+          : [];
+
+      const flightPromises = airportsToSearch.flatMap((departureAirportCode) =>
+        targetArrivalCodes.map(async (arrivalCode) => {
         const params = new URLSearchParams({
           departure_id: departureAirportCode,
-          arrival_id: arrivalId,
+            arrival_id: arrivalCode,
           outbound_date: tripPreferences.start_date,
           return_date: tripPreferences.end_date,
         });
 
-        console.log(`Fetching flights for departure airport ${departureAirportCode} with params:`, {
+          console.log(`Fetching flights for route ${departureAirportCode} → ${arrivalCode} with params:`, {
           departure_id: departureAirportCode,
-          arrival_id: arrivalId,
+            arrival_id: arrivalCode,
           outbound_date: tripPreferences.start_date,
           return_date: tripPreferences.end_date,
         });
@@ -859,51 +880,57 @@ const ChatWindow = ({
           });
 
           const result = await response.json();
-          console.log(`Flight API response for ${departureAirportCode}:`, result);
+            console.log(`Flight API response for route ${departureAirportCode} → ${arrivalCode}:`, result);
 
           if (response.ok && result.success) {
-            let flightsForAirport: any[] = [];
+              let flightsForRoute: any[] = [];
             if (Array.isArray(result.best_flights) && result.best_flights.length > 0) {
-              flightsForAirport = result.best_flights;
+                flightsForRoute = result.best_flights;
             } else if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
-              flightsForAirport = result.other_flights;
+                flightsForRoute = result.other_flights;
             }
 
-            // Add departure airport code to each flight for grouping
+              // Add departure & arrival airport codes to each flight for grouping
             return {
-              airportCode: departureAirportCode,
-              flights: flightsForAirport.map(flight => ({
+                departureCode: departureAirportCode,
+                arrivalCode,
+                flights: flightsForRoute.map((flight) => ({
                 ...flight,
-                departure_airport_code: departureAirportCode
-              }))
+                  departure_airport_code: departureAirportCode,
+                  arrival_airport_code: arrivalCode,
+                })),
             };
           } else {
-            console.error(`Flight API error for ${departureAirportCode}:`, result);
+              console.error(`Flight API error for route ${departureAirportCode} → ${arrivalCode}:`, result);
             return {
-              airportCode: departureAirportCode,
-              flights: []
+                departureCode: departureAirportCode,
+                arrivalCode,
+                flights: [],
             };
           }
         } catch (error) {
-          console.error(`Error fetching flights for ${departureAirportCode}:`, error);
+            console.error(`Error fetching flights for route ${departureAirportCode} → ${arrivalCode}:`, error);
           return {
-            airportCode: departureAirportCode,
-            flights: []
+              departureCode: departureAirportCode,
+              arrivalCode,
+              flights: [],
           };
         }
-      });
+        })
+      );
 
       const results = await Promise.all(flightPromises);
 
-      // Group flights by departure airport code
+      // Group flights by departure airport code (keep existing UI grouping)
       const flightsByAirportMap: Record<string, any[]> = {};
       const allFlights: any[] = [];
-      let globalIndex = 0;
 
-      results.forEach(({ airportCode, flights }) => {
+      results.forEach(({ departureCode, flights }) => {
         if (flights.length > 0) {
-          flightsByAirportMap[airportCode] = flights;
-          // Add flights to flat list for backward compatibility
+          if (!flightsByAirportMap[departureCode]) {
+            flightsByAirportMap[departureCode] = [];
+          }
+          flightsByAirportMap[departureCode].push(...flights);
           allFlights.push(...flights);
         }
       });
@@ -1360,21 +1387,37 @@ const ChatWindow = ({
       const result = await response.json();
 
       if (response.ok && result.success) {
-        // Store all airport codes and details if this is a departure location
-        if (isDeparture && result.airport_codes && Array.isArray(result.airport_codes)) {
+        // Store all airport codes and details
+        if (result.airport_codes && Array.isArray(result.airport_codes)) {
+          if (isDeparture) {
           setDepartureAirportCodes(result.airport_codes);
-          // Store full airport details if available
-          if (result.airports && Array.isArray(result.airports)) {
-            setDepartureAirports(result.airports);
+            setSelectedDepartureAirportCodes(result.airport_codes); // default: all selected
           } else {
-            // If airports array not available, create from codes only
-            setDepartureAirports(result.airport_codes.map((code: string) => ({
-              code,
-              name: '',
-              distance_miles: null
-            })));
+            setArrivalAirportCodes(result.airport_codes);
+            setSelectedArrivalAirportCodes(result.airport_codes); // default: all selected
           }
         }
+
+          // Store full airport details if available
+          if (result.airports && Array.isArray(result.airports)) {
+          if (isDeparture) {
+            setDepartureAirports(result.airports);
+          } else {
+            setArrivalAirports(result.airports);
+          }
+        } else if (result.airport_codes && Array.isArray(result.airport_codes)) {
+          const fallbackAirports = result.airport_codes.map((code: string) => ({
+              code,
+            name: "",
+            distance_miles: null,
+          }));
+          if (isDeparture) {
+            setDepartureAirports(fallbackAirports);
+          } else {
+            setArrivalAirports(fallbackAirports);
+          }
+        }
+
         // Return the primary (closest) airport code for backward compatibility
         return result.airport_code || null;
       }
@@ -2303,6 +2346,7 @@ const ChatWindow = ({
                       // Skip trip sketch and go straight to flights
                       setHasConfirmedTripSketch(true);
                       setHasShownTripSketchPrompt(true);
+                      setActiveTab("flights");
                     }}
                   >
                     I&apos;m done with activities
@@ -2517,40 +2561,52 @@ const ChatWindow = ({
                       <p className="text-[11px] text-emerald-400">
                         Primary departure airport: <span className="font-semibold">{departureId}</span>
                       </p>
-                      {departureAirportCodes.length > 1 && (
+                      {departureAirportCodes.length > 0 && (
                         <div className="space-y-1 pt-1 border-t border-blue-200">
                           <p className="text-[11px] text-slate-600 font-semibold">
-                            All available airports ({departureAirportCodes.length}):
+                            Select departure airports ({departureAirportCodes.length} found):
                           </p>
-                          <div className="space-y-1 pl-2">
-                            {departureAirports.length > 0 ? (
-                              // Show full details with names and distances
-                              departureAirports.map((airport, idx) => (
-                                <div key={airport.code} className="text-[10px] text-slate-500">
-                                  <span className={`font-semibold ${idx === 0 ? 'text-emerald-400' : 'text-slate-600'}`}>
-                                    {airport.code}
-                                  </span>
+                          <div className="mt-1 grid grid-cols-2 gap-1 pl-1">
+                            {(departureAirports.length > 0 ? departureAirports : departureAirportCodes.map((code: string) => ({
+                              code,
+                              name: "",
+                              distance_miles: null,
+                            }))).map((airport, idx) => {
+                              const code = airport.code;
+                              const isSelected = selectedDepartureAirportCodes.includes(code);
+                              return (
+                                <button
+                                  key={code}
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedDepartureAirportCodes((prev) =>
+                                      prev.includes(code)
+                                        ? prev.filter((c) => c !== code)
+                                        : [...prev, code]
+                                    );
+                                  }}
+                                  className={`flex items-center justify-between rounded border px-2 py-1 text-[10px] ${
+                                    isSelected
+                                      ? "border-emerald-400 bg-emerald-50 text-slate-900"
+                                      : "border-blue-200 bg-white text-slate-600"
+                                  }`}
+                                >
+                                  <span className="font-semibold">{code}</span>
                                   {airport.name && (
-                                    <> - {airport.name}</>
-                                  )}
-                                  {airport.distance_miles !== null && (
-                                    <> ({airport.distance_miles} miles away)</>
-                                  )}
-                                </div>
-                              ))
-                            ) : (
-                              // Fallback: just show codes
-                              departureAirportCodes.map((code, idx) => (
-                                <div key={code} className="text-[10px] text-slate-500">
-                                  <span className={`font-semibold ${idx === 0 ? 'text-emerald-400' : 'text-slate-600'}`}>
-                                    {code}
+                                    <span className="ml-1 truncate max-w-[80px] text-[9px] text-slate-500">
+                                      {airport.name}
                                   </span>
-                                </div>
-                              ))
                             )}
+                                </button>
+                              );
+                            })}
                           </div>
                           <p className="text-[10px] text-slate-500 italic pt-1">
-                            Flights will be searched from all {departureAirportCodes.length} airports
+                            Flights will be searched from{" "}
+                            {selectedDepartureAirportCodes.length > 0
+                              ? selectedDepartureAirportCodes.length
+                              : departureAirportCodes.length}{" "}
+                            selected departure airport(s).
                           </p>
                         </div>
                       )}
@@ -2599,9 +2655,60 @@ const ChatWindow = ({
                               </Button>
                             </div>
                             {arrivalId && (
+                              <div className="space-y-1">
                               <p className="text-[11px] text-emerald-400">
-                                Arrival airport code: <span className="font-semibold">{arrivalId}</span>
-                              </p>
+                                  Primary arrival airport: <span className="font-semibold">{arrivalId}</span>
+                                </p>
+                                {arrivalAirportCodes.length > 0 && (
+                                  <div className="space-y-1 pt-1 border-t border-blue-200">
+                                    <p className="text-[11px] text-slate-600 font-semibold">
+                                      Select arrival airports ({arrivalAirportCodes.length} found):
+                                    </p>
+                                    <div className="mt-1 grid grid-cols-2 gap-1 pl-1">
+                                      {(arrivalAirports.length > 0 ? arrivalAirports : arrivalAirportCodes.map((code: string) => ({
+                                        code,
+                                        name: "",
+                                        distance_miles: null,
+                                      }))).map((airport, idx) => {
+                                        const code = airport.code;
+                                        const isSelected = selectedArrivalAirportCodes.includes(code);
+                                        return (
+                                          <button
+                                            key={code}
+                                            type="button"
+                                            onClick={() => {
+                                              setSelectedArrivalAirportCodes((prev) =>
+                                                prev.includes(code)
+                                                  ? prev.filter((c) => c !== code)
+                                                  : [...prev, code]
+                                              );
+                                            }}
+                                            className={`flex items-center justify-between rounded border px-2 py-1 text-[10px] ${
+                                              isSelected
+                                                ? "border-emerald-400 bg-emerald-50 text-slate-900"
+                                                : "border-blue-200 bg-white text-slate-600"
+                                            }`}
+                                          >
+                                            <span className="font-semibold">{code}</span>
+                                            {airport.name && (
+                                              <span className="ml-1 truncate max-w-[80px] text-[9px] text-slate-500">
+                                                {airport.name}
+                                              </span>
+                                            )}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                    <p className="text-[10px] text-slate-500 italic pt-1">
+                                      Flights will be searched to{" "}
+                                      {selectedArrivalAirportCodes.length > 0
+                                        ? selectedArrivalAirportCodes.length
+                                        : arrivalAirportCodes.length}{" "}
+                                      selected arrival airport(s).
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
                             )}
                           </>
                         ) : (
@@ -3288,6 +3395,7 @@ const ChatWindow = ({
                           onClick={() => {
                             setHasConfirmedFlights(true);
                             setHasStartedHotels(true);
+                            setActiveTab("hotels");
                           }}
                         >
                           I&apos;m done planning flights. Now let&apos;s move on to hotels
