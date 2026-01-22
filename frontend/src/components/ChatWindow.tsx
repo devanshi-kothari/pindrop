@@ -2233,7 +2233,7 @@ const ChatWindow = ({
                       return (
                         <ActivitySwipeCard
                           key={activity.activity_id}
-                          activity={activity}
+                          activity={activity as any}
                           index={idx}
                           total={Math.min(3, activities.filter((a) => a.preference === "pending").length)}
                           onSwipe={(direction) => {
@@ -2308,6 +2308,51 @@ const ChatWindow = ({
                     I&apos;m done with activities
                   </Button>
                 </div>
+
+                {/* Reviewed activities summary */}
+                {activities.filter((a) => a.preference !== "pending").length > 0 && (
+                  <div className="mt-4 border-t border-blue-100 pt-3">
+                    <p className="text-xs font-semibold text-slate-600 mb-2">
+                      Your reviewed activities
+                    </p>
+                    <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1">
+                      {activities
+                        .filter((a) => a.preference !== "pending")
+                        .map((a) => (
+                          <div
+                            key={a.activity_id}
+                            className="flex items-center justify-between rounded-md border border-blue-100 bg-blue-50/60 px-3 py-1.5 text-[11px]"
+                          >
+                            <div className="truncate">
+                              <span className="font-semibold text-slate-900 truncate">
+                                {a.name}
+                              </span>
+                              {a.location && (
+                                <span className="text-slate-500 ml-1 truncate">
+                                  • {a.location}
+                                </span>
+                              )}
+                            </div>
+                            <span
+                              className={
+                                a.preference === "liked"
+                                  ? "text-emerald-500 font-semibold ml-2 flex-shrink-0"
+                                  : a.preference === "maybe"
+                                  ? "text-amber-500 font-semibold ml-2 flex-shrink-0"
+                                  : "text-slate-400 font-semibold ml-2 flex-shrink-0"
+                              }
+                            >
+                              {a.preference === "liked"
+                                ? "Liked"
+                                : a.preference === "maybe"
+                                ? "Maybe"
+                                : "Passed"}
+                            </span>
+                          </div>
+                        ))}
+              </div>
+            </div>
+          )}
               </div>
             </div>
           )}
@@ -3753,7 +3798,7 @@ const ChatWindow = ({
                     <div className="flex justify-start">
                       <div className="bg-white border border-blue-200 text-slate-900 rounded-lg px-3 py-2 shadow-sm">
                         <p className="text-xs">Loading conversation history...</p>
-                      </div>
+          </div>
                     </div>
                   )}
                   {messages.map((message, index) => (
@@ -3803,25 +3848,25 @@ const ChatWindow = ({
                 </div>
               </ScrollArea>
               <div className="mt-3 flex gap-2">
-                <Input
-                  type="text"
+          <Input
+            type="text"
                   placeholder="Ask a quick question about this trip..."
-                  value={inputMessage}
-                  onChange={(e) => setInputMessage(e.target.value)}
-                  onKeyPress={handleKeyPress}
-                  disabled={isLoading}
+            value={inputMessage}
+            onChange={(e) => setInputMessage(e.target.value)}
+            onKeyPress={handleKeyPress}
+            disabled={isLoading}
                   className="h-9 text-xs"
-                />
-                <Button
-                  type="button"
-                  onClick={() => sendMessage()}
-                  disabled={!inputMessage.trim() || isLoading}
+          />
+          <Button
+            type="button"
+            onClick={() => sendMessage()}
+            disabled={!inputMessage.trim() || isLoading}
                   className="h-9 px-3 text-xs bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-50 disabled:cursor-not-allowed"
-                  id="chat-send-button"
-                >
+            id="chat-send-button"
+          >
                   Send
-                </Button>
-              </div>
+          </Button>
+        </div>
             </CardContent>
           </Card>
         </div>
