@@ -141,8 +141,19 @@ const loadGoogleMapsApi = () => {
 
 const formatDate = (dateString?: string | null) => {
   if (!dateString) return null;
-  const parsed = new Date(dateString);
+  const parts = String(dateString).split("-");
+  if (parts.length !== 3) return null;
+
+  const year = Number(parts[0]);
+  const month = Number(parts[1]);
+  const day = Number(parts[2]);
+
+  if (!year || !month || !day) return null;
+
+  // Construct in local time to avoid timezone shifting of YYYY-MM-DD strings
+  const parsed = new Date(year, month - 1, day);
   if (Number.isNaN(parsed.getTime())) return null;
+
   return parsed.toLocaleDateString("en-US", {
     weekday: "long",
     month: "long",

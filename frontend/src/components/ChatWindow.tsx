@@ -1914,7 +1914,7 @@ const ChatWindow = ({
                 <div className="flex flex-col gap-2 items-end">
                   <div className="flex items-center gap-2">
                     <Label className="text-[11px] text-slate-600">
-                      Use test activities (for Paris)
+                      Use test activities
                     </Label>
                     <Switch
                       checked={useTestActivities}
@@ -2607,15 +2607,6 @@ const ChatWindow = ({
                     </>
                   );
                 })()}
-                <div className="mt-3 flex items-center justify-end">
-                  <Button
-                    size="sm"
-                    className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                    onClick={() => setHasConfirmedTripSketch(true)}
-                  >
-                    I&apos;m happy with my trip sketch
-                  </Button>
-                </div>
               </div>
             </div>
           )}
@@ -3828,7 +3819,14 @@ const ChatWindow = ({
                     </div>
 
                     {finalItinerary.days.map((day: any, dayIndex: number) => {
-                      const date = day.date ? new Date(day.date).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) : `Day ${day.day_number}`;
+                      const localDate = day.date ? parseLocalDate(day.date) : null;
+                      const date = localDate
+                        ? localDate.toLocaleDateString('en-US', {
+                            weekday: 'long',
+                            month: 'long',
+                            day: 'numeric',
+                          })
+                        : `Day ${day.day_number}`;
                       return (
                         <div key={day.day_number} className="bg-blue-50 rounded-lg p-5 border border-blue-200 space-y-4">
                           <div className="flex items-center justify-between border-b border-blue-200 pb-3">
