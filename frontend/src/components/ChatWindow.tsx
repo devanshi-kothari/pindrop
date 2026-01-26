@@ -1811,6 +1811,89 @@ const ChatWindow = ({
         </Button>
       </div>
 
+      {/* Explore Mode: Full-page conversation for destination discovery */}
+      {planningMode === "explore" && !hasLockedDestination && (
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex-1 overflow-auto px-4 py-4">
+            <div className="max-w-2xl mx-auto space-y-4">
+              {isLoadingHistory && (
+                <div className="flex justify-center py-8">
+                  <p className="text-sm text-muted-foreground">Loading conversation...</p>
+                </div>
+              )}
+              {messages.map((message, index) => (
+                <div
+                  key={index}
+                  className={`flex ${
+                    message.role === "user" ? "justify-end" : "justify-start"
+                  }`}
+                >
+                  <div
+                    className={`max-w-md rounded-lg px-4 py-3 shadow-sm ${
+                      message.role === "user"
+                        ? "bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 shadow-lg"
+                        : "bg-white border border-blue-200 text-slate-900"
+                    }`}
+                  >
+                    <div className="whitespace-pre-wrap break-words leading-relaxed text-sm">
+                      {message.content}
+                    </div>
+                    <p
+                      className={`text-xs mt-2 ${
+                        message.role === "user"
+                          ? "text-teal-100"
+                          : "text-muted-foreground"
+                      }`}
+                    >
+                      {message.timestamp}
+                    </p>
+                  </div>
+                </div>
+              ))}
+              {isCreatingTrip && (
+                <div className="flex justify-start">
+                  <div className="bg-white border border-blue-200 text-slate-900 rounded-lg px-4 py-3 shadow-sm text-sm">
+                    <p>Creating your trip...</p>
+                  </div>
+                </div>
+              )}
+              {isLoading && !isCreatingTrip && (
+                <div className="flex justify-start">
+                  <div className="bg-white border border-blue-200 text-slate-900 rounded-lg px-4 py-3 shadow-sm text-sm">
+                    <p>Thinking...</p>
+                  </div>
+                </div>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+          </div>
+
+          {/* Input area for explore mode */}
+          <div className="border-t border-blue-200 bg-white/95 px-4 py-4">
+            <div className="max-w-2xl mx-auto flex gap-3">
+              <Input
+                type="text"
+                placeholder="What kind of trip are you thinking about? Tell me about your destination, vibe, dates, or anything else..."
+                value={inputMessage}
+                onChange={(e) => setInputMessage(e.target.value)}
+                onKeyPress={handleKeyPress}
+                disabled={isLoading}
+                className="flex-1 h-12 text-sm"
+              />
+              <Button
+                type="button"
+                onClick={() => sendMessage()}
+                disabled={!inputMessage.trim() || isLoading}
+                className="h-12 px-6 bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                id="chat-send-button"
+              >
+                <Send className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Structured trip preferences */}
       {tripId && (planningMode === "known" || hasLockedDestination) && (
         <div className="px-4 pt-4">
@@ -3906,8 +3989,8 @@ const ChatWindow = ({
         </div>
       </ScrollArea>
 
-      {/* Chat popup */}
-      {isChatOpen && (
+      {/* Chat popup - only shown in known mode */}
+      {isChatOpen && planningMode === "known" && (
         <div className="fixed bottom-20 right-4 z-40 w-full max-w-md">
           <Card className="shadow-xl border border-blue-200 bg-white/95 backdrop-blur">
             <CardHeader className="flex flex-row items-center justify-between py-2">
@@ -4002,16 +4085,18 @@ const ChatWindow = ({
         </div>
       )}
 
-      {/* Floating chat launcher */}
-      <div className="fixed bottom-6 right-6 z-30">
-        <Button
-          size="sm"
-          className="rounded-full shadow-lg bg-yellow-400 hover:bg-yellow-300 text-slate-900 text-xs px-4 py-2"
-          onClick={() => setIsChatOpen(true)}
-        >
-          Chat with Pindrop
-        </Button>
-      </div>
+      {/* Floating chat launcher - hidden in explore mode */}
+      {planningMode !== "explore" && (
+        <div className="fixed bottom-6 right-6 z-30">
+          <Button
+            size="sm"
+            className="rounded-full shadow-lg bg-yellow-400 hover:bg-yellow-300 text-slate-900 text-xs px-4 py-2"
+            onClick={() => setIsChatOpen(true)}
+          >
+            Chat with Pindrop
+          </Button>
+        </div>
+      )}
     </div>
   );
 };
