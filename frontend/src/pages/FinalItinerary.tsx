@@ -17,9 +17,12 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { PieChart, Pie, Cell, Legend } from "recharts";
 import { getApiUrl } from "@/lib/api";
-import { ArrowLeft, Plus, Trash2, X } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, X, RotateCcw } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import ReplaceActivityModal from "@/components/ReplaceActivityModal";
+import ReplaceHotelModal from "@/components/ReplaceHotelModal";
+import ReplaceFlightModal from "@/components/ReplaceFlightModal";
 
 type FlightLeg = {
   departure_airport?: {
@@ -197,6 +200,28 @@ const FinalItinerary = () => {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [hasLoadedChatHistory, setHasLoadedChatHistory] = useState(false);
+  
+  // Replace activity modal state
+  const [replaceModalOpen, setReplaceModalOpen] = useState(false);
+  const [selectedActivityToReplace, setSelectedActivityToReplace] = useState<{
+    activity: any;
+    dayNumber: number;
+  } | null>(null);
+
+  // Replace hotel modal state
+  const [replaceHotelModalOpen, setReplaceHotelModalOpen] = useState(false);
+  const [selectedHotelToReplace, setSelectedHotelToReplace] = useState<{
+    hotel: any;
+    tripHotelId: number;
+  } | null>(null);
+
+  // Replace flight modal state
+  const [replaceFlightModalOpen, setReplaceFlightModalOpen] = useState(false);
+  const [selectedFlightToReplace, setSelectedFlightToReplace] = useState<{
+    flight: any;
+    tripFlightId: number;
+    flightType: "outbound" | "return";
+  } | null>(null);
 
   useEffect(() => {
     const loadFinalItinerary = async () => {
@@ -371,6 +396,159 @@ const FinalItinerary = () => {
       alert("Failed to remove activity. Please try again.");
     } finally {
       setDeletingActivity((prev) => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const handleConfirmReplacement = async (selectedActivity: any) => {
+    if (!tripId || !selectedActivityToReplace) return;
+
+    try {
+      const token = localStorage.getItem("token");
+      if (!token) {
+        navigate("/login");
+        return;
+      }
+
+      const response = await fetch(
+        getApiUrl(
+          `api/trips/${tripId}/activities/${selectedActivityToReplace.activity.activity_id}/confirm-replacement`
+        ),
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            selectedActivity: selectedActivity,
+          }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (response.ok && result.success) {
+        // Reload itinerary to show replacement
+        const reloadResponse = await fetch(getApiUrl(`api/trips/${tripId}/final-itinerary`), {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        const reloadResult = await reloadResponse.json();
+        if (reloadResponse.ok && reloadResult.success && reloadResult.itinerary?.days?.length > 0) {
+          setItinerary(reloadResult.itinerary);
+        }
+      } else {
+        throw new Error(result.message || "Failed to replace activity");
+      }
+    } catch (error) {
+      console.error("Error confirming replacement:", error);
+      throw error;
+    }
+  };
+
+  const handleConfirmHotelReplacement = async (selectedHotel: any) => {
+    if (!tripId || !selectedHotelToReplace) return;
+
+    try {
+      const token = localStorage.getItem("token");
+      if (!token) {
+        navigate("/login");
+        return;
+      }
+
+      const response = await fetch(
+        getApiUrl(
+          `api/trips/${tripId}/hotels/${selectedHotelToReplace.tripHotelId}/confirm-replacement`
+        ),
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            selectedHotel: selectedHotel,
+          }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (response.ok && result.success) {
+        // Reload itinerary to show replacement
+        const reloadResponse = await fetch(getApiUrl(`api/trips/${tripId}/final-itinerary`), {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        const reloadResult = await reloadResponse.json();
+        if (reloadResponse.ok && reloadResult.success && reloadResult.itinerary?.days?.length > 0) {
+          setItinerary(reloadResult.itinerary);
+        }
+      } else {
+        throw new Error(result.message || "Failed to replace hotel");
+      }
+    } catch (error) {
+      console.error("Error confirming hotel replacement:", error);
+      throw error;
+    }
+  };
+
+  const handleConfirmFlightReplacement = async (selectedFlight: any) => {
+    if (!tripId || !selectedFlightToReplace) return;
+
+    try {
+      const token = localStorage.getItem("token");
+      if (!token) {
+        navigate("/login");
+        return;
+      }
+
+      const response = await fetch(
+        getApiUrl(
+          `api/trips/${tripId}/flights/${selectedFlightToReplace.tripFlightId}/confirm-replacement`
+        ),
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            selectedFlight: selectedFlight,
+          }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (response.ok && result.success) {
+        // Reload itinerary to show replacement
+        const reloadResponse = await fetch(getApiUrl(`api/trips/${tripId}/final-itinerary`), {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        const reloadResult = await reloadResponse.json();
+        if (reloadResponse.ok && reloadResult.success && reloadResult.itinerary?.days?.length > 0) {
+          setItinerary(reloadResult.itinerary);
+        }
+      } else {
+        throw new Error(result.message || "Failed to replace flight");
+      }
+    } catch (error) {
+      console.error("Error confirming flight replacement:", error);
+      throw error;
     }
   };
 
@@ -818,53 +996,54 @@ const FinalItinerary = () => {
                           )}
 
                           {day.outbound_flight && (
-                            <Dialog>
-                              <DialogTrigger asChild>
-                                <button className="mt-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-slate-600 text-left w-full hover:border-blue-300 hover:bg-blue-50/80 transition-colors">
-                                  <span className="text-blue-600 font-semibold">✈️ Outbound</span>{" "}
-                                  {day.outbound_flight.departure_id} → {day.outbound_flight.arrival_id}
-                                </button>
-                              </DialogTrigger>
-                              <DialogContent className="max-w-lg">
-                                <DialogHeader>
-                                  <DialogTitle>Outbound flight details</DialogTitle>
-                                  <DialogDescription>
-                                    Saved at booking time for this trip.
-                                  </DialogDescription>
-                                </DialogHeader>
-                                <div className="space-y-2 text-sm text-slate-700">
-                                  <p>
-                                    <span className="font-semibold">Route:</span>{" "}
+                            <div className="mt-3 flex gap-2">
+                              <Dialog>
+                                <DialogTrigger asChild>
+                                  <button className="flex-1 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-slate-600 text-left hover:border-blue-300 hover:bg-blue-50/80 transition-colors">
+                                    <span className="text-blue-600 font-semibold">✈️ Outbound</span>{" "}
                                     {day.outbound_flight.departure_id} → {day.outbound_flight.arrival_id}
-                                  </p>
-                                  {typeof day.outbound_flight.price === "number" && (
+                                  </button>
+                                </DialogTrigger>
+                                <DialogContent className="max-w-lg">
+                                  <DialogHeader>
+                                    <DialogTitle>Outbound flight details</DialogTitle>
+                                    <DialogDescription>
+                                      Saved at booking time for this trip.
+                                    </DialogDescription>
+                                  </DialogHeader>
+                                  <div className="space-y-2 text-sm text-slate-700">
                                     <p>
-                                      <span className="font-semibold">Price:</span>{" "}
-                                      ${day.outbound_flight.price.toLocaleString()}
+                                      <span className="font-semibold">Route:</span>{" "}
+                                      {day.outbound_flight.departure_id} → {day.outbound_flight.arrival_id}
                                     </p>
-                                  )}
-                                  {formatDuration(day.outbound_flight.total_duration) && (
-                                    <p>
-                                      <span className="font-semibold">Total duration:</span>{" "}
-                                      {formatDuration(day.outbound_flight.total_duration)}
-                                    </p>
-                                  )}
-                                  {Array.isArray(day.outbound_flight.flights) && day.outbound_flight.flights.length > 0 && (
-                                    <div className="mt-2">
-                                      <p className="font-semibold text-xs text-slate-600 mb-1">
-                                        Flight segments
+                                    {typeof day.outbound_flight.price === "number" && (
+                                      <p>
+                                        <span className="font-semibold">Price:</span>{" "}
+                                        ${day.outbound_flight.price.toLocaleString()}
                                       </p>
-                                      <ul className="space-y-1.5 text-xs">
-                                        {day.outbound_flight.flights.map((leg, idx) => (
-                                          <li key={idx} className="rounded border border-blue-100 bg-blue-50/60 px-2 py-1">
-                                            <div className="font-medium">
-                                              {leg.departure_airport?.id} → {leg.arrival_airport?.id}
-                                            </div>
-                                            <div className="text-slate-600">
-                                              {leg.departure_airport?.time} → {leg.arrival_airport?.time}
-                                            </div>
-                                            {leg.airline && (
-                                              <div className="text-slate-500">
+                                    )}
+                                    {formatDuration(day.outbound_flight.total_duration) && (
+                                      <p>
+                                        <span className="font-semibold">Total duration:</span>{" "}
+                                        {formatDuration(day.outbound_flight.total_duration)}
+                                      </p>
+                                    )}
+                                    {Array.isArray(day.outbound_flight.flights) && day.outbound_flight.flights.length > 0 && (
+                                      <div className="mt-2">
+                                        <p className="font-semibold text-xs text-slate-600 mb-1">
+                                          Flight segments
+                                        </p>
+                                        <ul className="space-y-1.5 text-xs">
+                                          {day.outbound_flight.flights.map((leg, idx) => (
+                                            <li key={idx} className="rounded border border-blue-100 bg-blue-50/60 px-2 py-1">
+                                              <div className="font-medium">
+                                                {leg.departure_airport?.id} → {leg.arrival_airport?.id}
+                                              </div>
+                                              <div className="text-slate-600">
+                                                {leg.departure_airport?.time} → {leg.arrival_airport?.time}
+                                              </div>
+                                              {leg.airline && (
+                                                <div className="text-slate-500">
                                                 {leg.airline}
                                               </div>
                                             )}
@@ -892,70 +1071,104 @@ const FinalItinerary = () => {
                                 </div>
                               </DialogContent>
                             </Dialog>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                setSelectedFlightToReplace({
+                                  flight: day.outbound_flight,
+                                  tripFlightId: 1, // We'll get this from backend
+                                  flightType: "outbound",
+                                });
+                                setReplaceFlightModalOpen(true);
+                              }}
+                              className="h-10 px-3 text-blue-600 hover:text-blue-700 border-blue-200 hover:bg-blue-50"
+                              title="Replace this flight"
+                            >
+                              <RotateCcw className="h-4 w-4" />
+                            </Button>
+                          </div>
                           )}
 
                           {day.hotel && (
-                            <Dialog>
-                              <DialogTrigger asChild>
-                                <button className="mt-2 rounded-md border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs text-slate-700 text-left w-full hover:border-yellow-300 hover:bg-yellow-50/80 transition-colors">
-                                  <span className="text-yellow-700 font-semibold">🏨 Hotel</span>{" "}
-                                  {day.hotel.name}
-                                </button>
-                              </DialogTrigger>
-                              <DialogContent className="max-w-lg">
-                                <DialogHeader>
-                                  <DialogTitle>Hotel details</DialogTitle>
-                                  <DialogDescription>
-                                    Saved at booking time for this trip.
-                                  </DialogDescription>
-                                </DialogHeader>
-                                <div className="space-y-2 text-sm text-slate-700">
-                                  <p className="font-semibold text-base">{day.hotel.name}</p>
-                                  {day.hotel.location && (
-                                    <p>
-                                      <span className="font-semibold">Location:</span>{" "}
-                                      {day.hotel.location}
-                                    </p>
-                                  )}
-                                  {typeof day.hotel.overall_rating === "number" && (
-                                    <p>
-                                      <span className="font-semibold">Rating:</span>{" "}
-                                      {day.hotel.overall_rating.toFixed(1)} ⭐
-                                    </p>
-                                  )}
-                                  {typeof day.hotel.rate_per_night === "number" && (
-                                    <p>
-                                      <span className="font-semibold">Rate per night:</span>{" "}
-                                      ${day.hotel.rate_per_night.toLocaleString()}
-                                    </p>
-                                  )}
-                                  {day.hotel.check_in_time && (
-                                    <p>
-                                      <span className="font-semibold">Check-in:</span>{" "}
-                                      {day.hotel.check_in_time}
-                                    </p>
-                                  )}
-                                  {day.hotel.check_out_time && (
-                                    <p>
-                                      <span className="font-semibold">Check-out:</span>{" "}
-                                      {day.hotel.check_out_time}
-                                    </p>
-                                  )}
-                                  {day.hotel.link && (
-                                    <div className="pt-2">
-                                      <a
-                                        href={day.hotel.link}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="text-xs text-blue-600 hover:text-blue-700 underline"
-                                      >
-                                        View booking / property page →
-                                      </a>
-                                    </div>
-                                  )}
-                                </div>
-                              </DialogContent>
-                            </Dialog>
+                            <div className="mt-2 flex gap-2">
+                              <Dialog>
+                                <DialogTrigger asChild>
+                                  <button className="flex-1 rounded-md border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs text-slate-700 text-left hover:border-yellow-300 hover:bg-yellow-50/80 transition-colors">
+                                    <span className="text-yellow-700 font-semibold">🏨 Hotel</span>{" "}
+                                    {day.hotel.name}
+                                  </button>
+                                </DialogTrigger>
+                                <DialogContent className="max-w-lg">
+                                  <DialogHeader>
+                                    <DialogTitle>Hotel details</DialogTitle>
+                                    <DialogDescription>
+                                      Saved at booking time for this trip.
+                                    </DialogDescription>
+                                  </DialogHeader>
+                                  <div className="space-y-2 text-sm text-slate-700">
+                                    <p className="font-semibold text-base">{day.hotel.name}</p>
+                                    {day.hotel.location && (
+                                      <p>
+                                        <span className="font-semibold">Location:</span>{" "}
+                                        {day.hotel.location}
+                                      </p>
+                                    )}
+                                    {typeof day.hotel.overall_rating === "number" && (
+                                      <p>
+                                        <span className="font-semibold">Rating:</span>{" "}
+                                        {day.hotel.overall_rating.toFixed(1)} ⭐
+                                      </p>
+                                    )}
+                                    {typeof day.hotel.rate_per_night === "number" && (
+                                      <p>
+                                        <span className="font-semibold">Rate per night:</span>{" "}
+                                        ${day.hotel.rate_per_night.toLocaleString()}
+                                      </p>
+                                    )}
+                                    {day.hotel.check_in_time && (
+                                      <p>
+                                        <span className="font-semibold">Check-in:</span>{" "}
+                                        {day.hotel.check_in_time}
+                                      </p>
+                                    )}
+                                    {day.hotel.check_out_time && (
+                                      <p>
+                                        <span className="font-semibold">Check-out:</span>{" "}
+                                        {day.hotel.check_out_time}
+                                      </p>
+                                    )}
+                                    {day.hotel.link && (
+                                      <div className="pt-2">
+                                        <a
+                                          href={day.hotel.link}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-xs text-blue-600 hover:text-blue-700 underline"
+                                        >
+                                          View booking / property page →
+                                        </a>
+                                      </div>
+                                    )}
+                                  </div>
+                                </DialogContent>
+                              </Dialog>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setSelectedHotelToReplace({
+                                    hotel: day.hotel,
+                                    tripHotelId: 1, // We'll get this from the backend
+                                  });
+                                  setReplaceHotelModalOpen(true);
+                                }}
+                                className="h-10 px-3 text-yellow-600 hover:text-yellow-700 border-yellow-200 hover:bg-yellow-50"
+                                title="Replace this hotel"
+                              >
+                                <RotateCcw className="h-4 w-4" />
+                              </Button>
+                            </div>
                           )}
 
                           <div className="mt-3 space-y-2">
@@ -1109,15 +1322,32 @@ const FinalItinerary = () => {
                                             </a>
                                           )}
                                           {activity.activity_id && (
-                                            <Button
-                                              variant="ghost"
-                                              size="sm"
-                                              onClick={() => handleDeleteActivity(day.day_number, activity.activity_id!)}
-                                              disabled={deletingActivity[activityKey]}
-                                              className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-red-500 hover:text-red-700 hover:bg-red-50"
-                                            >
-                                              <Trash2 className="h-3 w-3" />
-                                            </Button>
+                                            <>
+                                              <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                onClick={() => {
+                                                  setSelectedActivityToReplace({
+                                                    activity,
+                                                    dayNumber: day.day_number,
+                                                  });
+                                                  setReplaceModalOpen(true);
+                                                }}
+                                                className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-blue-500 hover:text-blue-700 hover:bg-blue-50"
+                                                title="Replace this activity"
+                                              >
+                                                <RotateCcw className="h-3 w-3" />
+                                              </Button>
+                                              <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                onClick={() => handleDeleteActivity(day.day_number, activity.activity_id!)}
+                                                disabled={deletingActivity[activityKey]}
+                                                className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-red-500 hover:text-red-700 hover:bg-red-50"
+                                              >
+                                                <Trash2 className="h-3 w-3" />
+                                              </Button>
+                                            </>
                                           )}
                                         </div>
                                       </div>
@@ -1129,81 +1359,100 @@ const FinalItinerary = () => {
                           </div>
 
                           {day.return_flight && (
-                            <Dialog>
-                              <DialogTrigger asChild>
-                                <button className="mt-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-slate-600 text-left w-full hover:border-blue-300 hover:bg-blue-50/80 transition-colors">
-                                  <span className="text-blue-600 font-semibold">✈️ Return</span>{" "}
-                                  {day.return_flight.departure_id} → {day.return_flight.arrival_id}
-                                </button>
-                              </DialogTrigger>
-                              <DialogContent className="max-w-lg">
-                                <DialogHeader>
-                                  <DialogTitle>Return flight details</DialogTitle>
-                                  <DialogDescription>
-                                    Saved at booking time for this trip.
-                                  </DialogDescription>
-                                </DialogHeader>
-                                <div className="space-y-2 text-sm text-slate-700">
-                                  <p>
-                                    <span className="font-semibold">Route:</span>{" "}
+                            <div className="mt-3 flex gap-2">
+                              <Dialog>
+                                <DialogTrigger asChild>
+                                  <button className="flex-1 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-slate-600 text-left hover:border-blue-300 hover:bg-blue-50/80 transition-colors">
+                                    <span className="text-blue-600 font-semibold">✈️ Return</span>{" "}
                                     {day.return_flight.departure_id} → {day.return_flight.arrival_id}
-                                  </p>
-                                  {typeof day.return_flight.price === "number" && (
+                                  </button>
+                                </DialogTrigger>
+                                <DialogContent className="max-w-lg">
+                                  <DialogHeader>
+                                    <DialogTitle>Return flight details</DialogTitle>
+                                    <DialogDescription>
+                                      Saved at booking time for this trip.
+                                    </DialogDescription>
+                                  </DialogHeader>
+                                  <div className="space-y-2 text-sm text-slate-700">
                                     <p>
-                                      <span className="font-semibold">Price:</span>{" "}
-                                      ${day.return_flight.price.toLocaleString()}
+                                      <span className="font-semibold">Route:</span>{" "}
+                                      {day.return_flight.departure_id} → {day.return_flight.arrival_id}
                                     </p>
-                                  )}
-                                  {formatDuration(day.return_flight.total_duration) && (
-                                    <p>
-                                      <span className="font-semibold">Total duration:</span>{" "}
-                                      {formatDuration(day.return_flight.total_duration)}
-                                    </p>
-                                  )}
-                                  {Array.isArray(day.return_flight.flights) && day.return_flight.flights.length > 0 && (
-                                    <div className="mt-2">
-                                      <p className="font-semibold text-xs text-slate-600 mb-1">
-                                        Flight segments
+                                    {typeof day.return_flight.price === "number" && (
+                                      <p>
+                                        <span className="font-semibold">Price:</span>{" "}
+                                        ${day.return_flight.price.toLocaleString()}
                                       </p>
-                                      <ul className="space-y-1.5 text-xs">
-                                        {day.return_flight.flights.map((leg, idx) => (
-                                          <li key={idx} className="rounded border border-blue-100 bg-blue-50/60 px-2 py-1">
-                                            <div className="font-medium">
-                                              {leg.departure_airport?.id} → {leg.arrival_airport?.id}
-                                            </div>
-                                            <div className="text-slate-600">
-                                              {leg.departure_airport?.time} → {leg.arrival_airport?.time}
-                                            </div>
-                                            {leg.airline && (
-                                              <div className="text-slate-500">
-                                                {leg.airline}
+                                    )}
+                                    {formatDuration(day.return_flight.total_duration) && (
+                                      <p>
+                                        <span className="font-semibold">Total duration:</span>{" "}
+                                        {formatDuration(day.return_flight.total_duration)}
+                                      </p>
+                                    )}
+                                    {Array.isArray(day.return_flight.flights) && day.return_flight.flights.length > 0 && (
+                                      <div className="mt-2">
+                                        <p className="font-semibold text-xs text-slate-600 mb-1">
+                                          Flight segments
+                                        </p>
+                                        <ul className="space-y-1.5 text-xs">
+                                          {day.return_flight.flights.map((leg, idx) => (
+                                            <li key={idx} className="rounded border border-blue-100 bg-blue-50/60 px-2 py-1">
+                                              <div className="font-medium">
+                                                {leg.departure_airport?.id} → {leg.arrival_airport?.id}
                                               </div>
-                                            )}
-                                          </li>
-                                        ))}
-                                      </ul>
-                                    </div>
-                                  )}
-                                  {Array.isArray(day.return_flight.layovers) && day.return_flight.layovers.length > 0 && (
-                                    <div className="mt-2">
-                                      <p className="font-semibold text-xs text-slate-600 mb-1">
-                                        Layovers
-                                      </p>
-                                      <ul className="space-y-1 text-xs text-slate-600">
-                                        {day.return_flight.layovers.map((layover, idx) => (
-                                          <li key={idx}>
-                                            {layover.name || layover.id}{" "}
-                                            {formatDuration(layover.duration) && `• ${formatDuration(layover.duration)}`}
-                                            {layover.overnight && " • overnight"}
-                                          </li>
-                                        ))}
-                                      </ul>
-                                    </div>
-                                  )}
-                                </div>
-                              </DialogContent>
-                            </Dialog>
+                                              <div className="text-slate-600">
+                                                {leg.departure_airport?.time} → {leg.arrival_airport?.time}
+                                              </div>
+                                              {leg.airline && (
+                                                <div className="text-slate-500">
+                                                  {leg.airline}
+                                                </div>
+                                              )}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    )}
+                                    {Array.isArray(day.return_flight.layovers) && day.return_flight.layovers.length > 0 && (
+                                      <div className="mt-2">
+                                        <p className="font-semibold text-xs text-slate-600 mb-1">
+                                          Layovers
+                                        </p>
+                                        <ul className="space-y-1 text-xs text-slate-600">
+                                          {day.return_flight.layovers.map((layover, idx) => (
+                                            <li key={idx}>
+                                              {layover.name || layover.id}{" "}
+                                              {formatDuration(layover.duration) && `• ${formatDuration(layover.duration)}`}
+                                              {layover.overnight && " • overnight"}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    )}
+                                  </div>
+                                </DialogContent>
+                              </Dialog>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setSelectedFlightToReplace({
+                                    flight: day.return_flight,
+                                    tripFlightId: 1, // We'll get this from backend
+                                    flightType: "return",
+                                  });
+                                  setReplaceFlightModalOpen(true);
+                                }}
+                                className="h-10 px-3 text-blue-600 hover:text-blue-700 border-blue-200 hover:bg-blue-50"
+                                title="Replace this flight"
+                              >
+                                <RotateCcw className="h-4 w-4" />
+                              </Button>
+                            </div>
                           )}
+
                         </div>
                       );
                         })}
@@ -2394,6 +2643,52 @@ const FinalItinerary = () => {
           Chat with Pindrop
         </Button>
       </div>
+
+      {/* Replace Activity Modal */}
+      {selectedActivityToReplace && (
+        <ReplaceActivityModal
+          isOpen={replaceModalOpen}
+          onClose={() => {
+            setReplaceModalOpen(false);
+            setSelectedActivityToReplace(null);
+          }}
+          currentActivity={selectedActivityToReplace.activity}
+          dayNumber={selectedActivityToReplace.dayNumber}
+          tripId={parseInt(tripId || "0")}
+          onConfirm={handleConfirmReplacement}
+        />
+      )}
+
+      {/* Replace Hotel Modal */}
+      {selectedHotelToReplace && (
+        <ReplaceHotelModal
+          isOpen={replaceHotelModalOpen}
+          onClose={() => {
+            setReplaceHotelModalOpen(false);
+            setSelectedHotelToReplace(null);
+          }}
+          currentHotel={selectedHotelToReplace.hotel}
+          tripId={parseInt(tripId || "0")}
+          hotelId={selectedHotelToReplace.tripHotelId}
+          onConfirm={handleConfirmHotelReplacement}
+        />
+      )}
+
+      {/* Replace Flight Modal */}
+      {selectedFlightToReplace && (
+        <ReplaceFlightModal
+          isOpen={replaceFlightModalOpen}
+          onClose={() => {
+            setReplaceFlightModalOpen(false);
+            setSelectedFlightToReplace(null);
+          }}
+          currentFlight={selectedFlightToReplace.flight}
+          flightType={selectedFlightToReplace.flightType}
+          tripId={parseInt(tripId || "0")}
+          flightId={selectedFlightToReplace.tripFlightId}
+          onConfirm={handleConfirmFlightReplacement}
+        />
+      )}
     </div>
   );
 };

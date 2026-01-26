@@ -3513,5 +3513,602 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
   }
 });
 
+// GET /api/trips/:tripId/activities/:activityId/alternatives
+// Fetch 3 alternative activities similar to the current one
+router.get('/:tripId/activities/:activityId/alternatives', authenticateToken, async (req, res) => {
+  try {
+    const { tripId, activityId } = req.params;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authenticated',
+      });
+    }
+
+    // Fetch the current activity
+    const { data: currentActivity, error: fetchError } = await supabase
+      .from('activity')
+      .select('*')
+      .eq('activity_id', activityId)
+      .single();
+
+    if (fetchError || !currentActivity) {
+      return res.status(404).json({
+        success: false,
+        message: 'Activity not found',
+      });
+    }
+
+    // Fetch trip to get destination and dates
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('destination, start_date, end_date, trip_preference')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found',
+      });
+    }
+
+    // Use OpenAI to generate 3 alternatives with similar characteristics
+    const prompt = `You are a travel activity recommendation expert. Based on the following activity, suggest 3 similar but different activities that a traveler might enjoy as alternatives.
+
+Current Activity:
+- Name: ${currentActivity.name}
+- Category: ${currentActivity.category || 'Unknown'}
+- Duration: ${currentActivity.duration || 'Not specified'}
+- Cost: $${currentActivity.cost_estimate || 'Not specified'}
+- Location: ${currentActivity.location || trip.destination}
+- Description: ${currentActivity.description || 'Not specified'}
+
+Trip Context:
+- Destination: ${trip.destination}
+- Trip dates: ${trip.start_date} to ${trip.end_date}
+
+Please suggest 3 DIFFERENT but similar alternatives that:
+1. Have a similar category or appeal
+2. Are in the same general destination area (${trip.destination})
+3. Have comparable duration and cost (within 50% of current)
+4. Could be done at roughly the same time of day
+
+Return your response as a JSON array with exactly 3 objects, each with this structure:
+{
+  "name": "Activity Name",
+  "category": "Category",
+  "duration": "1.5 hours or 2 hours",
+  "cost_estimate": 75,
+  "location": "City/Area within ${trip.destination}",
+  "description": "Brief description of what makes this activity unique",
+  "rating": 4.5
+}
+
+IMPORTANT: Return ONLY valid JSON array, no markdown, no additional text.`;
+
+    console.log('🚀 Starting OpenAI API call for activity alternatives...');
+    console.log('Trip ID:', tripId, '| Activity ID:', activityId);
+    console.log('Current activity:', currentActivity.name);
+
+    let completion;
+    try {
+      completion = await openaiClient.chat.completions.create({
+        model: DEFAULT_MODEL,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 1500,
+      });
+    } catch (apiError) {
+      console.error('❌ OpenAI API Error:', apiError.message);
+      console.error('Error code:', apiError.code);
+      console.error('Error status:', apiError.status);
+      console.error('Full error:', apiError);
+      
+      return res.status(500).json({
+        success: false,
+        message: `OpenAI API error: ${apiError.message}`,
+        error: apiError.message,
+      });
+    }
+
+    const responseText = completion.choices[0]?.message?.content || '';
+    
+    console.log('=== LLM Response Debug ===');
+    console.log('Raw response:', responseText);
+    console.log('Response length:', responseText.length);
+    
+    // Parse the LLM response
+    let alternatives = [];
+    try {
+      let jsonStr = responseText.trim();
+      
+      // Try different extraction methods
+      // Method 1: Try to find JSON array with flexible whitespace
+      const jsonMatch = jsonStr.match(/\[\s*\{[\s\S]*\}\s*\]/);
+      if (jsonMatch) {
+        jsonStr = jsonMatch[0];
+        console.log('Method 1 (regex): Found JSON');
+      } else {
+        console.log('Method 1 (regex): No match, trying direct parse');
+      }
+      
+      // Try to parse
+      alternatives = JSON.parse(jsonStr);
+      
+      if (!Array.isArray(alternatives)) {
+        console.error('Response is not an array:', alternatives);
+        alternatives = [];
+      } else {
+        console.log(`Successfully parsed ${alternatives.length} alternatives`);
+        // Ensure exactly 3 alternatives
+        alternatives = alternatives.slice(0, 3);
+      }
+    } catch (parseError) {
+      console.error('=== JSON Parse Error ===');
+      console.error('Parse error:', parseError.message);
+      console.error('Attempted to parse:', responseText.substring(0, 200));
+      alternatives = [];
+    }
+
+    console.log('Final alternatives count:', alternatives.length);
+    
+    res.status(200).json({
+      success: true,
+      alternatives: alternatives,
+    });
+  } catch (error) {
+    console.error('Error fetching activity alternatives:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch alternatives',
+      error: error.message,
+    });
+  }
+});
+
+// PUT /api/trips/:tripId/activities/:activityId/confirm-replacement
+// Replace an activity with a selected alternative
+router.put('/:tripId/activities/:activityId/confirm-replacement', authenticateToken, async (req, res) => {
+  try {
+    const { tripId, activityId } = req.params;
+    const { selectedActivity } = req.body;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authenticated',
+      });
+    }
+
+    if (!selectedActivity || !selectedActivity.name) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid replacement activity',
+      });
+    }
+
+    // Verify trip ownership
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(403).json({
+        success: false,
+        message: 'Trip not found or not owned by user',
+      });
+    }
+
+    // Get the current activity to preserve its day assignment
+    const { data: currentActivity, error: fetchError } = await supabase
+      .from('activity')
+      .select('*')
+      .eq('activity_id', activityId)
+      .single();
+
+    if (fetchError || !currentActivity) {
+      return res.status(404).json({
+        success: false,
+        message: 'Current activity not found',
+      });
+    }
+
+    // Update the activity with replacement data
+    const { error: updateError } = await supabase
+      .from('activity')
+      .update({
+        name: selectedActivity.name,
+        category: selectedActivity.category || null,
+        description: selectedActivity.description || null,
+        location: selectedActivity.location || null,
+        cost_estimate: selectedActivity.cost_estimate || null,
+        duration: selectedActivity.duration || null,
+        source_url: selectedActivity.source_url || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('activity_id', activityId);
+
+    if (updateError) {
+      console.error('Error updating activity:', updateError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update activity',
+        error: updateError.message,
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Activity replaced successfully',
+      activity_id: activityId,
+    });
+  } catch (error) {
+    console.error('Error confirming activity replacement:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to replace activity',
+      error: error.message,
+    });
+  }
+});
+
+// GET /api/trips/:tripId/hotels/:hotelId/alternatives
+// Fetch 3 alternative hotels for the same dates
+router.get('/:tripId/hotels/:hotelId/alternatives', authenticateToken, async (req, res) => {
+  try {
+    const { tripId, hotelId } = req.params;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authenticated',
+      });
+    }
+
+    // Fetch the current hotel selection from trip_hotel
+    const { data: currentSelection, error: fetchError } = await supabase
+      .from('trip_hotel')
+      .select('*')
+      .eq('trip_hotel_id', hotelId)
+      .single();
+
+    if (fetchError || !currentSelection) {
+      return res.status(404).json({
+        success: false,
+        message: 'Hotel selection not found',
+      });
+    }
+
+    // Get trip details for dates and location
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('destination, start_date, end_date, trip_preference')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found',
+      });
+    }
+
+    // Parse trip preference to get search params
+    let preferences = {};
+    try {
+      preferences = JSON.parse(trip.trip_preference || '{}');
+    } catch (e) {
+      console.error('Error parsing trip preference:', e);
+    }
+
+    // Search for hotels using SerpAPI
+    const hotelSearchParams = new URLSearchParams({
+      engine: 'google_hotels',
+      q: trip.destination,
+      check_in_date: trip.start_date.split('T')[0],
+      check_out_date: trip.end_date.split('T')[0],
+      adults: preferences.travelers || '1',
+      api_key: process.env.SERPAPI_KEY,
+    });
+
+    const serpApiResponse = await fetch(
+      `https://serpapi.com/search?${hotelSearchParams.toString()}`
+    );
+    const serpApiData = await serpApiResponse.json();
+
+    // Extract hotels and return top 3 alternatives
+    const alternatives = (serpApiData.properties || [])
+      .filter((h) => h.hotel_id !== currentSelection.hotel_id)
+      .slice(0, 3)
+      .map((hotel) => ({
+        hotel_id: hotel.hotel_id,
+        name: hotel.title,
+        location: hotel.location || trip.destination,
+        rate_per_night: hotel.rate_per_night || 0,
+        rate_per_night_formatted: hotel.rate_per_night_formatted || `$${hotel.rate_per_night || 0}`,
+        overall_rating: hotel.review_rating || 4,
+        check_in_time: '3:00 PM',
+        check_out_time: '11:00 AM',
+        link: hotel.link,
+      }));
+
+    res.status(200).json({
+      success: true,
+      alternatives: alternatives,
+    });
+  } catch (error) {
+    console.error('Error fetching hotel alternatives:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch hotel alternatives',
+      error: error.message,
+    });
+  }
+});
+
+// PUT /api/trips/:tripId/hotels/:hotelId/confirm-replacement
+// Replace a hotel with a selected alternative
+router.put('/:tripId/hotels/:hotelId/confirm-replacement', authenticateToken, async (req, res) => {
+  try {
+    const { tripId, hotelId } = req.params;
+    const { selectedHotel } = req.body;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authenticated',
+      });
+    }
+
+    if (!selectedHotel || !selectedHotel.hotel_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid replacement hotel',
+      });
+    }
+
+    // Verify trip ownership
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(403).json({
+        success: false,
+        message: 'Trip not found or not owned by user',
+      });
+    }
+
+    // Update the hotel selection
+    const { error: updateError } = await supabase
+      .from('trip_hotel')
+      .update({
+        hotel_id: selectedHotel.hotel_id,
+        name: selectedHotel.name,
+        location: selectedHotel.location,
+        rate_per_night: selectedHotel.rate_per_night,
+        rate_per_night_formatted: selectedHotel.rate_per_night_formatted,
+        link: selectedHotel.link,
+        overall_rating: selectedHotel.overall_rating,
+        check_in_time: selectedHotel.check_in_time,
+        check_out_time: selectedHotel.check_out_time,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('trip_hotel_id', hotelId);
+
+    if (updateError) {
+      console.error('Error updating hotel:', updateError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update hotel',
+        error: updateError.message,
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Hotel replaced successfully',
+      hotel_id: hotelId,
+    });
+  } catch (error) {
+    console.error('Error confirming hotel replacement:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to replace hotel',
+      error: error.message,
+    });
+  }
+});
+
+// GET /api/trips/:tripId/flights/:flightId/alternatives
+// Fetch 3 alternative flights for the same route
+router.get('/:tripId/flights/:flightId/alternatives', authenticateToken, async (req, res) => {
+  try {
+    const { tripId, flightId } = req.params;
+    const { type } = req.query; // 'outbound' or 'return'
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authenticated',
+      });
+    }
+
+    // Fetch the current flight selection
+    const { data: currentSelection, error: fetchError } = await supabase
+      .from('trip_flight')
+      .select('*')
+      .eq('trip_flight_id', flightId)
+      .single();
+
+    if (fetchError || !currentSelection) {
+      return res.status(404).json({
+        success: false,
+        message: 'Flight selection not found',
+      });
+    }
+
+    // Get trip details
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('destination, start_date, end_date, trip_preference')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found',
+      });
+    }
+
+    // Parse trip preference to get departure city
+    let preferences = {};
+    try {
+      preferences = JSON.parse(trip.trip_preference || '{}');
+    } catch (e) {
+      console.error('Error parsing trip preference:', e);
+    }
+
+    // Determine search date and route based on flight type
+    let departureAirport = currentSelection.departure_id;
+    let arrivalAirport = currentSelection.arrival_id;
+    let searchDate = type === 'return' ? trip.end_date : trip.start_date;
+
+    // Search for flights using SerpAPI
+    const flightSearchParams = new URLSearchParams({
+      engine: 'google_flights',
+      departure_id: departureAirport,
+      arrival_id: arrivalAirport,
+      outbound_date: searchDate.split('T')[0],
+      adults: preferences.travelers || '1',
+      api_key: process.env.SERPAPI_KEY,
+    });
+
+    const serpApiResponse = await fetch(
+      `https://serpapi.com/search?${flightSearchParams.toString()}`
+    );
+    const serpApiData = await serpApiResponse.json();
+
+    // Extract flights and return top 3 alternatives
+    const alternatives = (serpApiData.best_flights || [])
+      .slice(0, 3)
+      .map((flight) => ({
+        departure_id: flight.departure_airport?.id,
+        arrival_id: flight.arrival_airport?.id,
+        price: flight.price,
+        total_duration: flight.total_duration,
+        flights: flight.flights,
+        layovers: flight.layovers,
+      }));
+
+    res.status(200).json({
+      success: true,
+      alternatives: alternatives,
+    });
+  } catch (error) {
+    console.error('Error fetching flight alternatives:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch flight alternatives',
+      error: error.message,
+    });
+  }
+});
+
+// PUT /api/trips/:tripId/flights/:flightId/confirm-replacement
+// Replace a flight with a selected alternative
+router.put('/:tripId/flights/:flightId/confirm-replacement', authenticateToken, async (req, res) => {
+  try {
+    const { tripId, flightId } = req.params;
+    const { selectedFlight } = req.body;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authenticated',
+      });
+    }
+
+    if (!selectedFlight) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid replacement flight',
+      });
+    }
+
+    // Verify trip ownership
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(403).json({
+        success: false,
+        message: 'Trip not found or not owned by user',
+      });
+    }
+
+    // Update the flight selection
+    const { error: updateError } = await supabase
+      .from('trip_flight')
+      .update({
+        price: selectedFlight.price,
+        total_duration: selectedFlight.total_duration,
+        flights: JSON.stringify(selectedFlight.flights || []),
+        layovers: JSON.stringify(selectedFlight.layovers || []),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('trip_flight_id', flightId);
+
+    if (updateError) {
+      console.error('Error updating flight:', updateError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update flight',
+        error: updateError.message,
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Flight replaced successfully',
+      flight_id: flightId,
+    });
+  } catch (error) {
+    console.error('Error confirming flight replacement:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to replace flight',
+      error: error.message,
+    });
+  }
+});
+
 export default router;
 
