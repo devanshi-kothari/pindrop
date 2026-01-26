@@ -556,6 +556,98 @@ async function extractActivityDetails(name, snippet, link) {
   return { priceRange, costEstimate, duration };
 }
 
+// Fallback: ask the LLM for typical price/duration when snippet parsing fails
+async function refineActivityDetailsWithLLM(name, destination, snippet, existing) {
+  try {
+    // Only call the model if we are actually missing something important
+    const needsCost = existing.costEstimate === null || existing.costEstimate === undefined;
+    const needsDuration = !existing.duration;
+
+    if (!needsCost && !needsDuration) {
+      return existing;
+    }
+
+    const where = destination ? `${name} in ${destination}` : name;
+    const questionParts = [];
+    if (needsCost) {
+      questionParts.push(
+        '1. A realistic average price per person in USD (tickets/entry/typical spend).'
+      );
+    }
+    if (needsDuration) {
+      questionParts.push(
+        '2. A realistic typical visit duration (for example "90 minutes", "2 hours", "half day").'
+      );
+    }
+
+    const prompt = `You are helping plan a real-world trip. I need practical, grounded estimates for this specific activity so an itinerary and budget can be built.
+
+Activity: "${name}"
+Location context: "${destination || 'unknown'}"
+Snippet/context from search results (may be incomplete): "${snippet || ''}"
+
+Please provide:
+${questionParts.join('\n')}
+
+Rules:
+- Base your answer on typical, up-to-date real-world prices and visit times for this kind of activity.
+- If you are unsure, give your best conservative estimate instead of saying you don't know.
+- Always respond ONLY with valid JSON, no prose, in this exact shape (include both fields, use null if absolutely no estimate is possible):
+{
+  "average_price_usd": number | null,
+  "typical_duration": "string or null, e.g. \\"2 hours\\""
+}`;
+
+    const completion = await openaiClient.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You are a structured data assistant for travel planning. You return ONLY JSON, never explanations.',
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+      temperature: 0.4,
+      max_tokens: 200,
+    });
+
+    const rawContent = completion.choices[0]?.message?.content || '{}';
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(rawContent);
+    } catch (e) {
+      const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0]);
+      }
+    }
+
+    if (!parsed || typeof parsed !== 'object') {
+      return existing;
+    }
+
+    const refined = { ...existing };
+
+    if (needsCost && typeof parsed.average_price_usd === 'number' && parsed.average_price_usd >= 0) {
+      refined.costEstimate = parsed.average_price_usd;
+    }
+
+    if (needsDuration && typeof parsed.typical_duration === 'string' && parsed.typical_duration.trim()) {
+      refined.duration = parsed.typical_duration.trim();
+    }
+
+    return refined;
+  } catch (error) {
+    console.error('Error refining activity details with LLM:', error);
+    return existing;
+  }
+}
+
 // Use Google Places Text Search to get a precise street address for an activity
 async function fetchActivityAddress(name, destination) {
   if (!GOOGLE_MAPS_API_KEY) {
@@ -725,11 +817,24 @@ async function upsertReusableActivityFromSearchItem(item, destination, preferenc
 
   // At this point, we ALWAYS have some non-empty name string
 
-  // Extract additional details
-  let { priceRange, costEstimate, duration } = await extractActivityDetails(name, snippet, originalLink);
+  // Extract additional details from snippet/title first
+  let details = await extractActivityDetails(name, snippet, originalLink);
+  let { priceRange, costEstimate, duration } = details;
+
+  // If snippet parsing left us without cost/duration, ask the LLM once for typical values
+  if ((costEstimate === null || costEstimate === undefined) || !duration) {
+    const refined = await refineActivityDetailsWithLLM(name, destination, snippet, {
+      priceRange,
+      costEstimate,
+      duration,
+    });
+    priceRange = refined.priceRange;
+    costEstimate = refined.costEstimate;
+    duration = refined.duration;
+  }
 
   // Normalize details so final itinerary has concrete values
-  // If we don't get a numeric estimate, infer a rough cost from priceRange or fall back to a default.
+  // If we still don't get a numeric estimate, infer a rough cost from priceRange or fall back to a default.
   if (costEstimate === null || costEstimate === undefined) {
     const lower = (priceRange || '').toLowerCase();
     if (lower.includes('free') || lower.includes('no cost')) {
