@@ -2507,12 +2507,19 @@ router.post('/:tripId/itinerary/:dayNumber/activities', authenticateToken, async
       });
     }
 
-    const { name, location, description, source_url } = req.body || {};
+    const { name, location, description, source_url, cost_estimate } = req.body || {};
 
     if (!name || typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({
         success: false,
         message: 'Activity name is required.',
+      });
+    }
+    const parsedCost = Number(cost_estimate);
+    if (!Number.isFinite(parsedCost)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Activity cost estimate is required.',
       });
     }
 
@@ -2589,7 +2596,7 @@ router.post('/:tripId/itinerary/:dayNumber/activities', authenticateToken, async
         address: location && location.trim() ? location.trim() : null,
         category: null,
         duration: null,
-        cost_estimate: null,
+        cost_estimate: parsedCost,
         rating: null,
         tags: [],
         source: 'manual-itinerary',

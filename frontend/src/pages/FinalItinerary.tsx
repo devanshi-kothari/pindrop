@@ -188,7 +188,12 @@ const FinalItinerary = () => {
   const [showAddForm, setShowAddForm] = useState<Record<number, boolean>>({});
   const [addingActivity, setAddingActivity] = useState<Record<number, boolean>>({});
   const [deletingActivity, setDeletingActivity] = useState<Record<string, boolean>>({});
-  const [formData, setFormData] = useState<Record<number, { name: string; description: string; source_url: string; location: string }>>({});
+  const [formData, setFormData] = useState<
+    Record<
+      number,
+      { name: string; description: string; source_url: string; location: string; cost_estimate: string }
+    >
+  >({});
   const [activeTab, setActiveTab] = useState<"overview" | "map" | "budget" | "calendar">("overview");
   const [selectedMapDayIndex, setSelectedMapDayIndex] = useState(0);
   const mapRef = useRef<HTMLDivElement | null>(null);
@@ -215,7 +220,7 @@ const FinalItinerary = () => {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [hasLoadedChatHistory, setHasLoadedChatHistory] = useState(false);
-  
+
   // Replace activity modal state
   const [replaceModalOpen, setReplaceModalOpen] = useState(false);
   const [selectedActivityToReplace, setSelectedActivityToReplace] = useState<{
@@ -301,6 +306,11 @@ const FinalItinerary = () => {
       alert("Please provide an activity name (short description)");
       return;
     }
+    const costNum = parseFloat(form.cost_estimate);
+    if (Number.isNaN(costNum)) {
+      alert("Please provide a cost estimate for this activity.");
+      return;
+    }
 
     setAddingActivity((prev) => ({ ...prev, [dayNumber]: true }));
 
@@ -324,6 +334,7 @@ const FinalItinerary = () => {
             description: form.description.trim() || undefined,
             source_url: form.source_url.trim() || undefined,
             location: form.location.trim() || undefined,
+            cost_estimate: costNum,
           }),
         }
       );
@@ -348,7 +359,7 @@ const FinalItinerary = () => {
         // Reset form
         setFormData((prev) => ({
           ...prev,
-          [dayNumber]: { name: "", description: "", source_url: "", location: "" },
+          [dayNumber]: { name: "", description: "", source_url: "", location: "", cost_estimate: "" },
         }));
         setShowAddForm((prev) => ({ ...prev, [dayNumber]: false }));
       } else {
@@ -575,7 +586,7 @@ const FinalItinerary = () => {
     if (!formData[dayNumber]) {
       setFormData((prev) => ({
         ...prev,
-        [dayNumber]: { name: "", description: "", source_url: "", location: "" },
+        [dayNumber]: { name: "", description: "", source_url: "", location: "", cost_estimate: "" },
       }));
     }
   };
@@ -1416,115 +1427,7 @@ const FinalItinerary = () => {
                           <div className="mt-3 space-y-2">
                             <div className="flex items-center justify-between">
                               <p className="text-xs font-semibold text-slate-600">Activities</p>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => toggleAddForm(day.day_number)}
-                                className="h-6 px-2 text-[10px]"
-                              >
-                                {showAddForm[day.day_number] ? (
-                                  <>
-                                    <X className="h-3 w-3 mr-1" />
-                                    Cancel
-                                  </>
-                                ) : (
-                                  <>
-                                    <Plus className="h-3 w-3 mr-1" />
-                                    Add
-                                  </>
-                                )}
-                              </Button>
                             </div>
-
-                            {showAddForm[day.day_number] && (
-                              <div className="rounded-md border border-blue-200 bg-blue-50 p-3 space-y-2">
-                                <div>
-                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
-                                    Activity Name <span className="text-red-500">*</span>
-                                  </label>
-                                  <Input
-                                    value={formData[day.day_number]?.name || ""}
-                                    onChange={(e) =>
-                                      setFormData((prev) => ({
-                                        ...prev,
-                                        [day.day_number]: {
-                                          ...(prev[day.day_number] || { name: "", description: "", source_url: "", location: "" }),
-                                          name: e.target.value,
-                                        },
-                                      }))
-                                    }
-                                    placeholder="e.g., Visit the Eiffel Tower"
-                                    className="h-8 text-xs"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
-                                    Location (optional)
-                                  </label>
-                                  <Input
-                                    value={formData[day.day_number]?.location || ""}
-                                    onChange={(e) =>
-                                      setFormData((prev) => ({
-                                        ...prev,
-                                        [day.day_number]: {
-                                          ...(prev[day.day_number] || { name: "", description: "", source_url: "", location: "" }),
-                                          location: e.target.value,
-                                        },
-                                      }))
-                                    }
-                                    placeholder={itinerary?.destination || "e.g., Paris, France"}
-                                    className="h-8 text-xs"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
-                                    Longer Description (optional)
-                                  </label>
-                                  <Textarea
-                                    value={formData[day.day_number]?.description || ""}
-                                    onChange={(e) =>
-                                      setFormData((prev) => ({
-                                        ...prev,
-                                        [day.day_number]: {
-                                          ...(prev[day.day_number] || { name: "", description: "", source_url: "", location: "" }),
-                                          description: e.target.value,
-                                        },
-                                      }))
-                                    }
-                                    placeholder="Additional details about this activity..."
-                                    className="min-h-[60px] text-xs"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
-                                    Link (optional)
-                                  </label>
-                                  <Input
-                                    type="url"
-                                    value={formData[day.day_number]?.source_url || ""}
-                                    onChange={(e) =>
-                                      setFormData((prev) => ({
-                                        ...prev,
-                                        [day.day_number]: {
-                                          ...(prev[day.day_number] || { name: "", description: "", source_url: "", location: "" }),
-                                          source_url: e.target.value,
-                                        },
-                                      }))
-                                    }
-                                    placeholder="https://..."
-                                    className="h-8 text-xs"
-                                  />
-                                </div>
-                                <Button
-                                  onClick={() => handleAddActivity(day.day_number)}
-                                  disabled={addingActivity[day.day_number]}
-                                  className="w-full h-7 text-xs"
-                                  size="sm"
-                                >
-                                  {addingActivity[day.day_number] ? "Adding..." : "Add Activity"}
-                                </Button>
-                              </div>
-                            )}
 
                             {day.activities && day.activities.length > 0 && (
                               <div className="space-y-2">
@@ -1564,32 +1467,21 @@ const FinalItinerary = () => {
                                             </a>
                                           )}
                                           {activity.activity_id && (
-                                            <>
-                                              <Button
-                                                variant="ghost"
-                                                size="sm"
-                                                onClick={() => {
-                                                  setSelectedActivityToReplace({
-                                                    activity,
-                                                    dayNumber: day.day_number,
-                                                  });
-                                                  setReplaceModalOpen(true);
-                                                }}
-                                                className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-blue-500 hover:text-blue-700 hover:bg-blue-50"
-                                                title="Replace this activity"
-                                              >
-                                                <RotateCcw className="h-3 w-3" />
-                                              </Button>
-                                              <Button
-                                                variant="ghost"
-                                                size="sm"
-                                                onClick={() => handleDeleteActivity(day.day_number, activity.activity_id!)}
-                                                disabled={deletingActivity[activityKey]}
-                                                className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-red-500 hover:text-red-700 hover:bg-red-50"
-                                              >
-                                                <Trash2 className="h-3 w-3" />
-                                              </Button>
-                                            </>
+                                            <Button
+                                              variant="ghost"
+                                              size="sm"
+                                              onClick={() => {
+                                                setSelectedActivityToReplace({
+                                                  activity,
+                                                  dayNumber: day.day_number,
+                                                });
+                                                setReplaceModalOpen(true);
+                                              }}
+                                              className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-blue-500 hover:text-blue-700 hover:bg-blue-50"
+                                              title="Replace this activity"
+                                            >
+                                              <RotateCcw className="h-3 w-3" />
+                                            </Button>
                                           )}
                                         </div>
                                       </div>
@@ -1797,7 +1689,7 @@ const FinalItinerary = () => {
                           { name: "Hotels", key: "hotels", value: totals.hotels },
                           { name: "Activities", key: "activities", value: totals.activities },
                           { name: "Meals", key: "meals", value: totals.meals },
-                          { name: "Others", key: "extras", value: totals.extras },
+                          { name: "Other", key: "extras", value: totals.extras },
                         ].filter((d) => d.value > 0);
 
                         const chartData =
@@ -1881,7 +1773,7 @@ const FinalItinerary = () => {
                                       </span>
                                     </span>
                                     <span>
-                                      Extras:{" "}
+                                      Other:{" "}
                                       <span className="font-semibold text-slate-800">
                                         {totals.extras
                                           ? `$${formatMoney(totals.extras)}`
@@ -1914,7 +1806,7 @@ const FinalItinerary = () => {
                                           Meals
                                         </th>
                                         <th className="px-3 py-2 text-right font-semibold text-slate-700">
-                                          Extras
+                                          Other
                                         </th>
                                         <th className="px-3 py-2 text-right font-semibold text-slate-700">
                                           Total
@@ -1980,7 +1872,7 @@ const FinalItinerary = () => {
                                     hotels: { label: "Hotels", color: "#22c55e" }, // green (emerald-500)
                                     activities: { label: "Activities", color: "#0ea5e9" }, // blue (sky-500)
                                     meals: { label: "Meals", color: "#f97316" }, // orange-500
-                                    extras: { label: "Others", color: "#a855f7" }, // purple-500
+                                    extras: { label: "Other", color: "#a855f7" }, // purple-500
                                     unused: { label: "Unused budget", color: "#94a3b8" }, // slate-400
                                   }}
                                   className="h-[260px]"
@@ -2509,6 +2401,24 @@ const FinalItinerary = () => {
                                   {formatDate(day.date) || `Day ${day.day_number}`}
                                 </p>
                               </div>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => toggleAddForm(day.day_number)}
+                                className="h-6 px-2 text-[10px]"
+                              >
+                                {showAddForm[day.day_number] ? (
+                                  <>
+                                    <X className="h-3 w-3 mr-1" />
+                                    Cancel
+                                  </>
+                                ) : (
+                                  <>
+                                    <Plus className="h-3 w-3 mr-1" />
+                                    Add activity
+                                  </>
+                                )}
+                              </Button>
                             </div>
                             <div className="space-y-1.5 mt-1">
                               {(() => {
@@ -2726,6 +2636,148 @@ const FinalItinerary = () => {
                                 return elements;
                               })()}
                             </div>
+
+                            {showAddForm[day.day_number] && (
+                              <div className="rounded-md border border-blue-200 bg-blue-50 p-3 space-y-2">
+                                <div>
+                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                                    Activity Name <span className="text-red-500">*</span>
+                                  </label>
+                                  <Input
+                                    value={formData[day.day_number]?.name || ""}
+                                    onChange={(e) =>
+                                      setFormData((prev) => ({
+                                        ...prev,
+                                        [day.day_number]: {
+                                          ...(prev[day.day_number] || {
+                                            name: "",
+                                            description: "",
+                                            source_url: "",
+                                            location: "",
+                                            cost_estimate: "",
+                                          }),
+                                          name: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    placeholder="e.g., Visit the Eiffel Tower"
+                                    className="h-8 text-xs"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                                    Location (optional)
+                                  </label>
+                                  <Input
+                                    value={formData[day.day_number]?.location || ""}
+                                    onChange={(e) =>
+                                      setFormData((prev) => ({
+                                        ...prev,
+                                        [day.day_number]: {
+                                          ...(prev[day.day_number] || {
+                                            name: "",
+                                            description: "",
+                                            source_url: "",
+                                            location: "",
+                                            cost_estimate: "",
+                                          }),
+                                          location: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    placeholder={itinerary?.destination || "e.g., Paris, France"}
+                                    className="h-8 text-xs"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                                    Longer Description (optional)
+                                  </label>
+                                  <Textarea
+                                    value={formData[day.day_number]?.description || ""}
+                                    onChange={(e) =>
+                                      setFormData((prev) => ({
+                                        ...prev,
+                                        [day.day_number]: {
+                                          ...(prev[day.day_number] || {
+                                            name: "",
+                                            description: "",
+                                            source_url: "",
+                                            location: "",
+                                            cost_estimate: "",
+                                          }),
+                                          description: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    placeholder="Additional details about this activity..."
+                                    className="min-h-[60px] text-xs"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                                    Link (optional)
+                                  </label>
+                                  <Input
+                                    type="url"
+                                    value={formData[day.day_number]?.source_url || ""}
+                                    onChange={(e) =>
+                                      setFormData((prev) => ({
+                                        ...prev,
+                                        [day.day_number]: {
+                                          ...(prev[day.day_number] || {
+                                            name: "",
+                                            description: "",
+                                            source_url: "",
+                                            location: "",
+                                            cost_estimate: "",
+                                          }),
+                                          source_url: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    placeholder="https://..."
+                                    className="h-8 text-xs"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                                    Cost estimate <span className="text-red-500">*</span>
+                                  </label>
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    step="0.01"
+                                    value={formData[day.day_number]?.cost_estimate || ""}
+                                    onChange={(e) =>
+                                      setFormData((prev) => ({
+                                        ...prev,
+                                        [day.day_number]: {
+                                          ...(prev[day.day_number] || {
+                                            name: "",
+                                            description: "",
+                                            source_url: "",
+                                            location: "",
+                                            cost_estimate: "",
+                                          }),
+                                          cost_estimate: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    placeholder="$"
+                                    className="h-8 text-xs"
+                                  />
+                                </div>
+                                <Button
+                                  onClick={() => handleAddActivity(day.day_number)}
+                                  disabled={addingActivity[day.day_number]}
+                                  className="w-full h-7 text-xs"
+                                  size="sm"
+                                >
+                                  {addingActivity[day.day_number] ? "Adding..." : "Add Activity"}
+                                </Button>
+                              </div>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -2907,6 +2959,30 @@ const FinalItinerary = () => {
                               >
                                 View source
                               </a>
+                            )}
+                            {selectedActivityDetail?.activity?.activity_id && (
+                              <div className="pt-2">
+                                <Button
+                                  variant="destructive"
+                                  size="sm"
+                                  onClick={() => {
+                                    const dayNumber = selectedActivityDetail.dayNumber;
+                                    const activityId = selectedActivityDetail.activity.activity_id;
+                                    const key = `${dayNumber}-${activityId}`;
+                                    if (deletingActivity[key]) return;
+                                    handleDeleteActivity(dayNumber, activityId);
+                                    setSelectedActivityDetail(null);
+                                  }}
+                                  disabled={
+                                    deletingActivity[
+                                      `${selectedActivityDetail.dayNumber}-${selectedActivityDetail.activity.activity_id}`
+                                    ]
+                                  }
+                                  className="h-8 text-xs"
+                                >
+                                  Delete activity
+                                </Button>
+                              </div>
                             )}
                           </div>
                         </DialogContent>
