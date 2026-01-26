@@ -768,7 +768,10 @@ function matchesAvoidCategory(activityName, activityCategory, snippet, avoidCate
 }
 
 async function upsertReusableActivityFromSearchItem(item, destination, preferences = null, userProfile = null) {
-  let location = destination || null;
+  // Keep location as the broader trip destination (e.g. "Paris, France")
+  // and store precise street address separately in the "address" column.
+  const location = destination || null;
+  let address = null;
   const snippet = item.snippet || '';
   const originalLink = item.link || '';
 
@@ -856,14 +859,14 @@ async function upsertReusableActivityFromSearchItem(item, destination, preferenc
     duration = '2 hours';
   }
 
-  // Make location more specific so maps and distances work better:
+  // Make address more specific so maps and distances work better:
   // Prefer an exact street address from Google Places; fall back to "Activity Name, Destination".
   if (destination && name) {
     const preciseAddress = await fetchActivityAddress(name, destination);
     if (preciseAddress) {
-      location = preciseAddress;
-    } else if (!location || location === destination) {
-      location = `${name}, ${destination}`;
+      address = preciseAddress;
+    } else if (!address) {
+      address = `${name}, ${destination}`;
     }
   }
 
@@ -1021,6 +1024,7 @@ Category:`;
 
     if (costEstimate !== null && existing.cost_estimate === null) updateData.cost_estimate = costEstimate;
     if (duration && !existing.duration) updateData.duration = duration;
+    if (address && !existing.address) updateData.address = address;
     // Update source_url if we found a better link
     if (finalLink && finalLink !== existing.source_url && !isLowQualityLink(finalLink)) {
       updateData.source_url = finalLink;
@@ -1049,6 +1053,7 @@ Category:`;
       {
         name,
         location,
+        address,
         category,
         duration: duration || null,
         cost_estimate: costEstimate,
@@ -1603,11 +1608,11 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       console.log('[activities] TEST MODE enabled – selecting existing Paris activities from DB');
 
       // Pull a small random set of existing activities for Paris so we avoid Google search credits.
-      // We check both destination field and location string to be robust.
+      // We check both name and location strings for "Paris".
       const { data: parisActivities, error: parisError } = await supabase
         .from('activity')
         .select('activity_id, name, location, category, duration, cost_estimate, rating, tags')
-        .or("destination.ilike.%Paris%,location.ilike.%Paris%");
+        .or("name.ilike.%Paris%,location.ilike.%Paris%");
 
       if (parisError) {
         console.error('Error loading Paris activities for test mode:', parisError);
@@ -2170,6 +2175,7 @@ router.get('/:tripId/itinerary', authenticateToken, async (req, res) => {
             activity_id,
             name,
             location,
+            address,
             category,
             duration
           )
@@ -2379,7 +2385,10 @@ router.post('/:tripId/itinerary/:dayNumber/activities', authenticateToken, async
       .from('activity')
       .insert({
         name: name.trim(),
-        location: (location && location.trim()) || trip.destination || null,
+        // Keep location as the trip destination for high-level grouping
+        location: trip.destination || null,
+        // Store the user-entered place/address separately
+        address: location && location.trim() ? location.trim() : null,
         category: null,
         duration: null,
         cost_estimate: null,
@@ -2569,6 +2578,7 @@ router.get('/:tripId/final-itinerary', authenticateToken, async (req, res) => {
             activity_id,
             name,
             location,
+            address,
             category,
             duration,
             cost_estimate,
