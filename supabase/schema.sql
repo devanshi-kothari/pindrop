@@ -62,6 +62,35 @@ CREATE TABLE IF NOT EXISTS itinerary_activity (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
 
+-- Per-trip meal entries for calendar and budget
+CREATE TABLE IF NOT EXISTS trip_meal (
+    trip_meal_id BIGSERIAL PRIMARY KEY,
+    trip_id BIGINT NOT NULL REFERENCES trip(trip_id) ON DELETE CASCADE,
+    day_number INT NOT NULL,
+    slot VARCHAR(20) NOT NULL CHECK (slot IN ('breakfast', 'lunch', 'dinner')),
+    name VARCHAR(255),
+    location VARCHAR(255),
+    link TEXT,
+    cost DECIMAL(10, 2),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+    UNIQUE (trip_id, day_number, slot)
+);
+
+-- Per-trip manual expenses (souvenirs, transport, etc.)
+CREATE TABLE IF NOT EXISTS trip_expense (
+    trip_expense_id BIGSERIAL PRIMARY KEY,
+    trip_id BIGINT NOT NULL REFERENCES trip(trip_id) ON DELETE CASCADE,
+    day_number INT NOT NULL,
+    client_id TEXT NOT NULL,
+    label VARCHAR(255) NOT NULL,
+    amount DECIMAL(10, 2) NOT NULL,
+    category VARCHAR(20) NOT NULL CHECK (category IN ('activity', 'meal', 'hotel', 'transport', 'other')),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
+    UNIQUE (trip_id, client_id)
+);
+
 -- Trip-specific preferences to guide planning and itinerary generation
 CREATE TABLE IF NOT EXISTS trip_preference (
     trip_preference_id BIGSERIAL PRIMARY KEY,

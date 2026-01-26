@@ -1381,6 +1381,170 @@ router.delete('/:tripId', authenticateToken, async (req, res) => {
   }
 });
 
+// Get saved meals for a trip
+router.get('/:tripId/meals', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
+
+    const { data, error } = await supabase
+      .from('trip_meal')
+      .select('trip_meal_id, day_number, slot, name, location, link, cost')
+      .eq('trip_id', tripId)
+      .order('day_number', { ascending: true });
+
+    if (error) throw error;
+
+    res.status(200).json({ success: true, meals: data || [] });
+  } catch (error) {
+    console.error('Error fetching trip meals:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch meals', error: error.message });
+  }
+});
+
+// Save meals for a trip (replace all)
+router.put('/:tripId/meals', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+    const { meals } = req.body || {};
+
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
+
+    if (!Array.isArray(meals)) {
+      return res.status(400).json({ success: false, message: 'Meals payload must be an array' });
+    }
+
+    // Replace all meals for this trip
+    const { error: deleteError } = await supabase
+      .from('trip_meal')
+      .delete()
+      .eq('trip_id', tripId);
+    if (deleteError) throw deleteError;
+
+    if (meals.length > 0) {
+      const rows = meals.map((meal) => ({
+        trip_id: tripId,
+        day_number: meal.day_number,
+        slot: meal.slot,
+        name: meal.name || null,
+        location: meal.location || null,
+        link: meal.link || null,
+        cost: meal.cost ?? null,
+        updated_at: new Date().toISOString(),
+      }));
+      const { error: insertError } = await supabase.from('trip_meal').insert(rows);
+      if (insertError) throw insertError;
+    }
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('Error saving trip meals:', error);
+    res.status(500).json({ success: false, message: 'Failed to save meals', error: error.message });
+  }
+});
+
+// Get saved manual expenses for a trip
+router.get('/:tripId/expenses', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
+
+    const { data, error } = await supabase
+      .from('trip_expense')
+      .select('trip_expense_id, client_id, day_number, label, amount, category')
+      .eq('trip_id', tripId)
+      .order('day_number', { ascending: true });
+
+    if (error) throw error;
+
+    res.status(200).json({ success: true, expenses: data || [] });
+  } catch (error) {
+    console.error('Error fetching trip expenses:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch expenses', error: error.message });
+  }
+});
+
+// Save manual expenses for a trip (replace all)
+router.put('/:tripId/expenses', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+    const { expenses } = req.body || {};
+
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
+
+    if (!Array.isArray(expenses)) {
+      return res.status(400).json({ success: false, message: 'Expenses payload must be an array' });
+    }
+
+    const { error: deleteError } = await supabase
+      .from('trip_expense')
+      .delete()
+      .eq('trip_id', tripId);
+    if (deleteError) throw deleteError;
+
+    if (expenses.length > 0) {
+      const rows = expenses.map((expense) => ({
+        trip_id: tripId,
+        day_number: expense.day_number,
+        client_id: expense.client_id,
+        label: expense.label,
+        amount: expense.amount,
+        category: expense.category,
+        updated_at: new Date().toISOString(),
+      }));
+      const { error: insertError } = await supabase.from('trip_expense').insert(rows);
+      if (insertError) throw insertError;
+    }
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('Error saving trip expenses:', error);
+    res.status(500).json({ success: false, message: 'Failed to save expenses', error: error.message });
+  }
+});
+
 // Get trip-specific preferences
 router.get('/:tripId/preferences', authenticateToken, async (req, res) => {
   try {

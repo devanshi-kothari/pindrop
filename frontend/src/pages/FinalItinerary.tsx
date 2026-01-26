@@ -698,7 +698,160 @@ const FinalItinerary = () => {
   const [extraExpenseDrafts, setExtraExpenseDrafts] = useState<
     Record<number, { label: string; amount: string; category: BudgetCategory }>
   >({});
+  const [hasLoadedMeals, setHasLoadedMeals] = useState(false);
+  const [hasLoadedExpenses, setHasLoadedExpenses] = useState(false);
   const [budgetView, setBudgetView] = useState<"daily" | "summary">("daily");
+
+  const loadPersistedMeals = async () => {
+    if (!tripId) return;
+    const token = getAuthToken();
+    if (!token) return;
+    try {
+      const response = await fetch(getApiUrl(`api/trips/${tripId}/meals`), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+      const result = await response.json();
+      if (response.ok && result.success && Array.isArray(result.meals)) {
+        const next: Record<number, Partial<Record<MealSlot, MealInfo>>> = {};
+        result.meals.forEach((m: any) => {
+          if (!m.day_number || !m.slot) return;
+          if (!next[m.day_number]) next[m.day_number] = {};
+          next[m.day_number][m.slot as MealSlot] = {
+            name: m.name || "",
+            location: m.location || "",
+            link: m.link || undefined,
+            cost: typeof m.cost === "number" ? m.cost : undefined,
+          };
+        });
+        setMealsByDay(next);
+      }
+    } catch (err) {
+      console.error("Error loading persisted meals:", err);
+    } finally {
+      setHasLoadedMeals(true);
+    }
+  };
+
+  const loadPersistedExpenses = async () => {
+    if (!tripId) return;
+    const token = getAuthToken();
+    if (!token) return;
+    try {
+      const response = await fetch(getApiUrl(`api/trips/${tripId}/expenses`), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+      const result = await response.json();
+      if (response.ok && result.success && Array.isArray(result.expenses)) {
+        const next: Record<number, ExtraExpense[]> = {};
+        result.expenses.forEach((e: any) => {
+          const day = e.day_number;
+          if (!day) return;
+          if (!next[day]) next[day] = [];
+          next[day].push({
+            id: e.client_id || String(e.trip_expense_id),
+            label: e.label,
+            amount: parseMoneyNumber(e.amount),
+            category: e.category as BudgetCategory,
+          });
+        });
+        setExtraExpensesByDay(next);
+      }
+    } catch (err) {
+      console.error("Error loading persisted expenses:", err);
+    } finally {
+      setHasLoadedExpenses(true);
+    }
+  };
+
+  const persistMeals = async (nextMeals: Record<number, Partial<Record<MealSlot, MealInfo>>>) => {
+    if (!tripId || !hasLoadedMeals) return;
+    const token = getAuthToken();
+    if (!token) return;
+    const mealsPayload: Array<{
+      day_number: number;
+      slot: MealSlot;
+      name?: string;
+      location?: string;
+      link?: string;
+      cost?: number;
+    }> = [];
+    Object.entries(nextMeals).forEach(([dayStr, dayMeals]) => {
+      const dayNum = Number(dayStr);
+      if (!dayMeals) return;
+      (["breakfast", "lunch", "dinner"] as MealSlot[]).forEach((slot) => {
+        const m = dayMeals[slot];
+        if (!m) return;
+        if (!m.name && !m.location && !m.link && (m.cost === undefined || m.cost === null)) return;
+        mealsPayload.push({
+          day_number: dayNum,
+          slot,
+          name: m.name || "",
+          location: m.location || "",
+          link: m.link,
+          cost: typeof m.cost === "number" ? m.cost : undefined,
+        });
+      });
+    });
+
+    try {
+      await fetch(getApiUrl(`api/trips/${tripId}/meals`), {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ meals: mealsPayload }),
+      });
+    } catch (err) {
+      console.error("Error persisting meals:", err);
+    }
+  };
+
+  const persistExpenses = async (nextExpenses: Record<number, ExtraExpense[]>) => {
+    if (!tripId || !hasLoadedExpenses) return;
+    const token = getAuthToken();
+    if (!token) return;
+    const expensesPayload: Array<{
+      day_number: number;
+      client_id: string;
+      label: string;
+      amount: number;
+      category: BudgetCategory;
+    }> = [];
+    Object.entries(nextExpenses).forEach(([dayStr, items]) => {
+      const dayNum = Number(dayStr);
+      items.forEach((item) => {
+        expensesPayload.push({
+          day_number: dayNum,
+          client_id: item.id,
+          label: item.label,
+          amount: item.amount,
+          category: item.category,
+        });
+      });
+    });
+
+    try {
+      await fetch(getApiUrl(`api/trips/${tripId}/expenses`), {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ expenses: expensesPayload }),
+      });
+    } catch (err) {
+      console.error("Error persisting expenses:", err);
+    }
+  };
   const [editingExtraId, setEditingExtraId] = useState<string | null>(null);
   const [editingExtraDraft, setEditingExtraDraft] = useState<{
     label: string;
@@ -896,6 +1049,12 @@ const FinalItinerary = () => {
       window.clearTimeout(timeoutId);
     };
   }, [itinerary, activeTab, selectedMapDayIndex, mealsByDay]);
+
+  useEffect(() => {
+    if (!tripId) return;
+    void loadPersistedMeals();
+    void loadPersistedExpenses();
+  }, [tripId]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -2047,6 +2206,7 @@ const FinalItinerary = () => {
                                                                   }
                                                                 : x
                                                           );
+                                                          persistExpenses(copy);
                                                           return copy;
                                                         });
                                                         setEditingExtraId(null);
@@ -2119,6 +2279,7 @@ const FinalItinerary = () => {
                                                           copy[day.day_number] = (copy[day.day_number] || []).filter(
                                                             (x) => x.id !== item.id
                                                           );
+                                                          persistExpenses(copy);
                                                           return copy;
                                                         });
                                                       }}
@@ -2205,23 +2366,27 @@ const FinalItinerary = () => {
                                                 if (!draft.label.trim() || Number.isNaN(amountNum)) {
                                                   return;
                                                 }
-                                                setExtraExpensesByDay((prev) => ({
-                                                  ...prev,
-                                                  [day.day_number]: [
-                                                    ...(prev[day.day_number] || []),
-                                                    {
-                                                      id: `${day.day_number}-${Date.now()}-${Math.random()
-                                                        .toString(36)
-                                                        .slice(2, 6)}`,
-                                                      label: draft.label.trim(),
-                                                      amount: Math.max(
-                                                        0,
-                                                        parseFloat(amountNum.toFixed(2))
-                                                      ),
-                                                      category: draft.category,
-                                                    },
-                                                  ],
-                                                }));
+                                                setExtraExpensesByDay((prev) => {
+                                                  const next = {
+                                                    ...prev,
+                                                    [day.day_number]: [
+                                                      ...(prev[day.day_number] || []),
+                                                      {
+                                                        id: `${day.day_number}-${Date.now()}-${Math.random()
+                                                          .toString(36)
+                                                          .slice(2, 6)}`,
+                                                        label: draft.label.trim(),
+                                                        amount: Math.max(
+                                                          0,
+                                                          parseFloat(amountNum.toFixed(2))
+                                                        ),
+                                                        category: draft.category,
+                                                      },
+                                                    ],
+                                                  };
+                                                  persistExpenses(next);
+                                                  return next;
+                                                });
                                                 setExtraExpenseDrafts((prev) => ({
                                                   ...prev,
                                                   [day.day_number]: {
@@ -2559,6 +2724,7 @@ const FinalItinerary = () => {
                                   const dayMeals = { ...(copy[editingMeal.dayNumber] || {}) };
                                   delete dayMeals[editingMeal.slot];
                                   copy[editingMeal.dayNumber] = dayMeals;
+                                  persistMeals(copy);
                                   return copy;
                                 });
                                 setEditingMeal(null);
@@ -2577,18 +2743,22 @@ const FinalItinerary = () => {
                                   return;
                                 }
                                 const parsedCost = parseFloat(mealForm.cost);
-                                setMealsByDay((prev) => ({
-                                  ...prev,
-                                  [editingMeal.dayNumber]: {
-                                    ...(prev[editingMeal.dayNumber] || {}),
-                                    [editingMeal.slot]: {
-                                      name: mealForm.name.trim() || "",
-                                      location: mealForm.location.trim(),
-                                      link: mealForm.link.trim() || undefined,
-                                      cost: !Number.isNaN(parsedCost) && parsedCost >= 0 ? parsedCost : undefined,
+                                setMealsByDay((prev) => {
+                                  const next = {
+                                    ...prev,
+                                    [editingMeal.dayNumber]: {
+                                      ...(prev[editingMeal.dayNumber] || {}),
+                                      [editingMeal.slot]: {
+                                        name: mealForm.name.trim() || "",
+                                        location: mealForm.location.trim(),
+                                        link: mealForm.link.trim() || undefined,
+                                        cost: !Number.isNaN(parsedCost) && parsedCost >= 0 ? parsedCost : undefined,
+                                      },
                                     },
-                                  },
-                                }));
+                                  };
+                                  persistMeals(next);
+                                  return next;
+                                });
                                 setEditingMeal(null);
                               }}
                             >
