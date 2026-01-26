@@ -184,6 +184,24 @@ const ChatWindow = ({
     setHasLockedDestination(planningMode === "known" || hasDestinationLocked);
   }, [planningMode, hasDestinationLocked]);
 
+  // Set default departure location from user's home_location in profile
+  useEffect(() => {
+    // Only set if departureLocation is empty and we haven't already set a departure ID
+    if (!departureLocation && !departureId) {
+      try {
+        const raw = localStorage.getItem("user");
+        if (raw) {
+          const profile = JSON.parse(raw);
+          if (profile?.home_location) {
+            setDepartureLocation(profile.home_location);
+          }
+        }
+      } catch (e) {
+        console.error("Error reading user profile for home_location:", e);
+      }
+    }
+  }, []); // Run once on mount
+
   const getAuthToken = () => localStorage.getItem("token");
 
   const formatTime = () =>
