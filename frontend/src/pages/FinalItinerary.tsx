@@ -5,12 +5,21 @@ import DashboardSidebar from "@/components/DashboardSidebar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from "@/components/ui/dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { PieChart, Pie, Cell, Legend } from "recharts";
 import { getApiUrl } from "@/lib/api";
 import { ArrowLeft, Plus, Trash2, X } from "lucide-react";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 type FlightLeg = {
   departure_airport?: {
@@ -169,6 +178,17 @@ const FinalItinerary = () => {
     cost: "",
   });
   const [dragActivity, setDragActivity] = useState<{ dayNumber: number; index: number } | null>(null);
+
+  type ChatMessage = {
+    role: "user" | "assistant";
+    content: string;
+    timestamp: string;
+  };
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const [hasLoadedChatHistory, setHasLoadedChatHistory] = useState(false);
 
   useEffect(() => {
     const loadFinalItinerary = async () => {
@@ -339,6 +359,111 @@ const FinalItinerary = () => {
         ...prev,
         [dayNumber]: { name: "", description: "", source_url: "", location: "" },
       }));
+    }
+  };
+
+  const getAuthToken = () => localStorage.getItem("token");
+
+  const formatChatTime = () =>
+    new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  // Lazy-load chat history for this trip when popup first opens
+  useEffect(() => {
+    const loadChatHistory = async () => {
+      if (!isChatOpen || hasLoadedChatHistory) return;
+      const token = getAuthToken();
+      if (!token) return;
+      try {
+        const url = tripId
+          ? getApiUrl(`api/chat/history?tripId=${tripId}`)
+          : getApiUrl("api/chat/history");
+        const response = await fetch(url, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+        const result = await response.json();
+        if (response.ok && result.success && Array.isArray(result.messages)) {
+          const mapped: ChatMessage[] = result.messages.map((m: any) => ({
+            role: m.role === "assistant" ? "assistant" : "user",
+            content: m.content,
+            timestamp: formatChatTime(),
+          }));
+          setChatMessages(mapped);
+        }
+      } catch (err) {
+        console.error("Error loading chat history on final itinerary:", err);
+      } finally {
+        setHasLoadedChatHistory(true);
+      }
+    };
+    void loadChatHistory();
+  }, [isChatOpen, hasLoadedChatHistory, tripId]);
+
+  const sendChatMessage = async () => {
+    const content = chatInput.trim();
+    if (!content || isChatLoading) return;
+
+    const userMessage: ChatMessage = {
+      role: "user",
+      content,
+      timestamp: formatChatTime(),
+    };
+    setChatMessages((prev) => [...prev, userMessage]);
+    setChatInput("");
+    setIsChatLoading(true);
+
+    try {
+      const token = getAuthToken();
+      if (!token) {
+        console.error("Not authenticated for chat on final itinerary page.");
+        return;
+      }
+
+      const response = await fetch(getApiUrl("api/chat/chat"), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: content,
+          tripId: tripId ? Number(tripId) : undefined,
+        }),
+      });
+
+      const result = await response.json().catch(() => null);
+
+      if (response.ok && result && result.success) {
+        const assistantMessage: ChatMessage = {
+          role: "assistant",
+          content: result.message || "No response from assistant.",
+          timestamp: formatChatTime(),
+        };
+        setChatMessages((prev) => [...prev, assistantMessage]);
+      } else if (result) {
+        const errorMessage: ChatMessage = {
+          role: "assistant",
+          content:
+            result.message ||
+            "Sorry, I ran into an error processing your question.",
+          timestamp: formatChatTime(),
+        };
+        setChatMessages((prev) => [...prev, errorMessage]);
+      }
+    } catch (err) {
+      console.error("Chat error on final itinerary page:", err);
+      const errorMessage: ChatMessage = {
+        role: "assistant",
+        content:
+          "Sorry, I'm having trouble connecting right now. Please try again in a moment.",
+        timestamp: formatChatTime(),
+      };
+      setChatMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setIsChatLoading(false);
     }
   };
 
@@ -1545,6 +1670,95 @@ const FinalItinerary = () => {
             )}
           </div>
         </main>
+      </div>
+
+      {/* Chat popup on Final Itinerary page */}
+      {isChatOpen && (
+        <div className="fixed bottom-20 right-4 z-40 w-full max-w-md">
+          <Card className="shadow-xl border border-blue-200 bg-white/95 backdrop-blur">
+            <CardHeader className="flex flex-row items-center justify-between py-2">
+              <CardTitle className="text-sm">Chat with Pindrop</CardTitle>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 text-slate-500 hover:text-slate-800"
+                onClick={() => setIsChatOpen(false)}
+              >
+                <span className="text-lg leading-none">×</span>
+              </Button>
+            </CardHeader>
+            <CardContent className="pt-1">
+              <ScrollArea className="h-64 pr-2">
+                <div className="space-y-3">
+                  {chatMessages.map((message, index) => (
+                    <div
+                      key={index}
+                      className={`flex ${
+                        message.role === "user" ? "justify-end" : "justify-start"
+                      }`}
+                    >
+                      <div
+                        className={`max-w-[80%] rounded-lg px-3 py-2 shadow-sm text-xs ${
+                          message.role === "user"
+                            ? "bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 shadow-lg"
+                            : "bg-white border border-blue-200 text-slate-900"
+                        }`}
+                      >
+                        <div className="whitespace-pre-wrap break-words leading-relaxed">
+                          {message.content}
+                        </div>
+                        <p
+                          className={`text-[10px] mt-1 ${
+                            message.role === "user"
+                              ? "text-teal-100"
+                              : "text-muted-foreground"
+                          }`}
+                        >
+                          {message.timestamp}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+              <div className="mt-3 flex gap-2">
+                <Input
+                  type="text"
+                  placeholder="Ask about this trip..."
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void sendChatMessage();
+                    }
+                  }}
+                  disabled={isChatLoading}
+                  className="h-9 text-xs"
+                />
+                <Button
+                  type="button"
+                  onClick={() => void sendChatMessage()}
+                  disabled={!chatInput.trim() || isChatLoading}
+                  className="h-9 px-3 text-xs bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Send
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Floating chat launcher */}
+      <div className="fixed bottom-6 right-6 z-30">
+        <Button
+          size="sm"
+          className="rounded-full shadow-lg bg-yellow-400 hover:bg-yellow-300 text-slate-900 text-xs px-4 py-2"
+          onClick={() => setIsChatOpen(true)}
+        >
+          Chat with Pindrop
+        </Button>
       </div>
     </div>
   );

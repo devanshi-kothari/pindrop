@@ -374,21 +374,89 @@ router.post('/chat', authenticateToken, async (req, res) => {
     // Optionally load trip context if we're chatting inside an existing trip
     let tripContext = 'No specific trip is currently selected.';
     let tripDestination = null;
+    let tripPreferenceContext = 'No trip-specific preferences are saved for this trip.';
     if (parsedTripId) {
       try {
-        const { data: tripData } = await supabase
-          .from('trip')
-          .select('title, destination')
-          .eq('trip_id', parsedTripId)
-          .maybeSingle();
+        const [{ data: tripData }, { data: tripPrefs }] = await Promise.all([
+          supabase
+            .from('trip')
+            .select('title, destination')
+            .eq('trip_id', parsedTripId)
+            .maybeSingle(),
+          supabase
+            .from('trip_preference')
+            .select(
+              'start_date, end_date, num_days, min_budget, max_budget, pace, accommodation_type, activity_categories, avoid_activity_categories, group_type, safety_notes, accessibility_notes, custom_requests'
+            )
+            .eq('trip_id', parsedTripId)
+            .maybeSingle(),
+        ]);
 
         if (tripData) {
           tripDestination = tripData.destination || null;
           const title = tripData.title || 'Your trip';
           tripContext = `Current trip: ${title}. Destination: ${tripData.destination || 'not specified'}.`;
         }
+
+        if (tripPrefs) {
+          const lines = [];
+          if (tripPrefs.start_date || tripPrefs.end_date) {
+            lines.push(
+              `Dates: ${tripPrefs.start_date || 'unspecified'} to ${tripPrefs.end_date || 'unspecified'}.`
+            );
+          }
+          if (tripPrefs.num_days) {
+            lines.push(`Approximate trip length: ${tripPrefs.num_days} days.`);
+          }
+          if (tripPrefs.min_budget || tripPrefs.max_budget) {
+            lines.push(
+              `Trip budget range: ${
+                tripPrefs.min_budget ? `$${tripPrefs.min_budget}` : 'unspecified'
+              } to ${tripPrefs.max_budget ? `$${tripPrefs.max_budget}` : 'unspecified'}.`
+            );
+          }
+          if (tripPrefs.pace) {
+            lines.push(`Preferred pace: ${tripPrefs.pace} (slow / balanced / packed).`);
+          }
+          if (tripPrefs.accommodation_type) {
+            lines.push(`Preferred accommodation: ${tripPrefs.accommodation_type}.`);
+          }
+          if (Array.isArray(tripPrefs.activity_categories) && tripPrefs.activity_categories.length) {
+            lines.push(
+              `Wants more of: ${tripPrefs.activity_categories
+                .map((c) => c)
+                .join(', ')}.`
+            );
+          }
+          if (
+            Array.isArray(tripPrefs.avoid_activity_categories) &&
+            tripPrefs.avoid_activity_categories.length
+          ) {
+            lines.push(
+              `Wants to avoid: ${tripPrefs.avoid_activity_categories
+                .map((c) => c)
+                .join(', ')}.`
+            );
+          }
+          if (tripPrefs.group_type) {
+            lines.push(`Group type: ${tripPrefs.group_type}.`);
+          }
+          if (tripPrefs.safety_notes) {
+            lines.push(`Safety notes: ${tripPrefs.safety_notes}.`);
+          }
+          if (tripPrefs.accessibility_notes) {
+            lines.push(`Accessibility notes: ${tripPrefs.accessibility_notes}.`);
+          }
+          if (tripPrefs.custom_requests) {
+            lines.push(`Custom requests: ${tripPrefs.custom_requests}.`);
+          }
+
+          if (lines.length) {
+            tripPreferenceContext = lines.join(' ');
+          }
+        }
       } catch (tripLoadError) {
-        console.error('Error loading trip context for chat:', tripLoadError);
+        console.error('Error loading trip context/preferences for chat:', tripLoadError);
       }
     }
 
@@ -408,6 +476,9 @@ Your job is to answer concrete questions and help refine THIS trip only (activit
 
 Here is the user's saved profile and preferences (from the app_user table):
 ${userProfileContext}
+
+Here are the specific preferences for this trip (from trip_preference):
+${tripPreferenceContext}
 
 When you recommend activities, explain briefly why they fit these preferences.`;
     } else {
@@ -580,20 +651,88 @@ router.post('/chat/stream', authenticateToken, async (req, res) => {
 
     // Optionally load trip context if we're chatting inside an existing trip
     let tripContext = 'No specific trip is currently selected.';
+    let tripPreferenceContext = 'No trip-specific preferences are saved for this trip.';
     if (parsedTripId) {
       try {
-        const { data: tripData } = await supabase
-          .from('trip')
-          .select('title, destination')
-          .eq('trip_id', parsedTripId)
-          .maybeSingle();
+        const [{ data: tripData }, { data: tripPrefs }] = await Promise.all([
+          supabase
+            .from('trip')
+            .select('title, destination')
+            .eq('trip_id', parsedTripId)
+            .maybeSingle(),
+          supabase
+            .from('trip_preference')
+            .select(
+              'start_date, end_date, num_days, min_budget, max_budget, pace, accommodation_type, activity_categories, avoid_activity_categories, group_type, safety_notes, accessibility_notes, custom_requests'
+            )
+            .eq('trip_id', parsedTripId)
+            .maybeSingle(),
+        ]);
 
         if (tripData) {
           const title = tripData.title || 'Your trip';
           tripContext = `Current trip: ${title}. Destination: ${tripData.destination || 'not specified'}.`;
         }
+
+        if (tripPrefs) {
+          const lines = [];
+          if (tripPrefs.start_date || tripPrefs.end_date) {
+            lines.push(
+              `Dates: ${tripPrefs.start_date || 'unspecified'} to ${tripPrefs.end_date || 'unspecified'}.`
+            );
+          }
+          if (tripPrefs.num_days) {
+            lines.push(`Approximate trip length: ${tripPrefs.num_days} days.`);
+          }
+          if (tripPrefs.min_budget || tripPrefs.max_budget) {
+            lines.push(
+              `Trip budget range: ${
+                tripPrefs.min_budget ? `$${tripPrefs.min_budget}` : 'unspecified'
+              } to ${tripPrefs.max_budget ? `$${tripPrefs.max_budget}` : 'unspecified'}.`
+            );
+          }
+          if (tripPrefs.pace) {
+            lines.push(`Preferred pace: ${tripPrefs.pace} (slow / balanced / packed).`);
+          }
+          if (tripPrefs.accommodation_type) {
+            lines.push(`Preferred accommodation: ${tripPrefs.accommodation_type}.`);
+          }
+          if (Array.isArray(tripPrefs.activity_categories) && tripPrefs.activity_categories.length) {
+            lines.push(
+              `Wants more of: ${tripPrefs.activity_categories
+                .map((c) => c)
+                .join(', ')}.`
+            );
+          }
+          if (
+            Array.isArray(tripPrefs.avoid_activity_categories) &&
+            tripPrefs.avoid_activity_categories.length
+          ) {
+            lines.push(
+              `Wants to avoid: ${tripPrefs.avoid_activity_categories
+                .map((c) => c)
+                .join(', ')}.`
+            );
+          }
+          if (tripPrefs.group_type) {
+            lines.push(`Group type: ${tripPrefs.group_type}.`);
+          }
+          if (tripPrefs.safety_notes) {
+            lines.push(`Safety notes: ${tripPrefs.safety_notes}.`);
+          }
+          if (tripPrefs.accessibility_notes) {
+            lines.push(`Accessibility notes: ${tripPrefs.accessibility_notes}.`);
+          }
+          if (tripPrefs.custom_requests) {
+            lines.push(`Custom requests: ${tripPrefs.custom_requests}.`);
+          }
+
+          if (lines.length) {
+            tripPreferenceContext = lines.join(' ');
+          }
+        }
       } catch (tripLoadError) {
-        console.error('Error loading trip context for chat stream:', tripLoadError);
+        console.error('Error loading trip context/preferences for chat stream:', tripLoadError);
       }
     }
 
@@ -613,6 +752,9 @@ Your job is to answer concrete questions and help refine THIS trip only (activit
 
 Here is the user's saved profile and preferences (from the app_user table):
 ${userProfileContext}
+
+Here are the specific preferences for this trip (from trip_preference):
+${tripPreferenceContext}
 
 When you recommend activities, explain briefly why they fit these preferences.`;
     } else {
