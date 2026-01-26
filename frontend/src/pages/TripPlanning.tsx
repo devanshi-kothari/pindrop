@@ -122,6 +122,13 @@ const TripPlanning = () => {
 
       if (response.ok && result.success) {
         const loadedTrip = result.trip;
+        
+        // For planned/archived trips, redirect to final itinerary view
+        if (loadedTrip?.trip_status === "planned" || loadedTrip?.trip_status === "archived") {
+          navigate(`/trip/${loadedTrip.trip_id}/final-itinerary`);
+          return;
+        }
+        
         setTrip(loadedTrip);
 
         // If no explicit planning mode was provided in the URL, infer it from
@@ -252,6 +259,7 @@ const TripPlanning = () => {
               <div className="flex-1 p-4">
                 <ChatWindow
                   tripId={currentTripId}
+                  tripStatus={trip?.trip_status}
                   className="h-full"
                   initialMessage={isNewTrip ? initialMessage : null}
                   planningMode={planningMode}

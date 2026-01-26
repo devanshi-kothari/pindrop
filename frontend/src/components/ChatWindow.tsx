@@ -32,6 +32,7 @@ interface Message {
 interface ChatWindowProps {
   className?: string;
   tripId?: number | null;
+  tripStatus?: string;
   initialMessage?: string | null;
   onTripCreated?: (tripId: number) => void;
   planningMode?: "known" | "explore";
@@ -70,6 +71,7 @@ interface TripPreferences {
 const ChatWindow = ({
   className = "",
   tripId = null,
+  tripStatus,
   initialMessage = null,
   onTripCreated,
   planningMode = "known",
@@ -1894,8 +1896,8 @@ const ChatWindow = ({
         </div>
       )}
 
-      {/* Structured trip preferences */}
-      {tripId && (planningMode === "known" || hasLockedDestination) && (
+      {/* Structured trip preferences - only for draft trips */}
+      {tripId && tripStatus === "draft" && (planningMode === "known" || hasLockedDestination) && (
         <div className="px-4 pt-4">
           <Card className="border-blue-100 bg-white/90 backdrop-blur text-slate-900">
             <CardHeader className="pb-3">

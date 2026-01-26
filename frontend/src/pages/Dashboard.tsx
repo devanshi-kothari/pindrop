@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import DashboardHeader from "@/components/DashboardHeader";
 import DashboardSidebar from "@/components/DashboardSidebar";
@@ -21,12 +22,19 @@ interface Trip {
 }
 
 const Dashboard = () => {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [trips, setTrips] = useState<Trip[]>([]);
   const [loading, setLoading] = useState(true);
   const [draftTrips, setDraftTrips] = useState<Trip[]>([]);
   const [plannedTrips, setPlannedTrips] = useState<Trip[]>([]);
   const [archivedTrips, setArchivedTrips] = useState<Trip[]>([]);
-  const [activeTab, setActiveTab] = useState<"planned" | "draft" | "archived">("draft");
+  const [activeTab, setActiveTab] = useState<"planned" | "draft" | "archived">(() => {
+    const tabParam = searchParams.get("tab");
+    if (tabParam === "planned" || tabParam === "archived") {
+      return tabParam;
+    }
+    return "draft";
+  });
 
   useEffect(() => {
     loadTrips();
@@ -115,7 +123,10 @@ const Dashboard = () => {
                       ? "bg-blue-500 text-white"
                       : "bg-transparent text-blue-700 hover:bg-blue-100"
                   }`}
-                  onClick={() => setActiveTab("draft")}
+                  onClick={() => {
+                    setActiveTab("draft");
+                    setSearchParams({ tab: "draft" });
+                  }}
                 >
                   Drafts
                 </Button>
@@ -127,7 +138,10 @@ const Dashboard = () => {
                       ? "bg-blue-500 text-white"
                       : "bg-transparent text-blue-700 hover:bg-blue-100"
                   }`}
-                  onClick={() => setActiveTab("planned")}
+                  onClick={() => {
+                    setActiveTab("planned");
+                    setSearchParams({ tab: "planned" });
+                  }}
                 >
                   Ongoing/Upcoming
                 </Button>
@@ -139,7 +153,10 @@ const Dashboard = () => {
                       ? "bg-blue-500 text-white"
                       : "bg-transparent text-blue-700 hover:bg-blue-100"
                   }`}
-                  onClick={() => setActiveTab("archived")}
+                  onClick={() => {
+                    setActiveTab("archived");
+                    setSearchParams({ tab: "archived" });
+                  }}
                 >
                   Past Trips
                 </Button>

@@ -158,6 +158,7 @@ const FinalItinerary = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [itinerary, setItinerary] = useState<FinalItineraryData | null>(null);
+  const [tripStatus, setTripStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState<Record<number, boolean>>({});
   const [addingActivity, setAddingActivity] = useState<Record<number, boolean>>({});
@@ -203,16 +204,33 @@ const FinalItinerary = () => {
           return;
         }
 
-        const response = await fetch(getApiUrl(`api/trips/${tripId}/final-itinerary`), {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-        });
+        // Load both trip info and final itinerary
+        const [tripResponse, itineraryResponse] = await Promise.all([
+          fetch(getApiUrl(`api/trips/${tripId}`), {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+          }),
+          fetch(getApiUrl(`api/trips/${tripId}/final-itinerary`), {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+          }),
+        ]);
 
-        const result = await response.json();
-        if (response.ok && result.success && result.itinerary?.days?.length > 0) {
+        // Load trip status
+        const tripResult = await tripResponse.json();
+        if (tripResponse.ok && tripResult.success && tripResult.trip?.trip_status) {
+          setTripStatus(tripResult.trip.trip_status);
+        }
+
+        // Load itinerary
+        const result = await itineraryResponse.json();
+        if (itineraryResponse.ok && result.success && result.itinerary?.days?.length > 0) {
           setItinerary(result.itinerary);
         } else {
           setItinerary(null);
@@ -654,11 +672,19 @@ const FinalItinerary = () => {
             <div className="flex items-center gap-4">
               <Button
                 variant="ghost"
-                onClick={() => navigate(tripId ? `/trip/${tripId}` : "/dashboard")}
+                onClick={() => {
+                  // For planned/archived trips, go to dashboard with planned tab
+                  if (tripStatus === "planned" || tripStatus === "archived") {
+                    navigate("/dashboard?tab=planned");
+                  } else {
+                    // For draft trips, go back to trip planning
+                    navigate(tripId ? `/trip/${tripId}` : "/dashboard");
+                  }
+                }}
                 className="flex items-center gap-2"
               >
                 <ArrowLeft className="h-4 w-4" />
-                Back to Trip
+                {tripStatus === "planned" || tripStatus === "archived" ? "Back to Dashboard" : "Back to Trip"}
               </Button>
               <div>
                 <h1 className="text-xl font-semibold">Final Itinerary</h1>
