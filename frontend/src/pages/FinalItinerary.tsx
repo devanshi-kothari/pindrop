@@ -46,12 +46,16 @@ type FlightLayover = {
 };
 
 type FinalItineraryFlight = {
+  flight_id?: number;
   departure_id?: string;
   arrival_id?: string;
   price?: number;
   total_duration?: number;
   flights?: FlightLeg[];
   layovers?: FlightLayover[];
+  airline?: string;
+  stops?: number;
+  description?: string;
 };
 
 type FinalItineraryHotel = {
