@@ -17,6 +17,7 @@ import {
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Switch } from "@/components/ui/switch";
 import { ChevronDown } from "lucide-react";
 import { getApiUrl } from "@/lib/api";
 import ActivitySwipeCard from "./ActivitySwipeCard";
@@ -632,6 +633,8 @@ const ChatWindow = ({
     }
   };
 
+  const [useTestActivities, setUseTestActivities] = useState(false);
+
   const generateActivities = async () => {
     if (!tripId) return;
 
@@ -652,6 +655,9 @@ const ChatWindow = ({
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
+        body: JSON.stringify({
+          testMode: useTestActivities,
+        }),
       });
 
       const result = await response.json();
@@ -1820,24 +1826,39 @@ const ChatWindow = ({
                     defaults, but you can tweak them for this specific trip.
                   </p>
                 </div>
-                <div className="flex flex-col gap-1">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="border-blue-200 bg-white text-slate-900 hover:bg-blue-50"
-                    onClick={savePreferences}
-                    disabled={isSavingPreferences || !tripPreferences}
-                  >
-                    {isSavingPreferences ? "Saving..." : "Save preferences"}
-                  </Button>
-                  <Button
-                    size="sm"
-                    className="bg-yellow-400 text-slate-900 font-semibold hover:bg-yellow-300 disabled:opacity-60"
-                    onClick={generateActivities}
-                    disabled={isGeneratingActivities}
-                  >
-                    {isGeneratingActivities ? "Finding activities..." : "Generate activities"}
-                  </Button>
+                <div className="flex flex-col gap-2 items-end">
+                  <div className="flex items-center gap-2">
+                    <Label className="text-[11px] text-slate-600">
+                      Use test activities (for Paris)
+                    </Label>
+                    <Switch
+                      checked={useTestActivities}
+                      onCheckedChange={(val) => setUseTestActivities(val)}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="border-blue-200 bg-white text-slate-900 hover:bg-blue-50"
+                      onClick={savePreferences}
+                      disabled={isSavingPreferences || !tripPreferences}
+                    >
+                      {isSavingPreferences ? "Saving..." : "Save preferences"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="bg-yellow-400 text-slate-900 font-semibold hover:bg-yellow-300 disabled:opacity-60"
+                      onClick={generateActivities}
+                      disabled={isGeneratingActivities}
+                    >
+                      {isGeneratingActivities
+                        ? useTestActivities
+                          ? "Loading test activities..."
+                          : "Finding activities..."
+                        : "Generate activities"}
+                    </Button>
+                  </div>
                 </div>
               </div>
             </CardHeader>

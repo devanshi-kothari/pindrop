@@ -1561,6 +1561,7 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
   try {
     const userId = req.user.userId;
     const tripId = parseInt(req.params.tripId);
+    const { testMode } = req.body || {};
 
     // Ensure the trip belongs to the user
     const { data: trip, error: tripError } = await supabase
@@ -1596,6 +1597,92 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       .select('*')
       .eq('trip_id', tripId)
       .maybeSingle();
+
+    // TEST MODE: instead of calling Google Custom Search, reuse existing activities for Paris
+    if (testMode) {
+      console.log('[activities] TEST MODE enabled – selecting existing Paris activities from DB');
+
+      // Pull a small random set of existing activities for Paris so we avoid Google search credits.
+      // We check both destination field and location string to be robust.
+      const { data: parisActivities, error: parisError } = await supabase
+        .from('activity')
+        .select('activity_id, name, location, category, duration, cost_estimate, rating, tags')
+        .or("destination.ilike.%Paris%,location.ilike.%Paris%");
+
+      if (parisError) {
+        console.error('Error loading Paris activities for test mode:', parisError);
+        return res.status(500).json({
+          success: false,
+          activities: [],
+          message: 'Failed to load test activities from database.',
+        });
+      }
+
+      if (!parisActivities || parisActivities.length === 0) {
+        console.warn('[activities] TEST MODE: no existing Paris activities found in DB');
+        return res.status(200).json({
+          success: true,
+          activities: [],
+          message: 'No existing Paris activities found for test mode.',
+        });
+      }
+
+      // Randomize and take a small batch (e.g., 10) so swipe UI behaves like normal
+      const shuffled = [...parisActivities].sort(() => Math.random() - 0.5);
+      const selected = shuffled.slice(0, 10);
+
+      // Ensure we have per-trip preference rows (pending) for these activities
+      const activitiesWithPrefs = [];
+      for (const act of selected) {
+        try {
+          const { data: existingPref, error: prefError } = await supabase
+            .from('trip_activity_preference')
+            .select('*')
+            .eq('trip_id', tripId)
+            .eq('activity_id', act.activity_id)
+            .maybeSingle();
+
+          if (prefError) {
+            console.error('Error checking existing preference in test mode:', prefError);
+          }
+
+          if (!existingPref) {
+            const { error: insertError } = await supabase
+              .from('trip_activity_preference')
+              .insert({
+                trip_id: tripId,
+                activity_id: act.activity_id,
+                preference: 'pending',
+              });
+
+            if (insertError) {
+              console.error('Error inserting preference in test mode:', insertError);
+            }
+          }
+
+          activitiesWithPrefs.push({
+            trip_activity_preference_id: null,
+            activity_id: act.activity_id,
+            name: act.name,
+            location: act.location,
+            category: act.category,
+            duration: act.duration,
+            cost_estimate: act.cost_estimate,
+            rating: act.rating,
+            tags: act.tags,
+            source: 'test-paris',
+          });
+        } catch (e) {
+          console.error('Error processing test-mode activity:', e);
+        }
+      }
+
+      return res.status(200).json({
+        success: true,
+        activities: activitiesWithPrefs,
+        message: 'Loaded test activities from existing Paris records (no Google API used).',
+      });
+    }
 
     // Load previously liked/disliked activities for this trip to understand patterns
     const { data: activityPreferences } = await supabase
