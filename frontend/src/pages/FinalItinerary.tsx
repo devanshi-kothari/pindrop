@@ -71,6 +71,7 @@ type FinalItineraryDay = {
     activity_id?: number;
     name?: string;
     location?: string;
+    address?: string;
     category?: string;
     duration?: string;
     cost_estimate?: number;
@@ -512,6 +513,13 @@ const FinalItinerary = () => {
     category: BudgetCategory;
   } | null>(null);
 
+  const parseMoneyNumber = (value: unknown): number => {
+    if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+    if (value === null || value === undefined) return 0;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  };
+
   // Simple per-day budget breakdown derived from itinerary + user-entered meals + manual extras
   const computeBudgetData = () => {
     if (!itinerary)
@@ -522,10 +530,10 @@ const FinalItinerary = () => {
 
     const daily = itinerary.days.map((day) => {
       const activityTotal = (day.activities || []).reduce(
-        (sum, act) => sum + (typeof act.cost_estimate === "number" ? act.cost_estimate : 0),
+        (sum, act) => sum + parseMoneyNumber(act.cost_estimate),
         0
       );
-      const hotelTotal = typeof day.hotel?.rate_per_night === "number" ? day.hotel.rate_per_night : 0;
+      const hotelTotal = parseMoneyNumber(day.hotel?.rate_per_night);
       const mealTotal = (() => {
         const meals = mealsByDay[day.day_number];
         if (!meals) return 0;
@@ -535,16 +543,12 @@ const FinalItinerary = () => {
         }, 0);
       })();
       const extrasTotal = (extraExpensesByDay[day.day_number] || []).reduce(
-        (sum, e) => sum + (typeof e.amount === "number" ? e.amount : 0),
+        (sum, e) => sum + parseMoneyNumber(e.amount),
         0
       );
       let flightTotal = 0;
-      if (typeof day.outbound_flight?.price === "number") {
-        flightTotal += day.outbound_flight.price;
-      }
-      if (typeof day.return_flight?.price === "number") {
-        flightTotal += day.return_flight.price;
-      }
+      flightTotal += parseMoneyNumber(day.outbound_flight?.price);
+      flightTotal += parseMoneyNumber(day.return_flight?.price);
       const total = activityTotal + hotelTotal + flightTotal + mealTotal + extrasTotal;
       return {
         day_number: day.day_number,
@@ -608,9 +612,11 @@ const FinalItinerary = () => {
         const locations: { label: string; address: string }[] = [];
 
         (day.activities || [])
-          .filter((a) => a.location)
           .forEach((a) => {
-            locations.push({ label: a.name || "Activity", address: a.location! });
+            const addr = a.address || a.location || itinerary.destination || null;
+            if (addr) {
+              locations.push({ label: a.name || "Activity", address: addr });
+            }
           });
 
         const meals = mealsByDay[day.day_number];
