@@ -701,6 +701,10 @@ const FinalItinerary = () => {
   const [hasLoadedMeals, setHasLoadedMeals] = useState(false);
   const [hasLoadedExpenses, setHasLoadedExpenses] = useState(false);
   const [budgetView, setBudgetView] = useState<"daily" | "summary">("daily");
+  const [selectedActivityDetail, setSelectedActivityDetail] = useState<{
+    dayNumber: number;
+    activity: FinalItineraryDay["activities"][number];
+  } | null>(null);
 
   const loadPersistedMeals = async () => {
     if (!tripId) return;
@@ -955,15 +959,24 @@ const FinalItinerary = () => {
         const distanceMatrix = new window.google.maps.DistanceMatrixService();
         const bounds = new window.google.maps.LatLngBounds();
 
-        const locations: { label: string; address: string }[] = [];
+        const locations: {
+          label: string;
+          address: string;
+          description?: string | null;
+          kind?: "activity" | "meal" | "hotel" | "fallback";
+        }[] = [];
 
-        (day.activities || [])
-          .forEach((a) => {
-            const addr = a.address || a.location || itinerary.destination || null;
-            if (addr) {
-              locations.push({ label: a.name || "Activity", address: addr });
-            }
-          });
+        (day.activities || []).forEach((a) => {
+          const addr = a.address || a.location || itinerary.destination || null;
+          if (addr) {
+            locations.push({
+              label: a.name || "Activity",
+              address: addr,
+              description: a.description || null,
+              kind: "activity",
+            });
+          }
+        });
 
         const meals = mealsByDay[day.day_number];
         if (meals) {
@@ -973,28 +986,65 @@ const FinalItinerary = () => {
               locations.push({
                 label: meal.name || slot.charAt(0).toUpperCase() + slot.slice(1),
                 address: meal.location,
+                kind: "meal",
               });
             }
           });
         }
 
         if (day.hotel?.location) {
-          locations.push({ label: day.hotel.name || "Hotel", address: day.hotel.location });
+          locations.push({ label: day.hotel.name || "Hotel", address: day.hotel.location, kind: "hotel" });
         }
 
         // If no specific locations, fall back to itinerary destination
         if (locations.length === 0 && itinerary.destination) {
-          locations.push({ label: itinerary.destination, address: itinerary.destination });
+          locations.push({ label: itinerary.destination, address: itinerary.destination, kind: "fallback" });
         }
+
+        const infoWindow = new window.google.maps.InfoWindow();
+
+        const buildInfoContent = (loc: (typeof locations)[number]) => {
+          const wrapper = document.createElement("div");
+          const title = document.createElement("div");
+          title.textContent = loc.label;
+          title.style.fontWeight = "600";
+          title.style.fontSize = "12px";
+          wrapper.appendChild(title);
+
+          if (loc.description) {
+            const desc = document.createElement("div");
+            desc.textContent = loc.description;
+            desc.style.fontSize = "11px";
+            desc.style.color = "#475569";
+            desc.style.marginTop = "4px";
+            wrapper.appendChild(desc);
+          }
+
+          const addr = document.createElement("div");
+          addr.textContent = loc.address;
+          addr.style.fontSize = "10px";
+          addr.style.color = "#64748b";
+          addr.style.marginTop = "4px";
+          wrapper.appendChild(addr);
+
+          return wrapper;
+        };
 
         locations.forEach((loc) => {
           geocoder.geocode({ address: loc.address }, (results: any, status: any) => {
             if (status === "OK" && results && results[0]) {
               const position = results[0].geometry.location;
-              new window.google.maps.Marker({
+              const marker = new window.google.maps.Marker({
                 map,
                 position,
                 title: loc.label,
+              });
+              marker.addListener("mouseover", () => {
+                infoWindow.setContent(buildInfoContent(loc));
+                infoWindow.open({ anchor: marker, map, shouldFocus: false });
+              });
+              marker.addListener("mouseout", () => {
+                infoWindow.close();
               });
               bounds.extend(position);
               map.fitBounds(bounds);
@@ -1689,6 +1739,37 @@ const FinalItinerary = () => {
                               ))}
                             </select>
                           </div>
+                        </div>
+                        <div className="rounded-md border border-blue-100 bg-blue-50/60 p-3 text-xs text-slate-700">
+                          {(() => {
+                            const day = itinerary.days[selectedMapDayIndex] || itinerary.days[0];
+                            const activities = day.activities || [];
+                            if (activities.length === 0) {
+                              return <p className="text-slate-500">No activities added for this day yet.</p>;
+                            }
+                            return (
+                              <div className="space-y-2">
+                                <p className="font-semibold text-slate-800">Activities shown on the map</p>
+                                <ul className="space-y-1">
+                                  {activities.map((act, idx) => (
+                                    <li key={`${act.activity_id || idx}`} className="text-[11px]">
+                                      <span className="font-semibold text-slate-800">
+                                        {idx + 1}. {act.name || "Activity"}
+                                      </span>
+                                      {act.description && (
+                                        <span className="block text-slate-600">{act.description}</span>
+                                      )}
+                                      {(act.address || act.location) && (
+                                        <span className="block text-slate-500">
+                                          📍 {act.address || act.location}
+                                        </span>
+                                      )}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            );
+                          })()}
                         </div>
                         {!GOOGLE_MAPS_API_KEY && (
                           <p className="text-[11px] text-rose-500">
@@ -2589,7 +2670,14 @@ const FinalItinerary = () => {
                                         });
                                         setDragActivity(null);
                                       }}
-                                      className="flex items-start gap-2 rounded-md border border-blue-100 bg-white px-2 py-1.5 text-[11px] cursor-move"
+                                      onClick={() => {
+                                        const activity =
+                                          row.activityIndex != null ? day.activities?.[row.activityIndex] : null;
+                                        if (activity) {
+                                          setSelectedActivityDetail({ dayNumber: day.day_number, activity });
+                                        }
+                                      }}
+                                      className="flex items-start gap-2 rounded-md border border-blue-100 bg-white px-2 py-1.5 text-[11px] cursor-move hover:border-blue-200 hover:bg-blue-50/40"
                                     >
                                       <span className="mt-[1px] inline-flex rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
                                         {row.slotLabel}
@@ -2764,6 +2852,62 @@ const FinalItinerary = () => {
                             >
                               Save
                             </Button>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
+
+                      {/* Activity detail dialog */}
+                      <Dialog
+                        open={!!selectedActivityDetail}
+                        onOpenChange={(open) => {
+                          if (!open) setSelectedActivityDetail(null);
+                        }}
+                      >
+                        <DialogContent className="max-w-sm">
+                          <DialogHeader>
+                            <DialogTitle>
+                              {selectedActivityDetail?.activity?.name || "Activity details"}
+                            </DialogTitle>
+                            <DialogDescription>
+                              Day {selectedActivityDetail?.dayNumber}
+                            </DialogDescription>
+                          </DialogHeader>
+                          <div className="space-y-2 text-sm text-slate-700">
+                            {selectedActivityDetail?.activity?.description && (
+                              <p className="text-slate-600">
+                                {selectedActivityDetail.activity.description}
+                              </p>
+                            )}
+                            {(selectedActivityDetail?.activity?.address ||
+                              selectedActivityDetail?.activity?.location) && (
+                              <p>
+                                <span className="font-semibold">Address: </span>
+                                {selectedActivityDetail.activity.address ||
+                                  selectedActivityDetail.activity.location}
+                              </p>
+                            )}
+                            {selectedActivityDetail?.activity?.duration && (
+                              <p>
+                                <span className="font-semibold">Duration: </span>
+                                {selectedActivityDetail.activity.duration}
+                              </p>
+                            )}
+                            {typeof selectedActivityDetail?.activity?.cost_estimate === "number" && (
+                              <p>
+                                <span className="font-semibold">Estimated cost: </span>$
+                                {formatMoney(selectedActivityDetail.activity.cost_estimate)}
+                              </p>
+                            )}
+                            {selectedActivityDetail?.activity?.source_url && (
+                              <a
+                                className="text-blue-600 hover:text-blue-700 underline text-sm"
+                                href={selectedActivityDetail.activity.source_url}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                View source
+                              </a>
+                            )}
                           </div>
                         </DialogContent>
                       </Dialog>
