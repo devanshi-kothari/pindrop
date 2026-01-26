@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -19,12 +19,18 @@ interface FlightLayover {
 }
 
 interface FlightAlternative {
+  flight_id?: number;
   departure_id?: string;
   arrival_id?: string;
   price?: number;
   total_duration?: number;
   flights?: FlightLeg[];
   layovers?: FlightLayover[];
+  airline?: string;
+  stops?: number;
+  description?: string;
+  flight_type?: string;
+  is_new?: boolean;
 }
 
 interface ReplaceFlightModalProps {
@@ -60,41 +66,48 @@ export const ReplaceFlightModal = ({
   const [error, setError] = useState<string | null>(null);
 
   // Fetch alternatives when modal opens
-  const fetchAlternatives = async () => {
-    if (alternatives.length > 0) return;
+  useEffect(() => {
+    if (!isOpen) return;
 
-    setIsLoading(true);
-    setError(null);
+    const fetchAlternatives = async () => {
+      setIsLoading(true);
+      setError(null);
+      setAlternatives([]);
+      setSelectedIndex(null);
 
-    try {
-      const token = localStorage.getItem("token");
-      if (!token) throw new Error("Not authenticated");
+      try {
+        const token = localStorage.getItem("token");
+        if (!token) throw new Error("Not authenticated");
 
-      const response = await fetch(
-        getApiUrl(`api/trips/${tripId}/flights/${flightId}/alternatives?type=${flightType}`),
-        {
+        const url = getApiUrl(`api/trips/${tripId}/flights/${flightId}/alternatives?type=${flightType}`);
+        console.log("[ReplaceFlightModal] Fetching alternatives from:", url);
+
+        const response = await fetch(url, {
           method: "GET",
           headers: {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
+        });
+
+        const result = await response.json();
+        console.log("[ReplaceFlightModal] API response:", result);
+
+        if (response.ok && result.success && Array.isArray(result.alternatives)) {
+          setAlternatives(result.alternatives);
+        } else {
+          setError(result.message || "Failed to load alternatives");
         }
-      );
-
-      const result = await response.json();
-
-      if (response.ok && result.success && Array.isArray(result.alternatives)) {
-        setAlternatives(result.alternatives);
-      } else {
-        setError(result.message || "Failed to load alternatives");
+      } catch (err) {
+        console.error("Error fetching alternatives:", err);
+        setError("Failed to load alternatives. Please try again.");
+      } finally {
+        setIsLoading(false);
       }
-    } catch (err) {
-      console.error("Error fetching alternatives:", err);
-      setError("Failed to load alternatives. Please try again.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    };
+
+    fetchAlternatives();
+  }, [isOpen, tripId, flightId, flightType]);
 
   const handleConfirm = async () => {
     if (selectedIndex === null) return;
@@ -120,9 +133,6 @@ export const ReplaceFlightModal = ({
       open={isOpen}
       onOpenChange={(open) => {
         if (!open) onClose();
-        if (open && alternatives.length === 0) {
-          fetchAlternatives();
-        }
       }}
     >
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -195,7 +205,20 @@ export const ReplaceFlightModal = ({
                             <span className="font-semibold text-slate-500">Duration:</span> {formatDuration(alt.total_duration)}
                           </div>
                         )}
+                        {alt.airline && (
+                          <div className="text-slate-600">
+                            <span className="font-semibold text-slate-500">Airline:</span> {alt.airline}
+                          </div>
+                        )}
+                        {typeof alt.stops === "number" && (
+                          <div className="text-slate-600">
+                            <span className="font-semibold text-slate-500">Stops:</span> {alt.stops === 0 ? "Nonstop" : `${alt.stops} stop${alt.stops > 1 ? "s" : ""}`}
+                          </div>
+                        )}
                       </div>
+                      {alt.description && (
+                        <p className="mt-2 text-xs text-slate-600">{alt.description}</p>
+                      )}
                       {Array.isArray(alt.flights) && alt.flights.length > 0 && (
                         <div className="mt-2 text-xs">
                           <p className="font-semibold text-slate-600 mb-1">Segments:</p>

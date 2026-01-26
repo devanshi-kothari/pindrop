@@ -2244,6 +2244,7 @@ router.get('/:tripId/itinerary', authenticateToken, async (req, res) => {
       const lastDayIndex = days.length - 1;
       if (selectedOutboundFlight) {
         days[0].outbound_flight = {
+          flight_id: selectedOutboundFlight.flight_id,
           departure_id: selectedOutboundFlight.departure_id,
           arrival_id: selectedOutboundFlight.arrival_id,
           price: selectedOutboundFlight.price,
@@ -2255,6 +2256,7 @@ router.get('/:tripId/itinerary', authenticateToken, async (req, res) => {
 
       if (selectedReturnFlight) {
         days[lastDayIndex].return_flight = {
+          flight_id: selectedReturnFlight.flight_id,
           departure_id: selectedReturnFlight.departure_id,
           arrival_id: selectedReturnFlight.arrival_id,
           price: selectedReturnFlight.price,
@@ -2652,29 +2654,43 @@ router.get('/:tripId/final-itinerary', authenticateToken, async (req, res) => {
       .eq('trip_id', tripId)
       .eq('is_selected', true);
 
+    console.log('[final-itinerary] Selected hotels:', tripHotels?.length, tripHotels?.map(h => ({ id: h.hotel_id, name: h.hotel?.name })));
+
     const selectedHotel = tripHotels?.[0]?.hotel || null;
 
     if (days.length > 0) {
       const lastDayIndex = days.length - 1;
       if (selectedOutboundFlight) {
+        const additionalData = selectedOutboundFlight.additional_data || {};
         days[0].outbound_flight = {
+          flight_id: selectedOutboundFlight.flight_id,
           departure_id: selectedOutboundFlight.departure_id,
           arrival_id: selectedOutboundFlight.arrival_id,
           price: selectedOutboundFlight.price,
           total_duration: selectedOutboundFlight.total_duration,
           flights: selectedOutboundFlight.flights,
           layovers: selectedOutboundFlight.layovers,
+          // Include LLM-generated fields from additional_data
+          airline: additionalData.airline || null,
+          stops: additionalData.stops !== undefined ? additionalData.stops : null,
+          description: additionalData.description || null,
         };
       }
 
       if (selectedReturnFlight) {
+        const additionalData = selectedReturnFlight.additional_data || {};
         days[lastDayIndex].return_flight = {
+          flight_id: selectedReturnFlight.flight_id,
           departure_id: selectedReturnFlight.departure_id,
           arrival_id: selectedReturnFlight.arrival_id,
           price: selectedReturnFlight.price,
           total_duration: selectedReturnFlight.total_duration,
           flights: selectedReturnFlight.flights,
           layovers: selectedReturnFlight.layovers,
+          // Include LLM-generated fields from additional_data
+          airline: additionalData.airline || null,
+          stops: additionalData.stops !== undefined ? additionalData.stops : null,
+          description: additionalData.description || null,
         };
       }
 
@@ -3518,7 +3534,9 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
 router.get('/:tripId/activities/:activityId/alternatives', authenticateToken, async (req, res) => {
   try {
     const { tripId, activityId } = req.params;
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
+
+    console.log('[alternatives] tripId:', tripId, '| activityId:', activityId, '| userId:', userId);
 
     if (!userId) {
       return res.status(401).json({
@@ -3534,6 +3552,8 @@ router.get('/:tripId/activities/:activityId/alternatives', authenticateToken, as
       .eq('activity_id', activityId)
       .single();
 
+    console.log('[alternatives] currentActivity:', currentActivity?.name, '| fetchError:', fetchError?.message);
+
     if (fetchError || !currentActivity) {
       return res.status(404).json({
         success: false,
@@ -3541,20 +3561,42 @@ router.get('/:tripId/activities/:activityId/alternatives', authenticateToken, as
       });
     }
 
-    // Fetch trip to get destination and dates
+    // Fetch trip to get destination and dates (without user_id filter first to debug)
+    const { data: tripCheck, error: tripCheckError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id, destination')
+      .eq('trip_id', tripId)
+      .single();
+
+    console.log('[alternatives] tripCheck:', tripCheck, '| tripCheckError:', tripCheckError?.message);
+    console.log('[alternatives] trip.user_id:', tripCheck?.user_id, '| req.user.userId:', userId, '| match:', tripCheck?.user_id == userId);
+
+    // Fetch trip to get destination and dates (dates are in trip_preference table)
     const { data: trip, error: tripError } = await supabase
       .from('trip')
-      .select('destination, start_date, end_date, trip_preference')
+      .select(`
+        destination,
+        trip_preference (
+          start_date,
+          end_date
+        )
+      `)
       .eq('trip_id', tripId)
       .eq('user_id', userId)
       .single();
 
     if (tripError || !trip) {
+      console.log('[alternatives] Trip query failed. tripError:', tripError?.message);
       return res.status(404).json({
         success: false,
         message: 'Trip not found',
       });
     }
+
+    // Extract dates from trip_preference
+    const tripPreference = Array.isArray(trip.trip_preference) ? trip.trip_preference[0] : trip.trip_preference;
+    const startDate = tripPreference?.start_date;
+    const endDate = tripPreference?.end_date;
 
     // Use OpenAI to generate 3 alternatives with similar characteristics
     const prompt = `You are a travel activity recommendation expert. Based on the following activity, suggest 3 similar but different activities that a traveler might enjoy as alternatives.
@@ -3569,7 +3611,7 @@ Current Activity:
 
 Trip Context:
 - Destination: ${trip.destination}
-- Trip dates: ${trip.start_date} to ${trip.end_date}
+- Trip dates: ${startDate || 'Not specified'} to ${endDate || 'Not specified'}
 
 Please suggest 3 DIFFERENT but similar alternatives that:
 1. Have a similar category or appeal
@@ -3628,35 +3670,139 @@ IMPORTANT: Return ONLY valid JSON array, no markdown, no additional text.`;
     
     // Parse the LLM response
     let alternatives = [];
+    const normalizeJsonString = (value) =>
+      value
+        .replace(/[“”]/g, '"')
+        .replace(/[‘’]/g, "'")
+        .replace(/,\s*([}\]])/g, '$1');
+
+    const tryParseJson = (value) => {
+      try {
+        return JSON.parse(value);
+      } catch (error) {
+        return null;
+      }
+    };
+
     try {
       let jsonStr = responseText.trim();
-      
-      // Try different extraction methods
-      // Method 1: Try to find JSON array with flexible whitespace
-      const jsonMatch = jsonStr.match(/\[\s*\{[\s\S]*\}\s*\]/);
-      if (jsonMatch) {
-        jsonStr = jsonMatch[0];
-        console.log('Method 1 (regex): Found JSON');
-      } else {
-        console.log('Method 1 (regex): No match, trying direct parse');
+      jsonStr = jsonStr.replace(/```json/gi, '```').replace(/```/g, '').trim();
+
+      // Method 1: Extract JSON array if present
+      const arrayStart = jsonStr.indexOf('[');
+      const arrayEnd = jsonStr.lastIndexOf(']');
+      if (arrayStart !== -1 && arrayEnd > arrayStart) {
+        jsonStr = jsonStr.slice(arrayStart, arrayEnd + 1);
+        console.log('Method 1 (brackets): Found JSON array');
       }
-      
-      // Try to parse
-      alternatives = JSON.parse(jsonStr);
-      
-      if (!Array.isArray(alternatives)) {
-        console.error('Response is not an array:', alternatives);
-        alternatives = [];
-      } else {
+
+      let parsed = tryParseJson(normalizeJsonString(jsonStr));
+
+      // Method 2: Extract object blocks and build an array
+      if (!Array.isArray(parsed)) {
+        const objectMatches = jsonStr.match(/\{[\s\S]*?\}/g);
+        if (objectMatches && objectMatches.length > 0) {
+          console.log('Method 2 (objects): Found JSON objects');
+          parsed = objectMatches
+            .map((objStr) => {
+              const normalized = normalizeJsonString(objStr);
+              let parsedObject = tryParseJson(normalized);
+              if (!parsedObject) {
+                const loose = normalized.replace(/'([^']*)'/g, '"$1"');
+                parsedObject = tryParseJson(loose);
+              }
+              return parsedObject;
+            })
+            .filter(Boolean);
+        }
+      }
+
+      if (Array.isArray(parsed)) {
+        alternatives = parsed.filter((item) => item && item.name).slice(0, 3);
         console.log(`Successfully parsed ${alternatives.length} alternatives`);
-        // Ensure exactly 3 alternatives
-        alternatives = alternatives.slice(0, 3);
+      } else {
+        console.error('Response did not parse into an array.');
+        alternatives = [];
       }
     } catch (parseError) {
       console.error('=== JSON Parse Error ===');
       console.error('Parse error:', parseError.message);
       console.error('Attempted to parse:', responseText.substring(0, 200));
       alternatives = [];
+    }
+
+    // Fallback: pull similar activities from DB if LLM response is empty
+    if (alternatives.length === 0) {
+      console.warn('No LLM alternatives returned. Falling back to DB suggestions.');
+      const destination = trip.destination ? String(trip.destination).trim() : null;
+      const category = currentActivity.category ? String(currentActivity.category).trim() : null;
+
+      let fallbackQuery = supabase
+        .from('activity')
+        .select(
+          'activity_id, name, location, category, duration, cost_estimate, rating, description, source_url'
+        )
+        .neq('activity_id', activityId);
+
+      if (category) {
+        fallbackQuery = fallbackQuery.eq('category', category);
+      }
+
+      if (destination) {
+        fallbackQuery = fallbackQuery.or(
+          `location.ilike.%${destination}%,name.ilike.%${destination}%`
+        );
+      }
+
+      let { data: fallbackData, error: fallbackError } = await fallbackQuery.limit(3);
+
+      if ((!fallbackData || fallbackData.length === 0) && category) {
+        // Relax filters if category was too strict
+        let relaxedQuery = supabase
+          .from('activity')
+          .select(
+            'activity_id, name, location, category, duration, cost_estimate, rating, description, source_url'
+          )
+          .neq('activity_id', activityId);
+
+        if (destination) {
+          relaxedQuery = relaxedQuery.or(
+            `location.ilike.%${destination}%,name.ilike.%${destination}%`
+          );
+        }
+
+        const relaxedResult = await relaxedQuery.limit(3);
+        fallbackData = relaxedResult.data;
+        fallbackError = fallbackError || relaxedResult.error;
+      }
+
+      if (fallbackError) {
+        console.error('Fallback activity query failed:', fallbackError);
+      }
+
+      if ((!fallbackData || fallbackData.length === 0)) {
+        // Final safety net: return any other activities
+        const { data: anyActivities, error: anyError } = await supabase
+          .from('activity')
+          .select(
+            'activity_id, name, location, category, duration, cost_estimate, rating, description, source_url'
+          )
+          .neq('activity_id', activityId)
+          .limit(3);
+
+        if (anyError) {
+          console.error('Fallback any-activity query failed:', anyError);
+        } else {
+          fallbackData = anyActivities;
+        }
+      }
+
+      if (fallbackData && fallbackData.length > 0) {
+        alternatives = fallbackData.map((item) => ({
+          ...item,
+          is_new: false,
+        }));
+      }
     }
 
     console.log('Final alternatives count:', alternatives.length);
@@ -3681,7 +3827,7 @@ router.put('/:tripId/activities/:activityId/confirm-replacement', authenticateTo
   try {
     const { tripId, activityId } = req.params;
     const { selectedActivity } = req.body;
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
 
     if (!userId) {
       return res.status(401).json({
@@ -3727,6 +3873,8 @@ router.put('/:tripId/activities/:activityId/confirm-replacement', authenticateTo
     }
 
     // Update the activity with replacement data
+    // Note: activity table doesn't have updated_at column per schema
+    console.log('[confirm-replacement] Updating activity', activityId, 'with:', selectedActivity);
     const { error: updateError } = await supabase
       .from('activity')
       .update({
@@ -3734,21 +3882,21 @@ router.put('/:tripId/activities/:activityId/confirm-replacement', authenticateTo
         category: selectedActivity.category || null,
         description: selectedActivity.description || null,
         location: selectedActivity.location || null,
-        cost_estimate: selectedActivity.cost_estimate || null,
+        cost_estimate: selectedActivity.cost_estimate !== undefined ? selectedActivity.cost_estimate : null,
         duration: selectedActivity.duration || null,
         source_url: selectedActivity.source_url || null,
-        updated_at: new Date().toISOString(),
       })
       .eq('activity_id', activityId);
 
     if (updateError) {
-      console.error('Error updating activity:', updateError);
+      console.error('[confirm-replacement] Error updating activity:', updateError);
       return res.status(500).json({
         success: false,
         message: 'Failed to update activity',
         error: updateError.message,
       });
     }
+    console.log('[confirm-replacement] Activity updated successfully');
 
     res.status(200).json({
       success: true,
@@ -3770,7 +3918,9 @@ router.put('/:tripId/activities/:activityId/confirm-replacement', authenticateTo
 router.get('/:tripId/hotels/:hotelId/alternatives', authenticateToken, async (req, res) => {
   try {
     const { tripId, hotelId } = req.params;
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
+
+    console.log('[hotel-alternatives] tripId:', tripId, '| hotelId:', hotelId, '| userId:', userId);
 
     if (!userId) {
       return res.status(401).json({
@@ -3779,73 +3929,147 @@ router.get('/:tripId/hotels/:hotelId/alternatives', authenticateToken, async (re
       });
     }
 
-    // Fetch the current hotel selection from trip_hotel
-    const { data: currentSelection, error: fetchError } = await supabase
-      .from('trip_hotel')
+    // Fetch the current hotel from hotel table
+    const { data: currentHotel, error: fetchError } = await supabase
+      .from('hotel')
       .select('*')
-      .eq('trip_hotel_id', hotelId)
+      .eq('hotel_id', hotelId)
       .single();
 
-    if (fetchError || !currentSelection) {
+    console.log('[hotel-alternatives] currentHotel:', currentHotel?.name, '| fetchError:', fetchError?.message);
+
+    if (fetchError || !currentHotel) {
       return res.status(404).json({
         success: false,
-        message: 'Hotel selection not found',
+        message: 'Hotel not found',
       });
     }
 
-    // Get trip details for dates and location
+    // Get trip details for dates and location (dates are in trip_preference)
     const { data: trip, error: tripError } = await supabase
       .from('trip')
-      .select('destination, start_date, end_date, trip_preference')
+      .select(`
+        destination,
+        trip_preference (
+          start_date,
+          end_date
+        )
+      `)
       .eq('trip_id', tripId)
       .eq('user_id', userId)
       .single();
 
     if (tripError || !trip) {
+      console.log('[hotel-alternatives] Trip query failed:', tripError?.message);
       return res.status(404).json({
         success: false,
         message: 'Trip not found',
       });
     }
 
-    // Parse trip preference to get search params
-    let preferences = {};
+    // Extract dates from trip_preference
+    const tripPreference = Array.isArray(trip.trip_preference) ? trip.trip_preference[0] : trip.trip_preference;
+    const startDate = tripPreference?.start_date;
+    const endDate = tripPreference?.end_date;
+
+    console.log('[hotel-alternatives] destination:', trip.destination, '| dates:', startDate, 'to', endDate);
+
+    // Try to use OpenAI to generate hotel alternatives (similar to activity approach)
+    const prompt = `You are a hotel recommendation expert. Based on the following hotel, suggest 3 similar but different hotels that a traveler might enjoy as alternatives.
+
+Current Hotel:
+- Name: ${currentHotel.name}
+- Location: ${currentHotel.location || trip.destination}
+- Rate per night: $${currentHotel.rate_per_night_lowest || 'Not specified'}
+- Rating: ${currentHotel.overall_rating || 'Not specified'}
+- Hotel class: ${currentHotel.hotel_class || 'Not specified'}
+
+Trip Context:
+- Destination: ${trip.destination}
+- Check-in: ${startDate || 'Not specified'}
+- Check-out: ${endDate || 'Not specified'}
+
+Please suggest 3 DIFFERENT but similar hotels that:
+1. Are in the same general area (${trip.destination})
+2. Have comparable pricing (within 30% of current rate)
+3. Have similar star rating/quality
+
+Return your response as a JSON array with exactly 3 objects, each with this structure:
+{
+  "name": "Hotel Name",
+  "location": "${trip.destination}",
+  "rate_per_night_lowest": 150,
+  "rate_per_night_formatted": "$150",
+  "overall_rating": 4.5,
+  "hotel_class": "4-star hotel",
+  "check_in_time": "3:00 PM",
+  "check_out_time": "11:00 AM",
+  "description": "Brief description of the hotel"
+}
+
+IMPORTANT: Return ONLY valid JSON array, no markdown, no additional text.`;
+
+    let alternatives = [];
+
     try {
-      preferences = JSON.parse(trip.trip_preference || '{}');
-    } catch (e) {
-      console.error('Error parsing trip preference:', e);
+      const completion = await openaiClient.chat.completions.create({
+        model: DEFAULT_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.7,
+        max_tokens: 1500,
+      });
+
+      const responseText = completion.choices[0]?.message?.content || '';
+      console.log('[hotel-alternatives] LLM response length:', responseText.length);
+
+      // Parse LLM response
+      let jsonStr = responseText.trim();
+      // Remove markdown code fences if present
+      jsonStr = jsonStr.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
+      // Try to extract JSON array
+      const jsonMatch = jsonStr.match(/\[\s*\{[\s\S]*\}\s*\]/);
+      if (jsonMatch) {
+        jsonStr = jsonMatch[0];
+      }
+      alternatives = JSON.parse(jsonStr);
+      if (!Array.isArray(alternatives)) {
+        alternatives = [];
+      }
+      alternatives = alternatives.slice(0, 3).map((h) => ({ ...h, is_new: true }));
+      console.log('[hotel-alternatives] Parsed', alternatives.length, 'alternatives from LLM');
+    } catch (llmError) {
+      console.error('[hotel-alternatives] LLM error:', llmError.message);
     }
 
-    // Search for hotels using SerpAPI
-    const hotelSearchParams = new URLSearchParams({
-      engine: 'google_hotels',
-      q: trip.destination,
-      check_in_date: trip.start_date.split('T')[0],
-      check_out_date: trip.end_date.split('T')[0],
-      adults: preferences.travelers || '1',
-      api_key: process.env.SERPAPI_KEY,
-    });
+    // Fallback: get other hotels from DB for same location
+    if (alternatives.length === 0) {
+      console.log('[hotel-alternatives] Using DB fallback');
+      const { data: dbHotels } = await supabase
+        .from('hotel')
+        .select('hotel_id, name, location, rate_per_night_lowest, rate_per_night_formatted, overall_rating, hotel_class, check_in_time, check_out_time')
+        .neq('hotel_id', hotelId)
+        .ilike('location', `%${trip.destination}%`)
+        .limit(3);
 
-    const serpApiResponse = await fetch(
-      `https://serpapi.com/search?${hotelSearchParams.toString()}`
-    );
-    const serpApiData = await serpApiResponse.json();
+      if (dbHotels && dbHotels.length > 0) {
+        alternatives = dbHotels.map((h) => ({ ...h, is_new: false }));
+      }
+    }
 
-    // Extract hotels and return top 3 alternatives
-    const alternatives = (serpApiData.properties || [])
-      .filter((h) => h.hotel_id !== currentSelection.hotel_id)
-      .slice(0, 3)
-      .map((hotel) => ({
-        hotel_id: hotel.hotel_id,
-        name: hotel.title,
-        location: hotel.location || trip.destination,
-        rate_per_night: hotel.rate_per_night || 0,
-        rate_per_night_formatted: hotel.rate_per_night_formatted || `$${hotel.rate_per_night || 0}`,
-        overall_rating: hotel.review_rating || 4,
-        check_in_time: '3:00 PM',
-        check_out_time: '11:00 AM',
-        link: hotel.link,
-      }));
+    // Final fallback: any other hotels
+    if (alternatives.length === 0) {
+      const { data: anyHotels } = await supabase
+        .from('hotel')
+        .select('hotel_id, name, location, rate_per_night_lowest, rate_per_night_formatted, overall_rating, hotel_class, check_in_time, check_out_time')
+        .neq('hotel_id', hotelId)
+        .limit(3);
+
+      if (anyHotels && anyHotels.length > 0) {
+        alternatives = anyHotels.map((h) => ({ ...h, is_new: false }));
+      }
+    }
+
+    console.log('[hotel-alternatives] Final alternatives count:', alternatives.length);
 
     res.status(200).json({
       success: true,
@@ -3867,7 +4091,9 @@ router.put('/:tripId/hotels/:hotelId/confirm-replacement', authenticateToken, as
   try {
     const { tripId, hotelId } = req.params;
     const { selectedHotel } = req.body;
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
+
+    console.log('[hotel-confirm] tripId:', tripId, '| hotelId:', hotelId, '| selectedHotel:', selectedHotel?.name);
 
     if (!userId) {
       return res.status(401).json({
@@ -3876,7 +4102,7 @@ router.put('/:tripId/hotels/:hotelId/confirm-replacement', authenticateToken, as
       });
     }
 
-    if (!selectedHotel || !selectedHotel.hotel_id) {
+    if (!selectedHotel || !selectedHotel.name) {
       return res.status(400).json({
         success: false,
         message: 'Invalid replacement hotel',
@@ -3886,7 +4112,7 @@ router.put('/:tripId/hotels/:hotelId/confirm-replacement', authenticateToken, as
     // Verify trip ownership
     const { data: trip, error: tripError } = await supabase
       .from('trip')
-      .select('trip_id')
+      .select('trip_id, destination')
       .eq('trip_id', tripId)
       .eq('user_id', userId)
       .single();
@@ -3898,36 +4124,109 @@ router.put('/:tripId/hotels/:hotelId/confirm-replacement', authenticateToken, as
       });
     }
 
-    // Update the hotel selection
-    const { error: updateError } = await supabase
-      .from('trip_hotel')
-      .update({
-        hotel_id: selectedHotel.hotel_id,
+    // Get trip dates for the new hotel
+    const { data: tripPref } = await supabase
+      .from('trip_preference')
+      .select('start_date, end_date')
+      .eq('trip_id', tripId)
+      .single();
+
+    // Check if the selected hotel already exists in DB (has hotel_id and is_new is false)
+    let newHotelId = selectedHotel.hotel_id;
+
+    if (selectedHotel.is_new || !selectedHotel.hotel_id) {
+      // Insert new hotel into hotel table
+      const { data: newHotel, error: insertError } = await supabase
+        .from('hotel')
+        .insert({
         name: selectedHotel.name,
-        location: selectedHotel.location,
-        rate_per_night: selectedHotel.rate_per_night,
-        rate_per_night_formatted: selectedHotel.rate_per_night_formatted,
-        link: selectedHotel.link,
-        overall_rating: selectedHotel.overall_rating,
-        check_in_time: selectedHotel.check_in_time,
-        check_out_time: selectedHotel.check_out_time,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('trip_hotel_id', hotelId);
+          location: selectedHotel.location || trip.destination,
+          rate_per_night_lowest: selectedHotel.rate_per_night_lowest || null,
+          rate_per_night_formatted: selectedHotel.rate_per_night_formatted || null,
+          overall_rating: selectedHotel.overall_rating || null,
+          hotel_class: selectedHotel.hotel_class || null,
+          check_in_time: selectedHotel.check_in_time || '3:00 PM',
+          check_out_time: selectedHotel.check_out_time || '11:00 AM',
+          check_in_date: tripPref?.start_date || null,
+          check_out_date: tripPref?.end_date || null,
+          search_location: trip.destination,
+        })
+        .select()
+        .single();
+
+      if (insertError || !newHotel) {
+        console.error('[hotel-confirm] Error inserting new hotel:', insertError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to create new hotel record',
+          error: insertError?.message,
+        });
+      }
+      newHotelId = newHotel.hotel_id;
+      console.log('[hotel-confirm] Created new hotel with ID:', newHotelId);
+    }
+
+    // Deselect ALL currently selected hotels for this trip (not just the one being replaced)
+    const { error: deselectError } = await supabase
+      .from('trip_hotel')
+      .update({ is_selected: false, updated_at: new Date().toISOString() })
+      .eq('trip_id', tripId)
+      .eq('is_selected', true);
+
+    if (deselectError) {
+      console.error('[hotel-confirm] Error deselecting old hotels:', deselectError);
+    }
+
+    // Check if new hotel is already linked to trip
+    const { data: existingLink } = await supabase
+      .from('trip_hotel')
+      .select('*')
+      .eq('trip_id', tripId)
+      .eq('hotel_id', newHotelId)
+      .single();
+
+    if (existingLink) {
+      // Update existing link to selected
+      const { error: updateError } = await supabase
+        .from('trip_hotel')
+        .update({ is_selected: true, updated_at: new Date().toISOString() })
+        .eq('trip_id', tripId)
+        .eq('hotel_id', newHotelId);
 
     if (updateError) {
-      console.error('Error updating hotel:', updateError);
+        console.error('[hotel-confirm] Error updating trip_hotel:', updateError);
       return res.status(500).json({
         success: false,
-        message: 'Failed to update hotel',
+          message: 'Failed to update hotel selection',
         error: updateError.message,
       });
     }
+    } else {
+      // Insert new link
+      const { error: linkError } = await supabase
+        .from('trip_hotel')
+        .insert({
+          trip_id: parseInt(tripId),
+          hotel_id: newHotelId,
+          is_selected: true,
+        });
+
+      if (linkError) {
+        console.error('[hotel-confirm] Error linking new hotel:', linkError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to link new hotel to trip',
+          error: linkError.message,
+        });
+      }
+    }
+
+    console.log('[hotel-confirm] Hotel replaced successfully. New hotel ID:', newHotelId);
 
     res.status(200).json({
       success: true,
       message: 'Hotel replaced successfully',
-      hotel_id: hotelId,
+      hotel_id: newHotelId,
     });
   } catch (error) {
     console.error('Error confirming hotel replacement:', error);
@@ -3945,7 +4244,9 @@ router.get('/:tripId/flights/:flightId/alternatives', authenticateToken, async (
   try {
     const { tripId, flightId } = req.params;
     const { type } = req.query; // 'outbound' or 'return'
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
+
+    console.log('[flight-alternatives] tripId:', tripId, '| flightId:', flightId, '| type:', type, '| userId:', userId);
 
     if (!userId) {
       return res.status(401).json({
@@ -3954,74 +4255,152 @@ router.get('/:tripId/flights/:flightId/alternatives', authenticateToken, async (
       });
     }
 
-    // Fetch the current flight selection
-    const { data: currentSelection, error: fetchError } = await supabase
-      .from('trip_flight')
+    // Fetch the current flight from flight table
+    const { data: currentFlight, error: fetchError } = await supabase
+      .from('flight')
       .select('*')
-      .eq('trip_flight_id', flightId)
+      .eq('flight_id', flightId)
       .single();
 
-    if (fetchError || !currentSelection) {
+    console.log('[flight-alternatives] currentFlight:', currentFlight?.departure_id, '->', currentFlight?.arrival_id, '| fetchError:', fetchError?.message);
+
+    if (fetchError || !currentFlight) {
       return res.status(404).json({
         success: false,
-        message: 'Flight selection not found',
+        message: 'Flight not found',
       });
     }
 
-    // Get trip details
+    // Get trip details (dates are in trip_preference)
     const { data: trip, error: tripError } = await supabase
       .from('trip')
-      .select('destination, start_date, end_date, trip_preference')
+      .select(`
+        destination,
+        trip_preference (
+          start_date,
+          end_date
+        )
+      `)
       .eq('trip_id', tripId)
       .eq('user_id', userId)
       .single();
 
     if (tripError || !trip) {
+      console.log('[flight-alternatives] Trip query failed:', tripError?.message);
       return res.status(404).json({
         success: false,
         message: 'Trip not found',
       });
     }
 
-    // Parse trip preference to get departure city
-    let preferences = {};
+    // Extract dates from trip_preference
+    const tripPreference = Array.isArray(trip.trip_preference) ? trip.trip_preference[0] : trip.trip_preference;
+    const startDate = tripPreference?.start_date;
+    const endDate = tripPreference?.end_date;
+
+    // Determine flight type from current flight or query param
+    const flightType = type || currentFlight.flight_type || 'outbound';
+    const searchDate = flightType === 'return' ? endDate : startDate;
+
+    console.log('[flight-alternatives] route:', currentFlight.departure_id, '->', currentFlight.arrival_id, '| date:', searchDate, '| type:', flightType);
+
+    // Use OpenAI to generate flight alternatives
+    const prompt = `You are a flight booking expert. Based on the following flight, suggest 3 alternative flights that a traveler might consider.
+
+Current Flight:
+- Route: ${currentFlight.departure_id} to ${currentFlight.arrival_id}
+- Price: $${currentFlight.price || 'Not specified'}
+- Duration: ${currentFlight.total_duration ? Math.floor(currentFlight.total_duration / 60) + 'h ' + (currentFlight.total_duration % 60) + 'm' : 'Not specified'}
+- Type: ${flightType}
+- Date: ${searchDate || 'Not specified'}
+
+Please suggest 3 DIFFERENT flight options that:
+1. Have the same route (${currentFlight.departure_id} to ${currentFlight.arrival_id})
+2. Are on the same date (${searchDate})
+3. Have varied prices and durations (some cheaper with more stops, some faster but pricier)
+
+Return your response as a JSON array with exactly 3 objects, each with this structure:
+{
+  "departure_id": "${currentFlight.departure_id}",
+  "arrival_id": "${currentFlight.arrival_id}",
+  "price": 450,
+  "total_duration": 180,
+  "airline": "Delta",
+  "stops": 1,
+  "description": "Brief description like '1 stop in Atlanta, arrives 6:30 PM'"
+}
+
+IMPORTANT: Return ONLY valid JSON array, no markdown, no additional text. total_duration should be in minutes.`;
+
+    let alternatives = [];
+
     try {
-      preferences = JSON.parse(trip.trip_preference || '{}');
-    } catch (e) {
-      console.error('Error parsing trip preference:', e);
+      const completion = await openaiClient.chat.completions.create({
+        model: DEFAULT_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.7,
+        max_tokens: 1500,
+      });
+
+      const responseText = completion.choices[0]?.message?.content || '';
+      console.log('[flight-alternatives] LLM response length:', responseText.length);
+
+      // Parse LLM response
+      let jsonStr = responseText.trim();
+      jsonStr = jsonStr.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
+      const jsonMatch = jsonStr.match(/\[\s*\{[\s\S]*\}\s*\]/);
+      if (jsonMatch) {
+        jsonStr = jsonMatch[0];
+      }
+      alternatives = JSON.parse(jsonStr);
+      if (!Array.isArray(alternatives)) {
+        alternatives = [];
+      }
+      // Enforce the same route for all alternatives (LLM might generate different routes)
+      alternatives = alternatives.slice(0, 3).map((f) => ({
+        ...f,
+        departure_id: currentFlight.departure_id,
+        arrival_id: currentFlight.arrival_id,
+        flight_type: flightType,
+        is_new: true,
+      }));
+      console.log('[flight-alternatives] Parsed', alternatives.length, 'alternatives from LLM (route enforced)');
+    } catch (llmError) {
+      console.error('[flight-alternatives] LLM error:', llmError.message);
     }
 
-    // Determine search date and route based on flight type
-    let departureAirport = currentSelection.departure_id;
-    let arrivalAirport = currentSelection.arrival_id;
-    let searchDate = type === 'return' ? trip.end_date : trip.start_date;
+    // Fallback: get other flights from DB with same route
+    if (alternatives.length === 0) {
+      console.log('[flight-alternatives] Using DB fallback');
+      const { data: dbFlights } = await supabase
+        .from('flight')
+        .select('flight_id, departure_id, arrival_id, price, total_duration, flights, layovers, flight_type')
+        .eq('departure_id', currentFlight.departure_id)
+        .eq('arrival_id', currentFlight.arrival_id)
+        .eq('flight_type', flightType)
+        .neq('flight_id', flightId)
+        .limit(3);
 
-    // Search for flights using SerpAPI
-    const flightSearchParams = new URLSearchParams({
-      engine: 'google_flights',
-      departure_id: departureAirport,
-      arrival_id: arrivalAirport,
-      outbound_date: searchDate.split('T')[0],
-      adults: preferences.travelers || '1',
-      api_key: process.env.SERPAPI_KEY,
-    });
+      if (dbFlights && dbFlights.length > 0) {
+        alternatives = dbFlights.map((f) => ({ ...f, is_new: false }));
+      }
+    }
 
-    const serpApiResponse = await fetch(
-      `https://serpapi.com/search?${flightSearchParams.toString()}`
-    );
-    const serpApiData = await serpApiResponse.json();
+    // Final fallback: any other flights of same type
+    if (alternatives.length === 0) {
+      const { data: anyFlights } = await supabase
+        .from('flight')
+        .select('flight_id, departure_id, arrival_id, price, total_duration, flights, layovers, flight_type')
+        .eq('flight_type', flightType)
+        .neq('flight_id', flightId)
+        .limit(3);
 
-    // Extract flights and return top 3 alternatives
-    const alternatives = (serpApiData.best_flights || [])
-      .slice(0, 3)
-      .map((flight) => ({
-        departure_id: flight.departure_airport?.id,
-        arrival_id: flight.arrival_airport?.id,
-        price: flight.price,
-        total_duration: flight.total_duration,
-        flights: flight.flights,
-        layovers: flight.layovers,
-      }));
+      if (anyFlights && anyFlights.length > 0) {
+        alternatives = anyFlights.map((f) => ({ ...f, is_new: false }));
+      }
+    }
+
+    console.log('[flight-alternatives] Final alternatives count:', alternatives.length);
 
     res.status(200).json({
       success: true,
@@ -4043,7 +4422,9 @@ router.put('/:tripId/flights/:flightId/confirm-replacement', authenticateToken, 
   try {
     const { tripId, flightId } = req.params;
     const { selectedFlight } = req.body;
-    const userId = req.user?.id;
+    const userId = req.user?.userId;
+
+    console.log('[flight-confirm] tripId:', tripId, '| flightId:', flightId, '| selectedFlight:', selectedFlight?.departure_id, '->', selectedFlight?.arrival_id);
 
     if (!userId) {
       return res.status(401).json({
@@ -4074,31 +4455,127 @@ router.put('/:tripId/flights/:flightId/confirm-replacement', authenticateToken, 
       });
     }
 
-    // Update the flight selection
+    // Get the current flight to determine its type
+    const { data: currentFlight } = await supabase
+      .from('flight')
+      .select('flight_type')
+      .eq('flight_id', flightId)
+      .single();
+
+    const flightType = selectedFlight.flight_type || currentFlight?.flight_type || 'outbound';
+
+    // Get trip dates
+    const { data: tripPref } = await supabase
+      .from('trip_preference')
+      .select('start_date, end_date')
+      .eq('trip_id', tripId)
+      .single();
+
+    // Enforce the same route as the original flight
+    const departureId = currentFlight?.departure_id || selectedFlight.departure_id;
+    const arrivalId = currentFlight?.arrival_id || selectedFlight.arrival_id;
+
+    // Check if selected flight already exists in DB
+    let newFlightId = selectedFlight.flight_id;
+
+    if (selectedFlight.is_new || !selectedFlight.flight_id) {
+      // Insert new flight into flight table (using enforced route)
+      // Store LLM-generated fields (airline, stops, description) in additional_data
+      const additionalData = {};
+      if (selectedFlight.airline) additionalData.airline = selectedFlight.airline;
+      if (selectedFlight.stops !== undefined) additionalData.stops = selectedFlight.stops;
+      if (selectedFlight.description) additionalData.description = selectedFlight.description;
+
+      const { data: newFlight, error: insertError } = await supabase
+        .from('flight')
+        .insert({
+          flight_type: flightType,
+          departure_id: departureId,
+          arrival_id: arrivalId,
+          price: selectedFlight.price || null,
+          total_duration: selectedFlight.total_duration || null,
+          flights: selectedFlight.flights || null,
+          layovers: selectedFlight.layovers || null,
+          additional_data: Object.keys(additionalData).length > 0 ? additionalData : null,
+          outbound_date: flightType === 'outbound' ? tripPref?.start_date : null,
+          return_date: flightType === 'return' ? tripPref?.end_date : null,
+        })
+        .select()
+        .single();
+
+      if (insertError || !newFlight) {
+        console.error('[flight-confirm] Error inserting new flight:', insertError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to create new flight record',
+          error: insertError?.message,
+        });
+      }
+      newFlightId = newFlight.flight_id;
+      console.log('[flight-confirm] Created new flight with ID:', newFlightId);
+    }
+
+    // Deselect the old flight
+    const { error: deselectError } = await supabase
+      .from('trip_flight')
+      .update({ is_selected: false, updated_at: new Date().toISOString() })
+      .eq('trip_id', tripId)
+      .eq('flight_id', flightId);
+
+    if (deselectError) {
+      console.error('[flight-confirm] Error deselecting old flight:', deselectError);
+    }
+
+    // Check if new flight is already linked to trip
+    const { data: existingLink } = await supabase
+      .from('trip_flight')
+      .select('*')
+      .eq('trip_id', tripId)
+      .eq('flight_id', newFlightId)
+      .single();
+
+    if (existingLink) {
+      // Update existing link to selected
     const { error: updateError } = await supabase
       .from('trip_flight')
-      .update({
-        price: selectedFlight.price,
-        total_duration: selectedFlight.total_duration,
-        flights: JSON.stringify(selectedFlight.flights || []),
-        layovers: JSON.stringify(selectedFlight.layovers || []),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('trip_flight_id', flightId);
+        .update({ is_selected: true, updated_at: new Date().toISOString() })
+        .eq('trip_id', tripId)
+        .eq('flight_id', newFlightId);
 
     if (updateError) {
-      console.error('Error updating flight:', updateError);
+        console.error('[flight-confirm] Error updating trip_flight:', updateError);
       return res.status(500).json({
         success: false,
-        message: 'Failed to update flight',
+          message: 'Failed to update flight selection',
         error: updateError.message,
       });
     }
+    } else {
+      // Insert new link
+      const { error: linkError } = await supabase
+        .from('trip_flight')
+        .insert({
+          trip_id: parseInt(tripId),
+          flight_id: newFlightId,
+          is_selected: true,
+        });
+
+      if (linkError) {
+        console.error('[flight-confirm] Error linking new flight:', linkError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to link new flight to trip',
+          error: linkError.message,
+        });
+      }
+    }
+
+    console.log('[flight-confirm] Flight replaced successfully. New flight ID:', newFlightId);
 
     res.status(200).json({
       success: true,
       message: 'Flight replaced successfully',
-      flight_id: flightId,
+      flight_id: newFlightId,
     });
   } catch (error) {
     console.error('Error confirming flight replacement:', error);

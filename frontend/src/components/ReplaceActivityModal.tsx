@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -42,42 +42,49 @@ export const ReplaceActivityModal = ({
   const [error, setError] = useState<string | null>(null);
 
   // Fetch alternatives when modal opens
-  const fetchAlternatives = async () => {
-    if (alternatives.length > 0) return; // Already fetched
+  useEffect(() => {
+    if (!isOpen) return;
 
-    setIsLoading(true);
-    setError(null);
+    const fetchAlternatives = async () => {
+      setIsLoading(true);
+      setError(null);
+      setAlternatives([]);
+      setSelectedIndex(null);
 
-    try {
-      const token = localStorage.getItem("token");
-      if (!token) throw new Error("Not authenticated");
+      try {
+        const token = localStorage.getItem("token");
+        if (!token) throw new Error("Not authenticated");
 
-      const response = await fetch(
-        getApiUrl(`api/trips/${tripId}/activities/${currentActivity.activity_id}/alternatives`),
-        {
+        const url = getApiUrl(`api/trips/${tripId}/activities/${currentActivity.activity_id}/alternatives`);
+        console.log("[ReplaceActivityModal] Fetching alternatives from:", url);
+
+        const response = await fetch(url, {
           method: "GET",
           headers: {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
+        });
+
+        const result = await response.json();
+        console.log("[ReplaceActivityModal] API response:", result);
+
+        if (response.ok && result.success && Array.isArray(result.alternatives)) {
+          setAlternatives(result.alternatives);
+        } else {
+          setError(result.message || "Failed to load alternatives. No results returned.");
+          console.error("Alternatives result:", result);
         }
-      );
-
-      const result = await response.json();
-
-      if (response.ok && result.success && Array.isArray(result.alternatives)) {
-        setAlternatives(result.alternatives);
-      } else {
-        setError(result.message || "Failed to load alternatives. No results returned.");
-        console.error("Alternatives result:", result);
+      } catch (err) {
+        console.error("Error fetching alternatives:", err);
+        setError("Failed to load alternatives. Please try again.");
+      } finally {
+        setIsLoading(false);
       }
-    } catch (err) {
-      console.error("Error fetching alternatives:", err);
-      setError("Failed to load alternatives. Please try again.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    };
+
+    fetchAlternatives();
+  }, [isOpen, tripId, currentActivity.activity_id]);
 
   const handleConfirm = async () => {
     if (selectedIndex === null) return;
@@ -103,9 +110,6 @@ export const ReplaceActivityModal = ({
       open={isOpen}
       onOpenChange={(open) => {
         if (!open) onClose();
-        if (open && alternatives.length === 0) {
-          fetchAlternatives();
-        }
       }}
     >
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">

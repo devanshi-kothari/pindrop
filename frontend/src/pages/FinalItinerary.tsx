@@ -1028,6 +1028,24 @@ const FinalItinerary = () => {
                                         {formatDuration(day.outbound_flight.total_duration)}
                                       </p>
                                     )}
+                                    {/* Show airline and stops for LLM-generated flights */}
+                                    {day.outbound_flight.airline && (
+                                      <p>
+                                        <span className="font-semibold">Airline:</span>{" "}
+                                        {day.outbound_flight.airline}
+                                      </p>
+                                    )}
+                                    {day.outbound_flight.stops !== undefined && day.outbound_flight.stops !== null && (
+                                      <p>
+                                        <span className="font-semibold">Stops:</span>{" "}
+                                        {day.outbound_flight.stops === 0 ? "Nonstop" : `${day.outbound_flight.stops} stop${day.outbound_flight.stops > 1 ? "s" : ""}`}
+                                      </p>
+                                    )}
+                                    {day.outbound_flight.description && (
+                                      <p className="text-slate-600 italic">
+                                        {day.outbound_flight.description}
+                                      </p>
+                                    )}
                                     {Array.isArray(day.outbound_flight.flights) && day.outbound_flight.flights.length > 0 && (
                                       <div className="mt-2">
                                         <p className="font-semibold text-xs text-slate-600 mb-1">
@@ -1077,7 +1095,7 @@ const FinalItinerary = () => {
                               onClick={() => {
                                 setSelectedFlightToReplace({
                                   flight: day.outbound_flight,
-                                  tripFlightId: 1, // We'll get this from backend
+                                  tripFlightId: day.outbound_flight.flight_id,
                                   flightType: "outbound",
                                 });
                                 setReplaceFlightModalOpen(true);
@@ -1159,7 +1177,7 @@ const FinalItinerary = () => {
                                 onClick={() => {
                                   setSelectedHotelToReplace({
                                     hotel: day.hotel,
-                                    tripHotelId: 1, // We'll get this from the backend
+                                    tripHotelId: day.hotel.hotel_id,
                                   });
                                   setReplaceHotelModalOpen(true);
                                 }}
@@ -1391,6 +1409,24 @@ const FinalItinerary = () => {
                                         {formatDuration(day.return_flight.total_duration)}
                                       </p>
                                     )}
+                                    {/* Show airline and stops for LLM-generated flights */}
+                                    {day.return_flight.airline && (
+                                      <p>
+                                        <span className="font-semibold">Airline:</span>{" "}
+                                        {day.return_flight.airline}
+                                      </p>
+                                    )}
+                                    {day.return_flight.stops !== undefined && day.return_flight.stops !== null && (
+                                      <p>
+                                        <span className="font-semibold">Stops:</span>{" "}
+                                        {day.return_flight.stops === 0 ? "Nonstop" : `${day.return_flight.stops} stop${day.return_flight.stops > 1 ? "s" : ""}`}
+                                      </p>
+                                    )}
+                                    {day.return_flight.description && (
+                                      <p className="text-slate-600 italic">
+                                        {day.return_flight.description}
+                                      </p>
+                                    )}
                                     {Array.isArray(day.return_flight.flights) && day.return_flight.flights.length > 0 && (
                                       <div className="mt-2">
                                         <p className="font-semibold text-xs text-slate-600 mb-1">
@@ -1440,7 +1476,7 @@ const FinalItinerary = () => {
                                 onClick={() => {
                                   setSelectedFlightToReplace({
                                     flight: day.return_flight,
-                                    tripFlightId: 1, // We'll get this from backend
+                                    tripFlightId: day.return_flight.flight_id,
                                     flightType: "return",
                                   });
                                   setReplaceFlightModalOpen(true);

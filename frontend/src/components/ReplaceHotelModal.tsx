@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -10,11 +10,15 @@ interface HotelAlternative {
   name: string;
   location?: string;
   rate_per_night?: number;
+  rate_per_night_lowest?: number;
   rate_per_night_formatted?: string;
   link?: string;
   overall_rating?: number;
+  hotel_class?: string;
   check_in_time?: string;
   check_out_time?: string;
+  description?: string;
+  is_new?: boolean;
 }
 
 interface ReplaceHotelModalProps {
@@ -41,41 +45,48 @@ export const ReplaceHotelModal = ({
   const [error, setError] = useState<string | null>(null);
 
   // Fetch alternatives when modal opens
-  const fetchAlternatives = async () => {
-    if (alternatives.length > 0) return;
+  useEffect(() => {
+    if (!isOpen) return;
 
-    setIsLoading(true);
-    setError(null);
+    const fetchAlternatives = async () => {
+      setIsLoading(true);
+      setError(null);
+      setAlternatives([]);
+      setSelectedIndex(null);
 
-    try {
-      const token = localStorage.getItem("token");
-      if (!token) throw new Error("Not authenticated");
+      try {
+        const token = localStorage.getItem("token");
+        if (!token) throw new Error("Not authenticated");
 
-      const response = await fetch(
-        getApiUrl(`api/trips/${tripId}/hotels/${hotelId}/alternatives`),
-        {
+        const url = getApiUrl(`api/trips/${tripId}/hotels/${hotelId}/alternatives`);
+        console.log("[ReplaceHotelModal] Fetching alternatives from:", url);
+
+        const response = await fetch(url, {
           method: "GET",
           headers: {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
+        });
+
+        const result = await response.json();
+        console.log("[ReplaceHotelModal] API response:", result);
+
+        if (response.ok && result.success && Array.isArray(result.alternatives)) {
+          setAlternatives(result.alternatives);
+        } else {
+          setError(result.message || "Failed to load alternatives");
         }
-      );
-
-      const result = await response.json();
-
-      if (response.ok && result.success && Array.isArray(result.alternatives)) {
-        setAlternatives(result.alternatives);
-      } else {
-        setError(result.message || "Failed to load alternatives");
+      } catch (err) {
+        console.error("Error fetching alternatives:", err);
+        setError("Failed to load alternatives. Please try again.");
+      } finally {
+        setIsLoading(false);
       }
-    } catch (err) {
-      console.error("Error fetching alternatives:", err);
-      setError("Failed to load alternatives. Please try again.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    };
+
+    fetchAlternatives();
+  }, [isOpen, tripId, hotelId]);
 
   const handleConfirm = async () => {
     if (selectedIndex === null) return;
@@ -101,9 +112,6 @@ export const ReplaceHotelModal = ({
       open={isOpen}
       onOpenChange={(open) => {
         if (!open) onClose();
-        if (open && alternatives.length === 0) {
-          fetchAlternatives();
-        }
       }}
     >
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
