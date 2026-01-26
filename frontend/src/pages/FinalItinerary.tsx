@@ -153,6 +153,12 @@ const formatDuration = (minutes?: number) => {
   return `${hours}h ${mins}m`;
 };
 
+const formatMoney = (value: number) =>
+  value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
 const FinalItinerary = () => {
   const { tripId } = useParams<{ tripId: string }>();
   const navigate = useNavigate();
@@ -485,10 +491,34 @@ const FinalItinerary = () => {
     }
   };
 
-  // Simple per-day budget breakdown derived from itinerary + user-entered meals
+  type BudgetCategory = "activity" | "meal" | "hotel" | "transport" | "other";
+
+  type ExtraExpense = {
+    id: string;
+    label: string;
+    amount: number;
+    category: BudgetCategory;
+  };
+
+  const [extraExpensesByDay, setExtraExpensesByDay] = useState<Record<number, ExtraExpense[]>>({});
+  const [extraExpenseDrafts, setExtraExpenseDrafts] = useState<
+    Record<number, { label: string; amount: string; category: BudgetCategory }>
+  >({});
+  const [budgetView, setBudgetView] = useState<"daily" | "summary">("daily");
+  const [editingExtraId, setEditingExtraId] = useState<string | null>(null);
+  const [editingExtraDraft, setEditingExtraDraft] = useState<{
+    label: string;
+    amount: string;
+    category: BudgetCategory;
+  } | null>(null);
+
+  // Simple per-day budget breakdown derived from itinerary + user-entered meals + manual extras
   const computeBudgetData = () => {
     if (!itinerary)
-      return { daily: [], totals: { flights: 0, hotels: 0, activities: 0, meals: 0, total: 0 } };
+      return {
+        daily: [],
+        totals: { flights: 0, hotels: 0, activities: 0, meals: 0, extras: 0, total: 0 },
+      };
 
     const daily = itinerary.days.map((day) => {
       const activityTotal = (day.activities || []).reduce(
@@ -504,6 +534,10 @@ const FinalItinerary = () => {
           return sum + (m && typeof m.cost === "number" ? m.cost : 0);
         }, 0);
       })();
+      const extrasTotal = (extraExpensesByDay[day.day_number] || []).reduce(
+        (sum, e) => sum + (typeof e.amount === "number" ? e.amount : 0),
+        0
+      );
       let flightTotal = 0;
       if (typeof day.outbound_flight?.price === "number") {
         flightTotal += day.outbound_flight.price;
@@ -511,13 +545,14 @@ const FinalItinerary = () => {
       if (typeof day.return_flight?.price === "number") {
         flightTotal += day.return_flight.price;
       }
-      const total = activityTotal + hotelTotal + flightTotal + mealTotal;
+      const total = activityTotal + hotelTotal + flightTotal + mealTotal + extrasTotal;
       return {
         day_number: day.day_number,
         date: day.date,
         activityTotal,
         hotelTotal,
         mealTotal,
+        extrasTotal,
         flightTotal,
         total,
       };
@@ -528,11 +563,12 @@ const FinalItinerary = () => {
         acc.activities += d.activityTotal;
         acc.hotels += d.hotelTotal;
         acc.meals += d.mealTotal;
+        acc.extras += d.extrasTotal;
         acc.flights += d.flightTotal;
         acc.total += d.total;
         return acc;
       },
-      { flights: 0, hotels: 0, activities: 0, meals: 0, total: 0 }
+      { flights: 0, hotels: 0, activities: 0, meals: 0, extras: 0, total: 0 }
     );
 
     return { daily, totals };
@@ -1211,10 +1247,11 @@ const FinalItinerary = () => {
                             : null;
 
                         const baseChartData = [
-                          { name: "Flights", key: "flights", value: totals.flights },
+                          { name: "Transportation", key: "flights", value: totals.flights },
                           { name: "Hotels", key: "hotels", value: totals.hotels },
                           { name: "Activities", key: "activities", value: totals.activities },
                           { name: "Meals", key: "meals", value: totals.meals },
+                          { name: "Others", key: "extras", value: totals.extras },
                         ].filter((d) => d.value > 0);
 
                         const chartData =
@@ -1226,52 +1263,178 @@ const FinalItinerary = () => {
                             : baseChartData;
 
                         return (
-                          <div className="space-y-4">
-                            <div className="overflow-x-auto rounded-md border border-blue-100">
-                              <table className="min-w-full border-collapse text-xs">
-                                <thead className="bg-blue-50">
-                                  <tr>
-                                    <th className="px-3 py-2 text-left font-semibold text-slate-700">Day</th>
-                                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Flights</th>
-                                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Hotel</th>
-                                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Activities</th>
-                                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Meals</th>
-                                    <th className="px-3 py-2 text-right font-semibold text-slate-700">Total</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {daily.map((d) => (
-                                    <tr key={d.day_number} className="border-t border-blue-50">
-                                      <td className="px-3 py-2 text-slate-700">Day {d.day_number}</td>
+                          <div className="space-y-5">
+                            <div className="flex items-center justify-between mb-1">
+                              <p className="text-xs font-semibold text-slate-800">Budget</p>
+                              <div className="inline-flex rounded border border-blue-200 bg-white overflow-hidden text-[11px]">
+                                <button
+                                  type="button"
+                                  className={`px-2 py-1 ${
+                                    budgetView === "daily"
+                                      ? "bg-blue-500 text-white"
+                                      : "bg-white text-slate-700"
+                                  }`}
+                                  onClick={() => setBudgetView("daily")}
+                                >
+                                  Day-by-day
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`px-2 py-1 border-l border-blue-200 ${
+                                    budgetView === "summary"
+                                      ? "bg-blue-500 text-white"
+                                      : "bg-white text-slate-700"
+                                  }`}
+                                  onClick={() => setBudgetView("summary")}
+                                >
+                                  Summary
+                                </button>
+                              </div>
+                            </div>
+                            {/* (1) Summary table with expandable per-day breakdown */}
+                            <div
+                              className="rounded-md border border-blue-100 bg-white/90 overflow-hidden"
+                              style={{ display: budgetView === "daily" ? "none" : undefined }}
+                            >
+                              <details open className="group">
+                                <summary className="flex items-center justify-between px-3 py-2 cursor-pointer select-none bg-blue-50/80">
+                                  <span className="text-xs font-semibold text-slate-800">
+                                    Trip cost summary
+                                  </span>
+                                  <span className="flex items-center gap-4 text-[11px] text-slate-600">
+                                    <span>
+                                      Transportation:{" "}
+                                      <span className="font-semibold text-slate-800">
+                                        {totals.flights
+                                          ? `$${formatMoney(totals.flights)}`
+                                          : "—"}
+                                      </span>
+                                    </span>
+                                    <span>
+                                      Hotels:{" "}
+                                      <span className="font-semibold text-slate-800">
+                                        {totals.hotels
+                                          ? `$${formatMoney(totals.hotels)}`
+                                          : "—"}
+                                      </span>
+                                    </span>
+                                    <span>
+                                      Activities:{" "}
+                                      <span className="font-semibold text-slate-800">
+                                        {totals.activities
+                                          ? `$${formatMoney(totals.activities)}`
+                                          : "—"}
+                                      </span>
+                                    </span>
+                                    <span>
+                                      Meals:{" "}
+                                      <span className="font-semibold text-slate-800">
+                                        {totals.meals
+                                          ? `$${formatMoney(totals.meals)}`
+                                          : "—"}
+                                      </span>
+                                    </span>
+                                    <span>
+                                      Extras:{" "}
+                                      <span className="font-semibold text-slate-800">
+                                        {totals.extras
+                                          ? `$${formatMoney(totals.extras)}`
+                                          : "—"}
+                                      </span>
+                                    </span>
+                                    <span className="inline-flex items-center gap-1 text-[10px] text-slate-500">
+                                      <span className="group-open:hidden">Show per day ▾</span>
+                                      <span className="hidden group-open:inline">Hide per day ▴</span>
+                                    </span>
+                                  </span>
+                                </summary>
+                                <div className="overflow-x-auto border-t border-blue-100">
+                                  <table className="min-w-full border-collapse text-xs">
+                                    <thead className="bg-blue-50">
+                                      <tr>
+                                        <th className="px-3 py-2 text-left font-semibold text-slate-700">
+                                          Day
+                                        </th>
+                                        <th className="px-3 py-2 text-right font-semibold text-slate-700">
+                                          Transportation
+                                        </th>
+                                        <th className="px-3 py-2 text-right font-semibold text-slate-700">
+                                          Hotel
+                                        </th>
+                                        <th className="px-3 py-2 text-right font-semibold text-slate-700">
+                                          Activities
+                                        </th>
+                                        <th className="px-3 py-2 text-right font-semibold text-slate-700">
+                                          Meals
+                                        </th>
+                                        <th className="px-3 py-2 text-right font-semibold text-slate-700">
+                                          Extras
+                                        </th>
+                                        <th className="px-3 py-2 text-right font-semibold text-slate-700">
+                                          Total
+                                        </th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {daily.map((d) => (
+                                        <tr key={d.day_number} className="border-t border-blue-50">
+                                          <td className="px-3 py-2 text-slate-700">
+                                            Day {d.day_number}
+                                          </td>
                                       <td className="px-3 py-2 text-right text-slate-600">
-                                        {d.flightTotal ? `$${d.flightTotal.toLocaleString()}` : "—"}
+                                        {d.flightTotal
+                                          ? `$${formatMoney(d.flightTotal)}`
+                                          : "—"}
                                       </td>
                                       <td className="px-3 py-2 text-right text-slate-600">
-                                        {d.hotelTotal ? `$${d.hotelTotal.toLocaleString()}` : "—"}
+                                        {d.hotelTotal
+                                          ? `$${formatMoney(d.hotelTotal)}`
+                                          : "—"}
                                       </td>
                                       <td className="px-3 py-2 text-right text-slate-600">
-                                        {d.activityTotal ? `$${d.activityTotal.toLocaleString()}` : "—"}
+                                        {d.activityTotal
+                                          ? `$${formatMoney(d.activityTotal)}`
+                                          : "—"}
                                       </td>
                                       <td className="px-3 py-2 text-right text-slate-600">
-                                        {d.mealTotal ? `$${d.mealTotal.toLocaleString()}` : "—"}
+                                        {d.mealTotal
+                                          ? `$${formatMoney(d.mealTotal)}`
+                                          : "—"}
+                                      </td>
+                                      <td className="px-3 py-2 text-right text-slate-600">
+                                        {d.extrasTotal
+                                          ? `$${formatMoney(d.extrasTotal)}`
+                                          : "—"}
                                       </td>
                                       <td className="px-3 py-2 text-right font-semibold text-slate-800">
-                                        {d.total ? `$${d.total.toLocaleString()}` : "—"}
+                                        {d.total
+                                          ? `$${formatMoney(d.total)}`
+                                          : "—"}
                                       </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </details>
                             </div>
 
-                            <div className="grid gap-4 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] items-start">
+                            {/* Pie chart + overall budget summary */}
+                            <div
+                              className="grid gap-4 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] items-start"
+                              style={{ display: budgetView === "daily" ? "none" : undefined }}
+                            >
                               {chartData.length > 0 && (
                                 <ChartContainer
                                   config={{
-                                    flights: { label: "Flights", color: "#0ea5e9" }, // sky-500
-                                    hotels: { label: "Hotels", color: "#f97316" },  // orange-500
-                                    activities: { label: "Activities", color: "#22c55e" }, // emerald-500
-                                    meals: { label: "Meals", color: "#6366f1" }, // indigo-500
+                                    // Match category colors:
+                                    // activities = blue, meals = orange, hotels = green,
+                                    // transportation = yellow, other = purple
+                                    flights: { label: "Transportation", color: "#facc15" }, // yellow-400
+                                    hotels: { label: "Hotels", color: "#22c55e" }, // green (emerald-500)
+                                    activities: { label: "Activities", color: "#0ea5e9" }, // blue (sky-500)
+                                    meals: { label: "Meals", color: "#f97316" }, // orange-500
+                                    extras: { label: "Others", color: "#a855f7" }, // purple-500
                                     unused: { label: "Unused budget", color: "#94a3b8" }, // slate-400
                                   }}
                                   className="h-[260px]"
@@ -1284,7 +1447,11 @@ const FinalItinerary = () => {
                                       cx="50%"
                                       cy="50%"
                                       outerRadius={80}
-                                      label
+                                      label={(entry) =>
+                                        `${entry.name}: $${formatMoney(
+                                          typeof entry.value === "number" ? entry.value : 0
+                                        )}`
+                                      }
                                     >
                                       {chartData.map((entry) => (
                                         <Cell
@@ -1298,6 +1465,8 @@ const FinalItinerary = () => {
                                               ? "var(--color-activities)"
                                               : entry.key === "meals"
                                               ? "var(--color-meals)"
+                                              : entry.key === "extras"
+                                              ? "var(--color-extras)"
                                               : "var(--color-unused)"
                                           }
                                         />
@@ -1313,12 +1482,12 @@ const FinalItinerary = () => {
                                 <p className="font-semibold text-slate-800">Trip budget summary</p>
                                 <p>
                                   <span className="font-semibold">Total planned spend:</span>{" "}
-                                  {totals.total ? `$${totals.total.toLocaleString()}` : "—"}
+                                  {totals.total ? `$${formatMoney(totals.total)}` : "—"}
                                 </p>
                                 {typeof itinerary.total_budget === "number" && (
                                   <p>
                                     <span className="font-semibold">Overall budget:</span>{" "}
-                                    ${itinerary.total_budget.toLocaleString()}
+                                    ${formatMoney(itinerary.total_budget)}
                                   </p>
                                 )}
                                 {remaining !== null && (
@@ -1328,10 +1497,443 @@ const FinalItinerary = () => {
                                     }
                                   >
                                     {remaining >= 0
-                                      ? `Remaining budget: $${remaining.toLocaleString()}`
-                                      : `Over budget by $${Math.abs(remaining).toLocaleString()}`}
+                                      ? `Remaining budget: $${formatMoney(remaining)}`
+                                      : `Over budget by $${formatMoney(Math.abs(remaining))}`}
                                   </p>
                                 )}
+                              </div>
+                            </div>
+
+                            {/* (2) Day-to-day expenses in a card view (cost calendar) */}
+                            <div
+                              className="mt-2"
+                              style={{ display: budgetView === "summary" ? "none" : undefined }}
+                            >
+                              <p className="text-xs font-semibold text-slate-800 mb-2">
+                                Day-by-day expenses
+                              </p>
+                              <div className="grid gap-3 lg:grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
+                                {itinerary.days.map((day) => {
+                                  const d = daily.find((row) => row.day_number === day.day_number);
+                                  const extras = extraExpensesByDay[day.day_number] || [];
+                                  const draft =
+                                    extraExpenseDrafts[day.day_number] || {
+                                      label: "",
+                                      amount: "",
+                                      category: "other" as BudgetCategory,
+                                    };
+
+                                  type BudgetItem = {
+                                    id: string;
+                                    label: string;
+                                    amount: number;
+                                    kind: BudgetCategory;
+                                    source: "auto" | "extra";
+                                  };
+
+                                  const items: BudgetItem[] = [];
+
+                                  // Flights / transport (use outbound / return flights directly if present)
+                                  if (day.outbound_flight?.price) {
+                                    items.push({
+                                      id: `outbound-${day.day_number}`,
+                                      label: "Outbound flight",
+                                      amount: day.outbound_flight.price,
+                                      kind: "transport",
+                                      source: "auto",
+                                    });
+                                  }
+                                  if (day.return_flight?.price) {
+                                    items.push({
+                                      id: `return-${day.day_number}`,
+                                      label: "Return flight",
+                                      amount: day.return_flight.price,
+                                      kind: "transport",
+                                      source: "auto",
+                                    });
+                                  }
+
+                                  // Hotel (per-night cost)
+                                  if (typeof day.hotel?.rate_per_night === "number") {
+                                    items.push({
+                                      id: `hotel-${day.day_number}`,
+                                      label: day.hotel.name || "Hotel",
+                                      amount: day.hotel.rate_per_night,
+                                      kind: "hotel",
+                                      source: "auto",
+                                    });
+                                  }
+
+                                  // Activities
+                                  (day.activities || []).forEach((act, idx) => {
+                                    if (typeof act.cost_estimate === "number" && act.cost_estimate > 0) {
+                                      items.push({
+                                        id: `activity-${day.day_number}-${idx}`,
+                                        label: act.name || "Activity",
+                                        amount: act.cost_estimate,
+                                        kind: "activity",
+                                        source: "auto",
+                                      });
+                                    }
+                                  });
+
+                                  // Meals from calendar
+                                  const dayMeals = mealsByDay[day.day_number] || {};
+                                  (["breakfast", "lunch", "dinner"] as MealSlot[]).forEach((slot) => {
+                                    const meal = dayMeals[slot];
+                                    if (meal && typeof meal.cost === "number" && meal.cost > 0) {
+                                      const slotLabel = slot.charAt(0).toUpperCase() + slot.slice(1);
+                                      items.push({
+                                        id: `meal-${day.day_number}-${slot}`,
+                                        label: meal.name || slotLabel,
+                                        amount: meal.cost,
+                                        kind: "meal",
+                                        source: "auto",
+                                      });
+                                    }
+                                  });
+
+                                  // Manual extras
+                                  extras.forEach((e) => {
+                                    items.push({
+                                      id: e.id,
+                                      label: e.label,
+                                      amount: e.amount,
+                                      kind: e.category,
+                                      source: "extra",
+                                    });
+                                  });
+
+                                  const kindClasses: Record<BudgetCategory, string> = {
+                                    activity:
+                                      "border-l-4 border-sky-400 bg-sky-50/60 text-sky-900",
+                                    meal:
+                                      "border-l-4 border-orange-400 bg-orange-50/60 text-orange-900",
+                                    hotel:
+                                      "border-l-4 border-emerald-400 bg-emerald-50/60 text-emerald-900",
+                                    transport:
+                                      "border-l-4 border-yellow-400 bg-yellow-50/60 text-yellow-900",
+                                    other:
+                                      "border-l-4 border-purple-400 bg-purple-50/60 text-purple-900",
+                                  };
+
+                                  const kindLabel: Record<BudgetCategory, string> = {
+                                    activity: "Activity",
+                                    meal: "Meal",
+                                    hotel: "Hotel",
+                                    transport: "Transportation",
+                                    other: "Other",
+                                  };
+                                  return (
+                                    <div
+                                      key={day.day_number}
+                                      className="rounded-lg border border-blue-100 bg-white/90 p-3 space-y-2 text-xs"
+                                    >
+                                      <div className="flex items-center justify-between border-b border-blue-100 pb-1.5">
+                                        <div>
+                                          <p className="text-[11px] uppercase tracking-wide text-blue-500">
+                                            Day {day.day_number}
+                                          </p>
+                                          <p className="text-xs font-semibold text-slate-900">
+                                            {formatDate(day.date) || `Day ${day.day_number}`}
+                                          </p>
+                                        </div>
+                                        <div className="text-right">
+                                          <p className="text-[11px] text-slate-500">Total</p>
+                                          <p className="text-sm font-semibold text-slate-900">
+                                            {d?.total ? `$${formatMoney(d.total)}` : "—"}
+                                          </p>
+                                        </div>
+                                      </div>
+                                      <div className="mt-2 space-y-1.5">
+                                        {items.length === 0 && (
+                                          <p className="text-[11px] text-slate-400">
+                                            No expenses recorded for this day yet.
+                                          </p>
+                                        )}
+                                        {items.map((item) => {
+                                          const isEditing =
+                                            item.source === "extra" && editingExtraId === item.id && editingExtraDraft;
+
+                                          if (isEditing && editingExtraDraft) {
+                                            return (
+                                              <div
+                                                key={item.id}
+                                                className={`flex flex-col gap-1 rounded px-2 py-1 ${kindClasses[editingExtraDraft.category]}`}
+                                              >
+                                                <div className="flex items-center justify-between gap-2">
+                                                  <div className="flex-1 flex flex-col gap-1">
+                                                    <Input
+                                                      className="h-7 text-[11px]"
+                                                      value={editingExtraDraft.label}
+                                                      onChange={(ev) =>
+                                                        setEditingExtraDraft((prev) =>
+                                                          prev
+                                                            ? { ...prev, label: ev.target.value }
+                                                            : prev
+                                                        )
+                                                      }
+                                                    />
+                                                    <div className="flex gap-2">
+                                                      <Input
+                                                        type="number"
+                                                        min={0}
+                                                        step="0.01"
+                                                        className="h-7 w-24 text-[11px]"
+                                                        value={editingExtraDraft.amount}
+                                                        onChange={(ev) =>
+                                                          setEditingExtraDraft((prev) =>
+                                                            prev
+                                                              ? { ...prev, amount: ev.target.value }
+                                                              : prev
+                                                          )
+                                                        }
+                                                      />
+                                                      <select
+                                                        className="h-7 text-[11px] border border-blue-200 rounded px-1 bg-white text-slate-700 flex-1"
+                                                        value={editingExtraDraft.category}
+                                                        onChange={(ev) =>
+                                                          setEditingExtraDraft((prev) =>
+                                                            prev
+                                                              ? {
+                                                                  ...prev,
+                                                                  category: ev.target.value as BudgetCategory,
+                                                                }
+                                                              : prev
+                                                          )
+                                                        }
+                                                      >
+                                                        <option value="activity">Activity</option>
+                                                        <option value="meal">Meal</option>
+                                                        <option value="hotel">Hotel</option>
+                                                        <option value="transport">Transportation</option>
+                                                        <option value="other">Other</option>
+                                                      </select>
+                                                    </div>
+                                                  </div>
+                                                  <div className="flex flex-col gap-1 ml-2">
+                                                    <Button
+                                                      type="button"
+                                                      size="sm"
+                                                      className="h-6 px-2 text-[11px]"
+                                                      onClick={() => {
+                                                        if (!editingExtraDraft) return;
+                                                        const amountNum = parseFloat(editingExtraDraft.amount);
+                                                        if (
+                                                          !editingExtraDraft.label.trim() ||
+                                                          Number.isNaN(amountNum)
+                                                        ) {
+                                                          return;
+                                                        }
+                                                        setExtraExpensesByDay((prev) => {
+                                                          const copy = { ...prev };
+                                                          copy[day.day_number] = (copy[day.day_number] || []).map(
+                                                            (x) =>
+                                                              x.id === item.id
+                                                                ? {
+                                                                    ...x,
+                                                                    label: editingExtraDraft.label.trim(),
+                                                                    amount: Math.max(
+                                                                      0,
+                                                                      parseFloat(amountNum.toFixed(2))
+                                                                    ),
+                                                                    category: editingExtraDraft.category,
+                                                                  }
+                                                                : x
+                                                          );
+                                                          return copy;
+                                                        });
+                                                        setEditingExtraId(null);
+                                                        setEditingExtraDraft(null);
+                                                      }}
+                                                    >
+                                                      Save
+                                                    </Button>
+                                                    <Button
+                                                      type="button"
+                                                      variant="ghost"
+                                                      size="sm"
+                                                      className="h-6 px-2 text-[11px]"
+                                                      onClick={() => {
+                                                        setEditingExtraId(null);
+                                                        setEditingExtraDraft(null);
+                                                      }}
+                                                    >
+                                                      Cancel
+                                                    </Button>
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            );
+                                          }
+
+                                          return (
+                                            <div
+                                              key={item.id}
+                                              className={`flex items-center justify-between rounded px-2 py-1 ${kindClasses[item.kind]}`}
+                                            >
+                                              <div className="flex flex-col">
+                                                <span className="text-[11px] font-semibold">
+                                                  {item.label}
+                                                </span>
+                                                <span className="text-[10px] opacity-80">
+                                                  {kindLabel[item.kind]}
+                                                </span>
+                                              </div>
+                                              <div className="flex items-center gap-2">
+                                                <span className="text-[11px] font-semibold">
+                                                  ${item.amount.toFixed(2)}
+                                                </span>
+                                                {item.source === "extra" && (
+                                                  <>
+                                                    <Button
+                                                      type="button"
+                                                      variant="ghost"
+                                                      size="icon"
+                                                      className="h-5 w-5 text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+                                                      onClick={() => {
+                                                        setEditingExtraId(item.id);
+                                                        setEditingExtraDraft({
+                                                          label: item.label,
+                                                          amount: item.amount.toFixed(2),
+                                                          category: item.kind,
+                                                        });
+                                                      }}
+                                                    >
+                                                      ✎
+                                                    </Button>
+                                                    <Button
+                                                      type="button"
+                                                      variant="ghost"
+                                                      size="icon"
+                                                      className="h-5 w-5 text-slate-500 hover:text-rose-500 hover:bg-rose-50"
+                                                      onClick={() => {
+                                                        setExtraExpensesByDay((prev) => {
+                                                          const copy = { ...prev };
+                                                          copy[day.day_number] = (copy[day.day_number] || []).filter(
+                                                            (x) => x.id !== item.id
+                                                          );
+                                                          return copy;
+                                                        });
+                                                      }}
+                                                    >
+                                                      ×
+                                                    </Button>
+                                                  </>
+                                                )}
+                                              </div>
+                                            </div>
+                                          );
+                                        })}
+                                        <div className="mt-1 flex flex-col gap-1.5">
+                                          <div className="flex gap-2">
+                                            <Input
+                                              placeholder="Label"
+                                              className="h-7 text-[11px]"
+                                              value={draft.label}
+                                              onChange={(ev) =>
+                                                setExtraExpenseDrafts((prev) => ({
+                                                  ...prev,
+                                                  [day.day_number]: {
+                                                    ...(prev[day.day_number] || {
+                                                      label: "",
+                                                      amount: "",
+                                                      category: "other" as BudgetCategory,
+                                                    }),
+                                                    label: ev.target.value,
+                                                  },
+                                                }))
+                                              }
+                                            />
+                                            <Input
+                                              type="number"
+                                              min={0}
+                                              placeholder="$"
+                                              className="h-7 w-20 text-[11px]"
+                                              value={draft.amount}
+                                              onChange={(ev) =>
+                                                setExtraExpenseDrafts((prev) => ({
+                                                  ...prev,
+                                                  [day.day_number]: {
+                                                    ...(prev[day.day_number] || {
+                                                      label: "",
+                                                      amount: "",
+                                                      category: "other" as BudgetCategory,
+                                                    }),
+                                                    amount: ev.target.value,
+                                                  },
+                                                }))
+                                              }
+                                            />
+                                          </div>
+                                          <div className="flex items-center justify-between">
+                                            <select
+                                              className="h-7 text-[11px] border border-blue-200 rounded px-1 bg-white text-slate-700"
+                                              value={draft.category}
+                                              onChange={(ev) =>
+                                                setExtraExpenseDrafts((prev) => ({
+                                                  ...prev,
+                                                  [day.day_number]: {
+                                                    ...(prev[day.day_number] || {
+                                                      label: "",
+                                                      amount: "",
+                                                      category: "other" as BudgetCategory,
+                                                    }),
+                                                    category: ev.target.value as BudgetCategory,
+                                                  },
+                                                }))
+                                              }
+                                            >
+                                              <option value="activity">Activity</option>
+                                              <option value="meal">Meal</option>
+                                              <option value="hotel">Hotel</option>
+                                              <option value="transport">Transportation</option>
+                                              <option value="other">Other</option>
+                                            </select>
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              className="h-7 px-2 text-[11px]"
+                                              onClick={() => {
+                                                const amountNum = parseFloat(draft.amount);
+                                                if (!draft.label.trim() || Number.isNaN(amountNum)) {
+                                                  return;
+                                                }
+                                                setExtraExpensesByDay((prev) => ({
+                                                  ...prev,
+                                                  [day.day_number]: [
+                                                    ...(prev[day.day_number] || []),
+                                                    {
+                                                      id: `${day.day_number}-${Date.now()}-${Math.random()
+                                                        .toString(36)
+                                                        .slice(2, 6)}`,
+                                                      label: draft.label.trim(),
+                                                      amount: Math.max(
+                                                        0,
+                                                        parseFloat(amountNum.toFixed(2))
+                                                      ),
+                                                      category: draft.category,
+                                                    },
+                                                  ],
+                                                }));
+                                                setExtraExpenseDrafts((prev) => ({
+                                                  ...prev,
+                                                  [day.day_number]: {
+                                                    label: "",
+                                                    amount: "",
+                                                    category: draft.category,
+                                                  },
+                                                }));
+                                              }}
+                                            >
+                                              Add
+                                            </Button>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
                               </div>
                             </div>
                           </div>
