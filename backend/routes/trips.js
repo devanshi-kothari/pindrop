@@ -1603,37 +1603,64 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       .eq('trip_id', tripId)
       .maybeSingle();
 
-    // TEST MODE: instead of calling Google Custom Search, reuse existing activities for Paris
+    // TEST MODE: instead of calling Google Custom Search, reuse existing activities
+    // from the trip's destination when possible, with a Rome fallback.
     if (testMode) {
-      console.log('[activities] TEST MODE enabled – selecting existing Paris activities from DB');
+      console.log('[activities] TEST MODE enabled – selecting existing activities from DB');
 
-      // Pull a small random set of existing activities for Paris so we avoid Google search credits.
-      // We check both name and location strings for "Paris".
-      const { data: parisActivities, error: parisError } = await supabase
-        .from('activity')
-        .select('activity_id, name, location, category, duration, cost_estimate, rating, tags')
-        .or("name.ilike.%Paris%,location.ilike.%Paris%");
+      const destinationName = (trip.destination || '').trim();
+      let baseActivities = [];
 
-      if (parisError) {
-        console.error('Error loading Paris activities for test mode:', parisError);
-        return res.status(500).json({
-          success: false,
-          activities: [],
-          message: 'Failed to load test activities from database.',
-        });
+      // 1) Try to use activities for the current trip destination, if we have enough.
+      if (destinationName) {
+        const { data: destActivities, error: destError } = await supabase
+          .from('activity')
+          .select('activity_id, name, location, address, category, duration, cost_estimate, rating, tags')
+          .ilike('location', `%${destinationName}%`);
+
+        if (destError) {
+          console.error('[activities][testMode] Error loading destination activities:', destError);
+        } else if (destActivities && destActivities.length > 0) {
+          console.log(
+            `[activities][testMode] Found ${destActivities.length} activities for destination "${destinationName}"`,
+          );
+          baseActivities = destActivities;
+        }
       }
 
-      if (!parisActivities || parisActivities.length === 0) {
-        console.warn('[activities] TEST MODE: no existing Paris activities found in DB');
+      // 2) If there are not enough activities for this destination, fall back to Rome
+      if (!baseActivities || baseActivities.length < 5) {
+        console.log(
+          `[activities][testMode] Not enough activities for destination ("${destinationName}" count=${baseActivities?.length || 0}). Falling back to Rome with addresses.`,
+        );
+
+        const { data: romeActivities, error: romeError } = await supabase
+          .from('activity')
+          .select('activity_id, name, location, address, category, duration, cost_estimate, rating, tags')
+          .ilike('location', '%Rome%')
+          .not('address', 'is', null);
+
+        if (romeError) {
+          console.error('[activities][testMode] Error loading Rome activities for fallback:', romeError);
+        } else if (romeActivities && romeActivities.length > 0) {
+          console.log(
+            `[activities][testMode] Found ${romeActivities.length} Rome activities with addresses for fallback.`,
+          );
+          baseActivities = [...(baseActivities || []), ...romeActivities];
+        }
+      }
+
+      if (!baseActivities || baseActivities.length === 0) {
+        console.warn('[activities][testMode] No suitable activities found for destination or Rome fallback.');
         return res.status(200).json({
           success: true,
           activities: [],
-          message: 'No existing Paris activities found for test mode.',
+          message: 'No existing activities found in test mode for this destination or Rome fallback.',
         });
       }
 
       // Randomize and take a small batch (e.g., 10) so swipe UI behaves like normal
-      const shuffled = [...parisActivities].sort(() => Math.random() - 0.5);
+      const shuffled = [...baseActivities].sort(() => Math.random() - 0.5);
       const selected = shuffled.slice(0, 10);
 
       // Ensure we have per-trip preference rows (pending) for these activities
@@ -1666,7 +1693,9 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
           }
 
           activitiesWithPrefs.push({
-            trip_activity_preference_id: null,
+            // We don't strictly need the preference row id on the frontend,
+            // but include it when available for consistency.
+            trip_activity_preference_id: existingPref?.trip_activity_preference_id || null,
             activity_id: act.activity_id,
             name: act.name,
             location: act.location,
@@ -1675,7 +1704,9 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
             cost_estimate: act.cost_estimate,
             rating: act.rating,
             tags: act.tags,
-            source: 'test-paris',
+            source: 'test-mode',
+            // Ensure the swipe UI sees these as *pending* so the user can choose.
+            preference: 'pending',
           });
         } catch (e) {
           console.error('Error processing test-mode activity:', e);
@@ -1685,7 +1716,8 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       return res.status(200).json({
         success: true,
         activities: activitiesWithPrefs,
-        message: 'Loaded test activities from existing Paris records (no Google API used).',
+        message:
+          'Loaded test activities from existing records (trip destination when available, otherwise Rome fallback, no Google API used).',
       });
     }
 
@@ -3219,20 +3251,44 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
 
     const likedActivities = (likedActivityPrefs || []).map(ap => ap.activity).filter(Boolean);
 
-    // Calculate date range - ensure we include both start and end dates
-    const startDate = new Date(tripPreferences.start_date);
-    const endDate = new Date(tripPreferences.end_date);
+    // Calculate date range as pure calendar dates (avoid timezone off-by-one issues)
+    const parseDateParts = (s) => {
+      const [y, m, d] = String(s).split('-').map((part) => parseInt(part, 10));
+      return { y, m, d };
+    };
 
-    // Calculate numDays properly: if start is Jan 1 and end is Jan 25, that's 25 days (inclusive)
-    // The difference in days + 1 gives us the inclusive count
-    const dateDiffMs = endDate.getTime() - startDate.getTime();
-    const dateDiffDays = Math.floor(dateDiffMs / (1000 * 60 * 60 * 24));
-    const calculatedNumDays = dateDiffDays + 1; // +1 to include both start and end dates
+    const startParts = parseDateParts(tripPreferences.start_date);
+    const endParts = parseDateParts(tripPreferences.end_date);
+
+    const toDateKey = (dateObj) => {
+      const mm = String(dateObj.m).padStart(2, '0');
+      const dd = String(dateObj.d).padStart(2, '0');
+      return `${dateObj.y}-${mm}-${dd}`;
+    };
+
+    const nextDay = (dateObj) => {
+      // Use JS Date only for day rollover; read back Y/M/D to avoid timezone issues
+      const dt = new Date(dateObj.y, dateObj.m - 1, dateObj.d + 1);
+      return { y: dt.getFullYear(), m: dt.getMonth() + 1, d: dt.getDate() };
+    };
+
+    // Build inclusive list of calendar dates from start to end
+    const calendarDates = [];
+    let cur = { ...startParts };
+    const endKey = toDateKey(endParts);
+    while (toDateKey(cur) <= endKey) {
+      calendarDates.push(toDateKey(cur));
+      cur = nextDay(cur);
+    }
+
+    const calculatedNumDays = calendarDates.length;
 
     // Use num_days from preferences if available, otherwise calculate from dates
     const numDays = tripPreferences.num_days || calculatedNumDays;
 
-    console.log(`[final-itinerary] Date calculation: start=${tripPreferences.start_date}, end=${tripPreferences.end_date}, calculated=${calculatedNumDays}, using=${numDays}`);
+    console.log(
+      `[final-itinerary] Date calculation: start=${tripPreferences.start_date}, end=${tripPreferences.end_date}, calculated=${calculatedNumDays}, using=${numDays}`,
+    );
 
     // Generate activities for each day
     const dailyActivities = [];
@@ -3242,9 +3298,7 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
     const targetActivitiesPerDay = tripPreferences.pace === 'packed' ? 4 : tripPreferences.pace === 'balanced' ? 3 : 2;
 
     for (let day = 0; day < numDays; day++) {
-      const currentDate = new Date(startDate);
-      currentDate.setDate(startDate.getDate() + day);
-      const dateStr = currentDate.toISOString().split('T')[0];
+      const dateStr = calendarDates[day] || calendarDates[calendarDates.length - 1];
 
       // Get activities for this day (distribute liked activities + generate new ones)
       const dayActivities = [];
@@ -3352,18 +3406,24 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
       });
     }
 
-    // Verify we have the correct number of days and include the end_date
-    console.log(`[final-itinerary] Generated ${dailyActivities.length} days, expected ${numDays}`);
+    // Redistribute activities evenly across days (round-robin) so later days are not empty
     if (dailyActivities.length > 0) {
-      const lastDayDate = dailyActivities[dailyActivities.length - 1].date;
-      const expectedEndDate = tripPreferences.end_date;
-      console.log(`[final-itinerary] Last day date: ${lastDayDate}, expected end date: ${expectedEndDate}`);
+      const allActivities = dailyActivities.flatMap((day) => day.activities || []);
+      if (allActivities.length > 0) {
+        const redistributed = dailyActivities.map((day) => ({
+          ...day,
+          activities: [],
+        }));
 
-      // If the last day doesn't match the end_date, we need to add it or fix the calculation
-      if (lastDayDate !== expectedEndDate) {
-        console.warn(`[final-itinerary] Date mismatch! Last day is ${lastDayDate} but end_date is ${expectedEndDate}`);
-        // Ensure the last day matches the end_date
-        dailyActivities[dailyActivities.length - 1].date = expectedEndDate;
+        allActivities.forEach((activity, index) => {
+          const dayIndex = index % redistributed.length;
+          redistributed[dayIndex].activities.push(activity);
+        });
+
+        // Replace with redistributed layout
+        for (let i = 0; i < dailyActivities.length; i++) {
+          dailyActivities[i].activities = redistributed[i].activities;
+        }
       }
     }
 
