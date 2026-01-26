@@ -685,15 +685,19 @@ const ChatWindow = ({
       if (response.ok && result.success && Array.isArray(result.activities)) {
         setActivities(result.activities);
 
-        const assistantMessage: Message = {
-          role: "assistant",
-          content:
-            result.activities.length > 0
-              ? "I pulled together a small set of activity ideas based on your preferences. Swipe through them below and tell me what you like."
-              : "I wasn't able to find good activity ideas just yet. You can adjust your preferences or try again.",
-          timestamp: formatTime(),
-        };
-        setMessages((prev) => [...prev, assistantMessage]);
+        if (result.activities.length > 0) {
+          const assistantMessage: Message = {
+            role: "assistant",
+            content:
+              "I pulled together a small set of activity ideas based on your preferences. Swipe through them below and tell me what you like.",
+            timestamp: formatTime(),
+          };
+          setMessages((prev) => [...prev, assistantMessage]);
+        } else {
+          window.alert(
+            "I wasn't able to find good activity ideas just yet. You can adjust your preferences or try again."
+          );
+        }
       } else {
         console.error("Failed to generate activities:", result.message);
       }
