@@ -425,6 +425,65 @@ const FinalItinerary = () => {
     }
   };
 
+  const handleUpdateActivityLocation = async () => {
+    if (!tripId || !selectedActivityDetail?.activity?.activity_id) return;
+    const address = activityLocationDraft.trim();
+    setIsSavingActivityLocation(true);
+    try {
+      const token = localStorage.getItem("token");
+      if (!token) {
+        navigate("/login");
+        return;
+      }
+      const response = await fetch(
+        getApiUrl(
+          `api/trips/${tripId}/itinerary/${selectedActivityDetail.dayNumber}/activities/${selectedActivityDetail.activity.activity_id}`
+        ),
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ address }),
+        }
+      );
+
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || "Failed to update activity location");
+      }
+
+      // Reload itinerary to reflect updated activity (and potential new activity_id)
+      const reloadResponse = await fetch(getApiUrl(`api/trips/${tripId}/final-itinerary`), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+      const reloadResult = await reloadResponse.json();
+      if (reloadResponse.ok && reloadResult.success && reloadResult.itinerary?.days?.length > 0) {
+        setItinerary(reloadResult.itinerary);
+      }
+
+      if (result.activity) {
+        setSelectedActivityDetail({
+          dayNumber: selectedActivityDetail.dayNumber,
+          activity: result.activity,
+        });
+        setActivityLocationDraft(
+          result.activity.address || result.activity.location || activityLocationDraft
+        );
+      }
+    } catch (error) {
+      console.error("Error updating activity location:", error);
+      alert("Failed to update activity location. Please try again.");
+    } finally {
+      setIsSavingActivityLocation(false);
+    }
+  };
+
   const handleConfirmReplacement = async (selectedActivity: any) => {
     if (!tripId || !selectedActivityToReplace) return;
 
@@ -716,6 +775,8 @@ const FinalItinerary = () => {
     dayNumber: number;
     activity: FinalItineraryDay["activities"][number];
   } | null>(null);
+  const [activityLocationDraft, setActivityLocationDraft] = useState("");
+  const [isSavingActivityLocation, setIsSavingActivityLocation] = useState(false);
 
   const loadPersistedMeals = async () => {
     if (!tripId) return;
@@ -2585,6 +2646,9 @@ const FinalItinerary = () => {
                                           row.activityIndex != null ? day.activities?.[row.activityIndex] : null;
                                         if (activity) {
                                           setSelectedActivityDetail({ dayNumber: day.day_number, activity });
+                                          setActivityLocationDraft(
+                                            activity.address || activity.location || ""
+                                          );
                                         }
                                       }}
                                       className="flex items-start gap-2 rounded-md border border-blue-100 bg-white px-2 py-1.5 text-[11px] cursor-move hover:border-blue-200 hover:bg-blue-50/40"
@@ -2930,6 +2994,28 @@ const FinalItinerary = () => {
                                 {selectedActivityDetail.activity.description}
                               </p>
                             )}
+                            <div className="space-y-1">
+                              <label className="text-[11px] font-semibold text-slate-700 block">
+                                Location / address
+                              </label>
+                              <Input
+                                value={activityLocationDraft}
+                                onChange={(e) => setActivityLocationDraft(e.target.value)}
+                                placeholder="Enter a precise address"
+                                className="h-8 text-xs"
+                              />
+                              <div className="flex items-center gap-2">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  className="h-7 text-[11px]"
+                                  onClick={handleUpdateActivityLocation}
+                                  disabled={isSavingActivityLocation}
+                                >
+                                  {isSavingActivityLocation ? "Saving..." : "Save location"}
+                                </Button>
+                              </div>
+                            </div>
                             {(selectedActivityDetail?.activity?.address ||
                               selectedActivityDetail?.activity?.location) && (
                               <p>

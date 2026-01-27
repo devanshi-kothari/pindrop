@@ -2659,6 +2659,163 @@ router.post('/:tripId/itinerary/:dayNumber/activities', authenticateToken, async
   }
 });
 
+// Update an activity's location/address for a specific day in the itinerary
+router.put('/:tripId/itinerary/:dayNumber/activities/:activityId', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId, 10);
+    const dayNumber = parseInt(req.params.dayNumber, 10);
+    const activityId = parseInt(req.params.activityId, 10);
+    const { address } = req.body || {};
+
+    if (
+      !Number.isFinite(tripId) ||
+      !Number.isFinite(dayNumber) ||
+      dayNumber <= 0 ||
+      !Number.isFinite(activityId)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid trip, day number, or activity.',
+      });
+    }
+
+    // Ensure the trip belongs to the user and get destination for sensible defaults
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id, destination')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found',
+      });
+    }
+
+    // Find itinerary row for this day
+    const { data: itineraryRow, error: itineraryError } = await supabase
+      .from('itinerary')
+      .select('itinerary_id, day_number')
+      .eq('trip_id', tripId)
+      .eq('day_number', dayNumber)
+      .maybeSingle();
+
+    if (itineraryError || !itineraryRow) {
+      return res.status(404).json({
+        success: false,
+        message: 'Itinerary day not found',
+      });
+    }
+
+    // Ensure the activity is linked to this itinerary day
+    const { data: linkRow, error: linkError } = await supabase
+      .from('itinerary_activity')
+      .select('itinerary_activity_id, activity_id')
+      .eq('itinerary_id', itineraryRow.itinerary_id)
+      .eq('activity_id', activityId)
+      .maybeSingle();
+
+    if (linkError || !linkRow) {
+      return res.status(404).json({
+        success: false,
+        message: 'Activity not found on this day',
+      });
+    }
+
+    const cleanAddress =
+      typeof address === 'string' ? address.trim() : null;
+    const finalAddress = cleanAddress && cleanAddress.length > 0 ? cleanAddress : null;
+
+    // Fetch current activity
+    const { data: currentActivity, error: fetchError } = await supabase
+      .from('activity')
+      .select('*')
+      .eq('activity_id', activityId)
+      .single();
+
+    if (fetchError || !currentActivity) {
+      return res.status(404).json({
+        success: false,
+        message: 'Activity not found',
+      });
+    }
+
+    const isManual = currentActivity.source === 'manual-itinerary' || currentActivity.source === 'manual-edit';
+
+    if (isManual) {
+      const { data: updated, error: updateError } = await supabase
+        .from('activity')
+        .update({
+          address: finalAddress,
+          // Keep location as destination for grouping
+          location: trip.destination || null,
+        })
+        .eq('activity_id', activityId)
+        .select()
+        .single();
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      return res.status(200).json({
+        success: true,
+        activity: updated,
+      });
+    }
+
+    // Clone activity for per-trip edits to avoid affecting other trips
+    const { data: cloned, error: cloneError } = await supabase
+      .from('activity')
+      .insert({
+        name: currentActivity.name,
+        location: trip.destination || null,
+        address: finalAddress,
+        category: currentActivity.category || null,
+        duration: currentActivity.duration || null,
+        cost_estimate:
+          currentActivity.cost_estimate !== undefined && currentActivity.cost_estimate !== null
+            ? currentActivity.cost_estimate
+            : null,
+        rating: currentActivity.rating || null,
+        tags: Array.isArray(currentActivity.tags) ? currentActivity.tags : [],
+        source: 'manual-edit',
+        source_url: currentActivity.source_url || null,
+        description: currentActivity.description || null,
+      })
+      .select()
+      .single();
+
+    if (cloneError || !cloned) {
+      throw cloneError;
+    }
+
+    const { error: relinkError } = await supabase
+      .from('itinerary_activity')
+      .update({ activity_id: cloned.activity_id })
+      .eq('itinerary_activity_id', linkRow.itinerary_activity_id);
+
+    if (relinkError) {
+      throw relinkError;
+    }
+
+    return res.status(200).json({
+      success: true,
+      activity: cloned,
+    });
+  } catch (error) {
+    console.error('Error updating itinerary activity location:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update activity location',
+      error: error.message,
+    });
+  }
+});
+
 // Remove a manual activity from a specific day in the itinerary
 router.delete('/:tripId/itinerary/:dayNumber/activities/:activityId', authenticateToken, async (req, res) => {
   try {
