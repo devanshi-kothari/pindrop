@@ -2729,10 +2729,10 @@ const FinalItinerary = () => {
                                           );
                                         })}
                                         <div className="mt-1 flex flex-col gap-1.5">
-                                          <div className="flex gap-2">
+                                          <div className="flex items-center gap-2 flex-nowrap">
                                             <Input
                                               placeholder="Label"
-                                              className="h-7 text-[11px]"
+                                              className="h-7 text-[11px] flex-1 min-w-[140px]"
                                               value={draft.label}
                                               onChange={(ev) =>
                                                 setExtraExpenseDrafts((prev) => ({
@@ -2768,10 +2768,8 @@ const FinalItinerary = () => {
                                                 }))
                                               }
                                             />
-                                          </div>
-                                          <div className="flex items-center justify-between">
                                             <select
-                                              className="h-7 text-[11px] border border-blue-200 rounded px-1 bg-white text-slate-700"
+                                              className="h-7 text-[11px] border border-blue-200 rounded px-1 bg-white text-slate-700 w-32"
                                               value={draft.category}
                                               onChange={(ev) =>
                                                 setExtraExpenseDrafts((prev) => ({
@@ -2793,6 +2791,8 @@ const FinalItinerary = () => {
                                               <option value="transport">Transportation</option>
                                               <option value="other">Other</option>
                                             </select>
+                                          </div>
+                                          <div className="flex justify-end">
                                             <Button
                                               type="button"
                                               size="sm"
