@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS itinerary_activity (
     itinerary_id BIGINT NOT NULL REFERENCES itinerary(itinerary_id) ON DELETE CASCADE,
     activity_id BIGINT NOT NULL REFERENCES activity(activity_id) ON DELETE CASCADE,
     order_index INT,
+    finalized BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
 
@@ -72,6 +73,7 @@ CREATE TABLE IF NOT EXISTS trip_meal (
     location VARCHAR(255),
     link TEXT,
     cost DECIMAL(10, 2),
+    finalized BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     UNIQUE (trip_id, day_number, slot)
@@ -86,6 +88,7 @@ CREATE TABLE IF NOT EXISTS trip_expense (
     label VARCHAR(255) NOT NULL,
     amount DECIMAL(10, 2) NOT NULL,
     category VARCHAR(20) NOT NULL CHECK (category IN ('activity', 'meal', 'hotel', 'transport', 'other')),
+    finalized BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     UNIQUE (trip_id, client_id)
@@ -171,6 +174,7 @@ CREATE TABLE IF NOT EXISTS trip_flight (
     flight_id BIGINT NOT NULL REFERENCES flight(flight_id) ON DELETE CASCADE,
     -- Whether this flight is selected for the trip (only one outbound and one return should be selected per trip)
     is_selected BOOLEAN DEFAULT FALSE,
+    finalized BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     -- Composite primary key
@@ -275,6 +279,7 @@ CREATE TABLE IF NOT EXISTS trip_hotel (
     hotel_id BIGINT NOT NULL REFERENCES hotel(hotel_id) ON DELETE CASCADE,
     -- Whether this hotel is selected for the trip (only one hotel should be selected per trip)
     is_selected BOOLEAN DEFAULT FALSE,
+    finalized BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     -- Composite primary key

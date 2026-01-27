@@ -1400,7 +1400,7 @@ router.get('/:tripId/meals', authenticateToken, async (req, res) => {
 
     const { data, error } = await supabase
       .from('trip_meal')
-      .select('trip_meal_id, day_number, slot, name, location, link, cost')
+      .select('trip_meal_id, day_number, slot, name, location, link, cost, finalized')
       .eq('trip_id', tripId)
       .order('day_number', { ascending: true });
 
@@ -1451,6 +1451,7 @@ router.put('/:tripId/meals', authenticateToken, async (req, res) => {
         location: meal.location || null,
         link: meal.link || null,
         cost: meal.cost ?? null,
+        finalized: typeof meal.finalized === 'boolean' ? meal.finalized : false,
         updated_at: new Date().toISOString(),
       }));
       const { error: insertError } = await supabase.from('trip_meal').insert(rows);
@@ -1483,7 +1484,7 @@ router.get('/:tripId/expenses', authenticateToken, async (req, res) => {
 
     const { data, error } = await supabase
       .from('trip_expense')
-      .select('trip_expense_id, client_id, day_number, label, amount, category')
+      .select('trip_expense_id, client_id, day_number, label, amount, category, finalized')
       .eq('trip_id', tripId)
       .order('day_number', { ascending: true });
 
@@ -1532,6 +1533,7 @@ router.put('/:tripId/expenses', authenticateToken, async (req, res) => {
         label: expense.label,
         amount: expense.amount,
         category: expense.category,
+        finalized: typeof expense.finalized === 'boolean' ? expense.finalized : true,
         updated_at: new Date().toISOString(),
       }));
       const { error: insertError } = await supabase.from('trip_expense').insert(rows);
@@ -2367,13 +2369,19 @@ router.get('/:tripId/itinerary', authenticateToken, async (req, res) => {
         summary,
         itinerary_activity (
           order_index,
+          finalized,
           activity:activity (
             activity_id,
             name,
             location,
             address,
             category,
-            duration
+            duration,
+            cost_estimate,
+            source_url,
+            image_url,
+            description,
+            source
           )
         )
       `
@@ -2391,7 +2399,10 @@ router.get('/:tripId/itinerary', authenticateToken, async (req, res) => {
           ? row.itinerary_activity
               .slice()
               .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
-              .map((ia) => ia.activity || {})
+              .map((ia) => ({
+                ...(ia.activity || {}),
+                finalized: typeof ia.finalized === 'boolean' ? ia.finalized : false,
+              }))
           : [];
 
         return {
@@ -2409,18 +2420,21 @@ router.get('/:tripId/itinerary', authenticateToken, async (req, res) => {
         `
         flight_id,
         is_selected,
+        finalized,
         flight:flight(*)
       `
       )
       .eq('trip_id', tripId)
       .eq('is_selected', true);
 
-    const selectedOutboundFlight = tripFlights?.find(
+    const selectedOutboundLink = tripFlights?.find(
       (tf) => tf.flight?.flight_type === 'outbound'
-    )?.flight || null;
-    const selectedReturnFlight = tripFlights?.find(
+    ) || null;
+    const selectedReturnLink = tripFlights?.find(
       (tf) => tf.flight?.flight_type === 'return'
-    )?.flight || null;
+    ) || null;
+    const selectedOutboundFlight = selectedOutboundLink?.flight || null;
+    const selectedReturnFlight = selectedReturnLink?.flight || null;
 
     const { data: tripHotels } = await supabase
       .from('trip_hotel')
@@ -2428,13 +2442,15 @@ router.get('/:tripId/itinerary', authenticateToken, async (req, res) => {
         `
         hotel_id,
         is_selected,
+        finalized,
         hotel:hotel(*)
       `
       )
       .eq('trip_id', tripId)
       .eq('is_selected', true);
 
-    const selectedHotel = tripHotels?.[0]?.hotel || null;
+    const selectedHotelLink = tripHotels?.[0] || null;
+    const selectedHotel = selectedHotelLink?.hotel || null;
 
     if (days.length > 0) {
       const lastDayIndex = days.length - 1;
@@ -2447,6 +2463,7 @@ router.get('/:tripId/itinerary', authenticateToken, async (req, res) => {
           total_duration: selectedOutboundFlight.total_duration,
           flights: selectedOutboundFlight.flights,
           layovers: selectedOutboundFlight.layovers,
+          finalized: selectedOutboundLink?.finalized ?? true,
         };
       }
 
@@ -2459,6 +2476,7 @@ router.get('/:tripId/itinerary', authenticateToken, async (req, res) => {
           total_duration: selectedReturnFlight.total_duration,
           flights: selectedReturnFlight.flights,
           layovers: selectedReturnFlight.layovers,
+          finalized: selectedReturnLink?.finalized ?? true,
         };
       }
 
@@ -2474,6 +2492,7 @@ router.get('/:tripId/itinerary', authenticateToken, async (req, res) => {
             overall_rating: selectedHotel.overall_rating,
             check_in_time: selectedHotel.check_in_time,
             check_out_time: selectedHotel.check_out_time,
+            finalized: selectedHotelLink?.finalized ?? true,
           };
         });
       }
@@ -2666,7 +2685,7 @@ router.put('/:tripId/itinerary/:dayNumber/activities/:activityId', authenticateT
     const tripId = parseInt(req.params.tripId, 10);
     const dayNumber = parseInt(req.params.dayNumber, 10);
     const activityId = parseInt(req.params.activityId, 10);
-    const { address, cost_estimate } = req.body || {};
+    const { address, cost_estimate, finalized } = req.body || {};
 
     if (
       !Number.isFinite(tripId) ||
@@ -2725,6 +2744,15 @@ router.put('/:tripId/itinerary/:dayNumber/activities/:activityId', authenticateT
       });
     }
 
+    const finalizedProvided = typeof finalized === 'boolean';
+    if (finalizedProvided) {
+      const { error: finalizeError } = await supabase
+        .from('itinerary_activity')
+        .update({ finalized })
+        .eq('itinerary_activity_id', linkRow.itinerary_activity_id);
+      if (finalizeError) throw finalizeError;
+    }
+
     const cleanAddress = typeof address === 'string' ? address.trim() : null;
     const finalAddress = cleanAddress && cleanAddress.length > 0 ? cleanAddress : null;
     const costProvided = cost_estimate !== undefined && cost_estimate !== null;
@@ -2751,6 +2779,14 @@ router.put('/:tripId/itinerary/:dayNumber/activities/:activityId', authenticateT
     }
 
     const isManual = currentActivity.source === 'manual-itinerary' || currentActivity.source === 'manual-edit';
+    const hasActivityUpdates = costProvided || typeof address === 'string';
+
+    if (!hasActivityUpdates) {
+      return res.status(200).json({
+        success: true,
+        activity: currentActivity,
+      });
+    }
 
     if (isManual) {
       const { data: updated, error: updateError } = await supabase
@@ -3100,6 +3136,106 @@ router.get('/:tripId/final-itinerary', authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch final itinerary',
+      error: error.message,
+    });
+  }
+});
+
+// Update finalized status for a selected flight
+router.put('/:tripId/flights/:flightId/finalized', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId, 10);
+    const flightId = parseInt(req.params.flightId, 10);
+    const { finalized } = req.body || {};
+
+    if (!Number.isFinite(tripId) || !Number.isFinite(flightId)) {
+      return res.status(400).json({ success: false, message: 'Invalid trip or flight.' });
+    }
+    if (typeof finalized !== 'boolean') {
+      return res.status(400).json({ success: false, message: 'Finalized must be a boolean.' });
+    }
+
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
+
+    const { data: updated, error: updateError } = await supabase
+      .from('trip_flight')
+      .update({ finalized })
+      .eq('trip_id', tripId)
+      .eq('flight_id', flightId)
+      .select()
+      .maybeSingle();
+
+    if (updateError) throw updateError;
+    if (!updated) {
+      return res.status(404).json({ success: false, message: 'Trip flight not found' });
+    }
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('Error updating flight finalized status:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update flight finalized status',
+      error: error.message,
+    });
+  }
+});
+
+// Update finalized status for a selected hotel
+router.put('/:tripId/hotels/:hotelId/finalized', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId, 10);
+    const hotelId = parseInt(req.params.hotelId, 10);
+    const { finalized } = req.body || {};
+
+    if (!Number.isFinite(tripId) || !Number.isFinite(hotelId)) {
+      return res.status(400).json({ success: false, message: 'Invalid trip or hotel.' });
+    }
+    if (typeof finalized !== 'boolean') {
+      return res.status(400).json({ success: false, message: 'Finalized must be a boolean.' });
+    }
+
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
+
+    const { data: updated, error: updateError } = await supabase
+      .from('trip_hotel')
+      .update({ finalized })
+      .eq('trip_id', tripId)
+      .eq('hotel_id', hotelId)
+      .select()
+      .maybeSingle();
+
+    if (updateError) throw updateError;
+    if (!updated) {
+      return res.status(404).json({ success: false, message: 'Trip hotel not found' });
+    }
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('Error updating hotel finalized status:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update hotel finalized status',
       error: error.message,
     });
   }

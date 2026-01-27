@@ -20,6 +20,7 @@ import { getApiUrl } from "@/lib/api";
 import { ArrowLeft, Plus, Trash2, X, RotateCcw } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Switch } from "@/components/ui/switch";
 import ReplaceActivityModal from "@/components/ReplaceActivityModal";
 import ReplaceHotelModal from "@/components/ReplaceHotelModal";
 import ReplaceFlightModal from "@/components/ReplaceFlightModal";
@@ -56,6 +57,7 @@ type FinalItineraryFlight = {
   airline?: string;
   stops?: number;
   description?: string;
+  finalized?: boolean;
 };
 
 type FinalItineraryHotel = {
@@ -68,6 +70,7 @@ type FinalItineraryHotel = {
   overall_rating?: number;
   check_in_time?: string;
   check_out_time?: string;
+  finalized?: boolean;
 };
 
 type FinalItineraryDay = {
@@ -85,6 +88,7 @@ type FinalItineraryDay = {
     source_url?: string;
     source?: string;
     description?: string;
+    finalized?: boolean;
   }>;
   outbound_flight?: FinalItineraryFlight;
   return_flight?: FinalItineraryFlight;
@@ -98,6 +102,7 @@ type MealInfo = {
   location: string;
   link?: string;
   cost?: number;
+  finalized?: boolean;
 };
 
 type FinalItineraryData = {
@@ -525,6 +530,180 @@ const FinalItinerary = () => {
     }
   };
 
+  const handleToggleExpenseFinalized = async (params: {
+    id: string;
+    kind: BudgetCategory;
+    source: "auto" | "extra";
+    dayNumber: number;
+    activityId?: number;
+    mealSlot?: MealSlot;
+    flightId?: number;
+    hotelId?: number;
+    nextValue: boolean;
+    label: string;
+    amount: number;
+  }) => {
+    const { kind, source, dayNumber, activityId, mealSlot, flightId, hotelId, nextValue } = params;
+
+    if (kind === "meal" && mealSlot) {
+      setMealsByDay((prev) => {
+        const existing = prev[dayNumber]?.[mealSlot] || {
+          name: params.label,
+          location: "",
+          cost: params.amount,
+        };
+        const next = {
+          ...prev,
+          [dayNumber]: {
+            ...(prev[dayNumber] || {}),
+            [mealSlot]: {
+              ...existing,
+              finalized: nextValue,
+            },
+          },
+        };
+        persistMeals(next);
+        return next;
+      });
+      return;
+    }
+
+    if (kind === "activity" && activityId) {
+      try {
+        if (!tripId) return;
+        const token = localStorage.getItem("token");
+        if (!token) {
+          navigate("/login");
+          return;
+        }
+        const response = await fetch(
+          getApiUrl(`api/trips/${tripId}/itinerary/${dayNumber}/activities/${activityId}`),
+          {
+            method: "PUT",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ finalized: nextValue }),
+          }
+        );
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+          throw new Error(result.message || "Failed to update activity finalized status");
+        }
+        setItinerary((prev) => {
+          if (!prev) return prev;
+          const days = prev.days.map((d) => {
+            if (d.day_number !== dayNumber) return d;
+            const acts = (d.activities || []).map((a) =>
+              a.activity_id === activityId ? { ...a, finalized: nextValue } : a
+            );
+            return { ...d, activities: acts };
+          });
+          return { ...prev, days };
+        });
+      } catch (err) {
+        console.error("Error toggling activity finalized:", err);
+        alert("Failed to update activity finalized status.");
+      }
+      return;
+    }
+
+    if (kind === "transport" && flightId) {
+      try {
+        if (!tripId) return;
+        const token = localStorage.getItem("token");
+        if (!token) {
+          navigate("/login");
+          return;
+        }
+        const response = await fetch(
+          getApiUrl(`api/trips/${tripId}/flights/${flightId}/finalized`),
+          {
+            method: "PUT",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ finalized: nextValue }),
+          }
+        );
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+          throw new Error(result.message || "Failed to update flight finalized status");
+        }
+        setItinerary((prev) => {
+          if (!prev) return prev;
+          const days = prev.days.map((d) => {
+            const outbound =
+              d.outbound_flight?.flight_id === flightId
+                ? { ...d.outbound_flight, finalized: nextValue }
+                : d.outbound_flight;
+            const inbound =
+              d.return_flight?.flight_id === flightId
+                ? { ...d.return_flight, finalized: nextValue }
+                : d.return_flight;
+            return { ...d, outbound_flight: outbound, return_flight: inbound };
+          });
+          return { ...prev, days };
+        });
+      } catch (err) {
+        console.error("Error toggling flight finalized:", err);
+        alert("Failed to update flight finalized status.");
+      }
+      return;
+    }
+
+    if (kind === "hotel" && hotelId) {
+      try {
+        if (!tripId) return;
+        const token = localStorage.getItem("token");
+        if (!token) {
+          navigate("/login");
+          return;
+        }
+        const response = await fetch(
+          getApiUrl(`api/trips/${tripId}/hotels/${hotelId}/finalized`),
+          {
+            method: "PUT",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ finalized: nextValue }),
+          }
+        );
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+          throw new Error(result.message || "Failed to update hotel finalized status");
+        }
+        setItinerary((prev) => {
+          if (!prev) return prev;
+          const days = prev.days.map((d) => {
+            if (!d.hotel || d.hotel.hotel_id !== hotelId) return d;
+            return { ...d, hotel: { ...d.hotel, finalized: nextValue } };
+          });
+          return { ...prev, days };
+        });
+      } catch (err) {
+        console.error("Error toggling hotel finalized:", err);
+        alert("Failed to update hotel finalized status.");
+      }
+      return;
+    }
+
+    if (source === "extra") {
+      setExtraExpensesByDay((prev) => {
+        const copy = { ...prev };
+        copy[dayNumber] = (copy[dayNumber] || []).map((x) =>
+          x.id === params.id ? { ...x, finalized: nextValue } : x
+        );
+        persistExpenses(copy);
+        return copy;
+      });
+    }
+  };
+
   const handleConfirmReplacement = async (selectedActivity: any) => {
     if (!tripId || !selectedActivityToReplace) return;
 
@@ -803,6 +982,7 @@ const FinalItinerary = () => {
     label: string;
     amount: number;
     category: BudgetCategory;
+    finalized?: boolean;
   };
 
   const [extraExpensesByDay, setExtraExpensesByDay] = useState<Record<number, ExtraExpense[]>>({});
@@ -842,6 +1022,7 @@ const FinalItinerary = () => {
             location: m.location || "",
             link: m.link || undefined,
             cost: typeof m.cost === "number" ? m.cost : undefined,
+            finalized: typeof m.finalized === "boolean" ? m.finalized : false,
           };
         });
         setMealsByDay(next);
@@ -877,6 +1058,7 @@ const FinalItinerary = () => {
             label: e.label,
             amount: parseMoneyNumber(e.amount),
             category: e.category as BudgetCategory,
+            finalized: typeof e.finalized === "boolean" ? e.finalized : true,
           });
         });
         setExtraExpensesByDay(next);
@@ -899,6 +1081,7 @@ const FinalItinerary = () => {
       location?: string;
       link?: string;
       cost?: number;
+      finalized?: boolean;
     }> = [];
     Object.entries(nextMeals).forEach(([dayStr, dayMeals]) => {
       const dayNum = Number(dayStr);
@@ -914,6 +1097,7 @@ const FinalItinerary = () => {
           location: m.location || "",
           link: m.link,
           cost: typeof m.cost === "number" ? m.cost : undefined,
+          finalized: typeof m.finalized === "boolean" ? m.finalized : false,
         });
       });
     });
@@ -942,6 +1126,7 @@ const FinalItinerary = () => {
       label: string;
       amount: number;
       category: BudgetCategory;
+      finalized?: boolean;
     }> = [];
     Object.entries(nextExpenses).forEach(([dayStr, items]) => {
       const dayNum = Number(dayStr);
@@ -952,6 +1137,7 @@ const FinalItinerary = () => {
           label: item.label,
           amount: item.amount,
           category: item.category,
+          finalized: typeof item.finalized === "boolean" ? item.finalized : true,
         });
       });
     });
@@ -2054,7 +2240,7 @@ const FinalItinerary = () => {
                               <p className="text-xs font-semibold text-slate-800 mb-2">
                                 Day-by-day expenses
                               </p>
-                              <div className="grid gap-3 lg:grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
+                              <div className="grid gap-3 lg:grid-cols-2">
                                 {itinerary.days.map((day) => {
                                   const d = daily.find((row) => row.day_number === day.day_number);
                                   const extras = extraExpensesByDay[day.day_number] || [];
@@ -2074,6 +2260,9 @@ const FinalItinerary = () => {
                                     dayNumber: number;
                                     activityId?: number;
                                     mealSlot?: MealSlot;
+                                    flightId?: number;
+                                    hotelId?: number;
+                                    finalized?: boolean;
                                   };
 
                                   const items: BudgetItem[] = [];
@@ -2087,6 +2276,8 @@ const FinalItinerary = () => {
                                       kind: "transport",
                                       source: "auto",
                                       dayNumber: day.day_number,
+                                      finalized: day.outbound_flight.finalized ?? true,
+                                      flightId: day.outbound_flight.flight_id,
                                     });
                                   }
                                   if (day.return_flight?.price) {
@@ -2097,6 +2288,8 @@ const FinalItinerary = () => {
                                       kind: "transport",
                                       source: "auto",
                                       dayNumber: day.day_number,
+                                      finalized: day.return_flight.finalized ?? true,
+                                      flightId: day.return_flight.flight_id,
                                     });
                                   }
 
@@ -2109,6 +2302,8 @@ const FinalItinerary = () => {
                                       kind: "hotel",
                                       source: "auto",
                                       dayNumber: day.day_number,
+                                      finalized: day.hotel.finalized ?? true,
+                                      hotelId: day.hotel.hotel_id,
                                     });
                                   }
 
@@ -2122,6 +2317,7 @@ const FinalItinerary = () => {
                                       source: "auto",
                                       dayNumber: day.day_number,
                                       activityId: act.activity_id,
+                                      finalized: act.finalized ?? false,
                                     });
                                   });
 
@@ -2139,6 +2335,7 @@ const FinalItinerary = () => {
                                         source: "auto",
                                         dayNumber: day.day_number,
                                         mealSlot: slot,
+                                        finalized: meal.finalized ?? false,
                                       });
                                     }
                                   });
@@ -2152,6 +2349,7 @@ const FinalItinerary = () => {
                                       kind: e.category,
                                       source: "extra",
                                         dayNumber: day.day_number,
+                                        finalized: e.finalized ?? true,
                                     });
                                   });
 
@@ -2205,7 +2403,15 @@ const FinalItinerary = () => {
                                         {items.map((item) => {
                                           const isAutoEditable =
                                             item.source === "auto" && (item.kind === "activity" || item.kind === "meal");
+                                          const showFinalToggle =
+                                            item.kind === "activity" || item.kind === "meal" || item.source === "extra";
                                           const isEditingAuto = isAutoEditable && editingBudgetItemId === item.id;
+                                          const finalizedValue =
+                                            typeof item.finalized === "boolean"
+                                              ? item.finalized
+                                              : item.kind === "activity" || item.kind === "meal"
+                                              ? false
+                                              : true;
                                           const isEditing =
                                             item.source === "extra" && editingExtraId === item.id && editingExtraDraft;
 
@@ -2230,6 +2436,29 @@ const FinalItinerary = () => {
                                                     value={editingBudgetAmount}
                                                     onChange={(ev) => setEditingBudgetAmount(ev.target.value)}
                                                   />
+                                                  {showFinalToggle && (
+                                                    <div className="flex items-center gap-1">
+                                                      <span className="text-[10px] text-slate-500">Final</span>
+                                                      <Switch
+                                                        checked={finalizedValue}
+                                                        onCheckedChange={(checked) =>
+                                                          handleToggleExpenseFinalized({
+                                                            id: item.id,
+                                                            kind: item.kind,
+                                                            source: item.source,
+                                                            dayNumber: item.dayNumber,
+                                                            activityId: item.activityId,
+                                                            mealSlot: item.mealSlot,
+                                                            flightId: item.flightId,
+                                                            hotelId: item.hotelId,
+                                                            nextValue: checked,
+                                                            label: item.label,
+                                                            amount: item.amount,
+                                                          })
+                                                        }
+                                                      />
+                                                    </div>
+                                                  )}
                                                   <Button
                                                     type="button"
                                                     size="sm"
@@ -2420,6 +2649,29 @@ const FinalItinerary = () => {
                                                 <span className="text-[11px] font-semibold">
                                                   ${item.amount.toFixed(2)}
                                                 </span>
+                                                {showFinalToggle && (
+                                                  <div className="flex items-center gap-1">
+                                                    <span className="text-[10px] text-slate-500">Final</span>
+                                                    <Switch
+                                                      checked={finalizedValue}
+                                                      onCheckedChange={(checked) =>
+                                                        handleToggleExpenseFinalized({
+                                                          id: item.id,
+                                                          kind: item.kind,
+                                                          source: item.source,
+                                                          dayNumber: item.dayNumber,
+                                                          activityId: item.activityId,
+                                                          mealSlot: item.mealSlot,
+                                                          flightId: item.flightId,
+                                                          hotelId: item.hotelId,
+                                                          nextValue: checked,
+                                                          label: item.label,
+                                                          amount: item.amount,
+                                                        })
+                                                      }
+                                                    />
+                                                  </div>
+                                                )}
                                                 {item.source === "extra" && (
                                                   <>
                                                     <Button
@@ -2565,6 +2817,7 @@ const FinalItinerary = () => {
                                                           parseFloat(amountNum.toFixed(2))
                                                         ),
                                                         category: draft.category,
+                                                        finalized: true,
                                                       },
                                                     ],
                                                   };
@@ -3098,6 +3351,8 @@ const FinalItinerary = () => {
                                 }
                                 const parsedCost = parseFloat(mealForm.cost);
                                 setMealsByDay((prev) => {
+                                  const existingFinalized =
+                                    prev[editingMeal.dayNumber]?.[editingMeal.slot]?.finalized ?? false;
                                   const next = {
                                     ...prev,
                                     [editingMeal.dayNumber]: {
@@ -3107,6 +3362,7 @@ const FinalItinerary = () => {
                                         location: mealForm.location.trim(),
                                         link: mealForm.link.trim() || undefined,
                                         cost: !Number.isNaN(parsedCost) && parsedCost >= 0 ? parsedCost : undefined,
+                                        finalized: existingFinalized,
                                       },
                                     },
                                   };
