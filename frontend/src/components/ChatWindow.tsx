@@ -21,6 +21,7 @@ import { Switch } from "@/components/ui/switch";
 import { ChevronDown } from "lucide-react";
 import { getApiUrl } from "@/lib/api";
 import ActivitySwipeCard from "./ActivitySwipeCard";
+import RestaurantSwipeCard from "./RestaurantSwipeCard";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 interface Message {
@@ -138,6 +139,21 @@ const ChatWindow = ({
   const [selectedReturnIndex, setSelectedReturnIndex] = useState<number | null>(null);
   const [expandedLayovers, setExpandedLayovers] = useState<Record<number, boolean>>({});
   const [hasConfirmedFlights, setHasConfirmedFlights] = useState(false);
+  const [hasStartedRestaurants, setHasStartedRestaurants] = useState(false);
+  const [restaurants, setRestaurants] = useState<any[]>([]);
+  const [isGeneratingRestaurants, setIsGeneratingRestaurants] = useState(false);
+  const [isUpdatingRestaurantPreference, setIsUpdatingRestaurantPreference] = useState<
+    Record<number, boolean>
+  >({});
+  const [restaurantFormData, setRestaurantFormData] = useState({
+    mealsPerDay: 2,
+    mealTypes: [] as string[],
+    cuisineTypes: [] as string[],
+    dietaryRestrictions: [] as string[],
+    otherDietaryRestriction: "",
+  });
+  const [isSavingRestaurantPreferences, setIsSavingRestaurantPreferences] = useState(false);
+  const [hasConfirmedRestaurants, setHasConfirmedRestaurants] = useState(false);
   const [hasStartedHotels, setHasStartedHotels] = useState(false);
   const [hotels, setHotels] = useState<any[]>([]);
   const [isFetchingHotels, setIsFetchingHotels] = useState(false);
@@ -175,7 +191,7 @@ const ChatWindow = ({
   const [hasLockedDestination, setHasLockedDestination] = useState(
     planningMode === "known" || hasDestinationLocked
   );
-  const [activeTab, setActiveTab] = useState<"activities" | "flights" | "hotels" | "summary">(
+  const [activeTab, setActiveTab] = useState<"activities" | "restaurants" | "flights" | "hotels" | "summary">(
     "activities"
   );
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -551,6 +567,133 @@ const ChatWindow = ({
     loadActivities(tripId);
   }, [tripId, loadActivities]);
 
+
+  const loadRestaurants = useCallback(
+    async (id: number) => {
+      try {
+        const token = getAuthToken();
+        if (!token) return;
+
+        const response = await fetch(getApiUrl(`api/trips/${id}/restaurants`), {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success && Array.isArray(result.restaurants)) {
+          setRestaurants(result.restaurants);
+        }
+      } catch (error) {
+        console.error("Error loading restaurants:", error);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!tripId) return;
+    loadRestaurants(tripId);
+  }, [tripId, loadRestaurants]);
+
+  const generateRestaurants = async () => {
+    if (!tripId) return;
+
+    try {
+      setIsGeneratingRestaurants(true);
+
+      const token = getAuthToken();
+      if (!token) return;
+
+      const response = await fetch(getApiUrl(`api/trips/${tripId}/generate-restaurants`), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          testMode: useTestRestaurants,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (response.ok && result.success && Array.isArray(result.restaurants)) {
+        setRestaurants(result.restaurants);
+        setHasStartedRestaurants(true);
+
+        const assistantMessage: Message = {
+          role: "assistant",
+          content:
+            result.restaurants.length > 0
+              ? `I found ${result.restaurants.length} restaurants based on your preferences. Swipe through them below and tell me what you like!`
+              : "I wasn't able to find restaurants matching your preferences. Try adjusting your preferences and try again.",
+          timestamp: formatTime(),
+        };
+        setMessages((prev) => [...prev, assistantMessage]);
+      } else {
+        console.error("Failed to generate restaurants:", result.message);
+      }
+    } catch (error) {
+      console.error("Error generating restaurants:", error);
+    } finally {
+      setIsGeneratingRestaurants(false);
+    }
+  };
+
+  const updateRestaurantPreference = async (
+    restaurantId: number,
+    preference: "liked" | "disliked" | "maybe",
+    mealType?: string,
+    dayNumber?: number
+  ) => {
+    if (!tripId) return;
+
+    try {
+      setIsUpdatingRestaurantPreference((prev) => ({ ...prev, [restaurantId]: true }));
+      const token = getAuthToken();
+      if (!token) return;
+
+      const response = await fetch(
+        getApiUrl(`api/trips/${tripId}/restaurants/${restaurantId}/preference`),
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ preference, meal_type: mealType, day_number: dayNumber }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (response.ok && result.success) {
+        setRestaurants((prev) =>
+          prev.map((r) =>
+            r.restaurant_id === restaurantId
+              ? {
+                  ...r,
+                  preference,
+                  meal_type: mealType || r.meal_type,
+                  day_number: dayNumber || r.day_number,
+                }
+              : r
+          )
+        );
+      } else {
+        console.error("Failed to update restaurant preference:", result.message);
+      }
+    } catch (error) {
+      console.error("Error updating restaurant preference:", error);
+    } finally {
+      setIsUpdatingRestaurantPreference((prev) => ({ ...prev, [restaurantId]: false }));
+    }
+  };
+
   const handlePreferenceChange = <K extends keyof TripPreferences>(
     key: K,
     value: TripPreferences[K]
@@ -654,6 +797,7 @@ const ChatWindow = ({
   };
 
   const [useTestActivities, setUseTestActivities] = useState(false);
+  const [useTestRestaurants, setUseTestRestaurants] = useState(false);
 
   const generateActivities = async () => {
     if (!tripId) return;
@@ -2373,8 +2517,9 @@ const ChatWindow = ({
           {tripId && (
             <div className="mt-6 mb-3 flex items-center justify-center">
               <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="w-full max-w-xl">
-                <TabsList className="grid grid-cols-4 w-full">
+                <TabsList className="grid grid-cols-5 w-full">
                   <TabsTrigger value="activities" className="text-xs">Activities</TabsTrigger>
+                  <TabsTrigger value="restaurants" className="text-xs">Restaurants</TabsTrigger>
                   <TabsTrigger value="flights" className="text-xs">Flights</TabsTrigger>
                   <TabsTrigger value="hotels" className="text-xs">Hotels</TabsTrigger>
                   <TabsTrigger value="summary" className="text-xs">Summary</TabsTrigger>
@@ -2522,9 +2667,425 @@ const ChatWindow = ({
                             </span>
                           </div>
                         ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
+          {activeTab === "restaurants" && restaurants.length === 0 && (
+            <div className="flex justify-center">
+              <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm">
+                <div className="space-y-6">
+                  <p className="text-xs font-semibold text-slate-600 mb-1">
+                    Restaurant Preferences
+                  </p>
+                  
+                  {/* Number of meals per day */}
+                  <div>
+                    <Label htmlFor="meals-per-day" className="text-sm font-semibold text-slate-700 mb-2 block">
+                      Number of meals per day
+                    </Label>
+                    <Select
+                      value={restaurantFormData.mealsPerDay.toString()}
+                      onValueChange={(value) =>
+                        setRestaurantFormData((prev) => ({ ...prev, mealsPerDay: parseInt(value) }))
+                      }
+                    >
+                      <SelectTrigger id="meals-per-day" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="1">1 meal</SelectItem>
+                        <SelectItem value="2">2 meals</SelectItem>
+                        <SelectItem value="3">3 meals</SelectItem>
+                        <SelectItem value="4">4+ meals</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Types of meals */}
+                  <div>
+                    <Label className="text-sm font-semibold text-slate-700 mb-2 block">
+                      Types of meals (select all that apply)
+                    </Label>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {["Breakfast", "Brunch", "Lunch", "Dinner", "Cafe", "Dessert", "Late Night"].map((mealType) => (
+                        <div key={mealType} className="flex items-center space-x-2">
+                          <Checkbox
+                            id={`meal-${mealType}`}
+                            checked={restaurantFormData.mealTypes.includes(mealType)}
+                            onCheckedChange={(checked) => {
+                              setRestaurantFormData((prev) => {
+                                if (checked) {
+                                  return { ...prev, mealTypes: [...prev.mealTypes, mealType] };
+                                } else {
+                                  return { ...prev, mealTypes: prev.mealTypes.filter((m) => m !== mealType) };
+                                }
+                              });
+                            }}
+                          />
+                          <Label
+                            htmlFor={`meal-${mealType}`}
+                            className="text-xs text-slate-600 cursor-pointer"
+                          >
+                            {mealType}
+                          </Label>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Cuisine types */}
+                  <div>
+                    <Label className="text-sm font-semibold text-slate-700 mb-2 block">
+                      Types of cuisines (select all that apply)
+                    </Label>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {["Italian", "French", "Japanese", "Chinese", "Mexican", "Thai", "Indian", "Mediterranean", "American", "Spanish", "Greek", "Korean", "Vietnamese", "Middle Eastern", "Caribbean", "Brazilian", "Fusion", "Other"].map((cuisine) => (
+                        <div key={cuisine} className="flex items-center space-x-2">
+                          <Checkbox
+                            id={`cuisine-${cuisine}`}
+                            checked={restaurantFormData.cuisineTypes.includes(cuisine)}
+                            onCheckedChange={(checked) => {
+                              setRestaurantFormData((prev) => {
+                                if (checked) {
+                                  return { ...prev, cuisineTypes: [...prev.cuisineTypes, cuisine] };
+                                } else {
+                                  return { ...prev, cuisineTypes: prev.cuisineTypes.filter((c) => c !== cuisine) };
+                                }
+                              });
+                            }}
+                          />
+                          <Label
+                            htmlFor={`cuisine-${cuisine}`}
+                            className="text-xs text-slate-600 cursor-pointer"
+                          >
+                            {cuisine}
+                          </Label>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Dietary restrictions */}
+                  <div>
+                    <Label className="text-sm font-semibold text-slate-700 mb-2 block">
+                      Dietary restrictions (select all that apply)
+                    </Label>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {["Vegetarian", "Vegan", "Gluten-free", "Halal", "Kosher", "Dairy-free", "Nut-free", "Pescatarian", "Keto", "Paleo"].map((restriction) => (
+                        <div key={restriction} className="flex items-center space-x-2">
+                          <Checkbox
+                            id={`dietary-${restriction}`}
+                            checked={restaurantFormData.dietaryRestrictions.includes(restriction)}
+                            onCheckedChange={(checked) => {
+                              setRestaurantFormData((prev) => {
+                                if (checked) {
+                                  return { ...prev, dietaryRestrictions: [...prev.dietaryRestrictions, restriction] };
+                                } else {
+                                  return { ...prev, dietaryRestrictions: prev.dietaryRestrictions.filter((r) => r !== restriction) };
+                                }
+                              });
+                            }}
+                          />
+                          <Label
+                            htmlFor={`dietary-${restriction}`}
+                            className="text-xs text-slate-600 cursor-pointer"
+                          >
+                            {restriction}
+                          </Label>
+                        </div>
+                      ))}
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="dietary-Other"
+                          checked={restaurantFormData.dietaryRestrictions.includes("Other")}
+                          onCheckedChange={(checked) => {
+                            setRestaurantFormData((prev) => {
+                              if (checked) {
+                                return { ...prev, dietaryRestrictions: [...prev.dietaryRestrictions, "Other"] };
+                              } else {
+                                return { ...prev, dietaryRestrictions: prev.dietaryRestrictions.filter((r) => r !== "Other"), otherDietaryRestriction: "" };
+                              }
+                            });
+                          }}
+                        />
+                        <Label
+                          htmlFor="dietary-Other"
+                          className="text-xs text-slate-600 cursor-pointer"
+                        >
+                          Other:
+                        </Label>
+                      </div>
+                    </div>
+                    {restaurantFormData.dietaryRestrictions.includes("Other") && (
+                      <div className="mt-3">
+                        <Input
+                          type="text"
+                          placeholder="Please specify your dietary restriction"
+                          value={restaurantFormData.otherDietaryRestriction}
+                          onChange={(e) =>
+                            setRestaurantFormData((prev) => ({ ...prev, otherDietaryRestriction: e.target.value }))
+                          }
+                          className="w-full"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Test Mode Toggle */}
+                  <div className="flex items-center gap-2 pt-2">
+                    <Label className="text-[11px] text-slate-600">
+                      Use test restaurants (avoids Google API quota)
+                    </Label>
+                    <Switch
+                      checked={useTestRestaurants}
+                      onCheckedChange={(val) => setUseTestRestaurants(val)}
+                    />
+                  </div>
+
+                  {/* Submit Button */}
+                  <div className="pt-4">
+                    <Button
+                      onClick={async () => {
+                        if (!tripId) {
+                          console.error("No tripId available");
+                          return;
+                        }
+
+                        setIsSavingRestaurantPreferences(true);
+                        try {
+                          const token = getAuthToken();
+                          if (!token) {
+                            console.error("No authentication token");
+                            return;
+                          }
+
+                          // Prepare dietary restrictions - include "Other" text if specified
+                          let dietaryRestrictions = [...restaurantFormData.dietaryRestrictions];
+                          if (restaurantFormData.dietaryRestrictions.includes("Other") && restaurantFormData.otherDietaryRestriction.trim()) {
+                            // Replace "Other" with the actual text
+                            const otherIndex = dietaryRestrictions.indexOf("Other");
+                            dietaryRestrictions[otherIndex] = restaurantFormData.otherDietaryRestriction.trim();
+                          } else if (restaurantFormData.dietaryRestrictions.includes("Other")) {
+                            // Remove "Other" if no text provided
+                            dietaryRestrictions = dietaryRestrictions.filter(r => r !== "Other");
+                          }
+
+                          // Save preferences
+                          const saveResponse = await fetch(getApiUrl(`api/trips/${tripId}/restaurant-preferences`), {
+                            method: "PUT",
+                            headers: {
+                              Authorization: `Bearer ${token}`,
+                              "Content-Type": "application/json",
+                            },
+                            body: JSON.stringify({
+                              cuisine_types: restaurantFormData.cuisineTypes,
+                              dietary_restrictions: dietaryRestrictions,
+                              meals_per_day: restaurantFormData.mealsPerDay,
+                              meal_types: restaurantFormData.mealTypes,
+                            }),
+                          });
+
+                          const saveResult = await saveResponse.json();
+
+                          if (!saveResponse.ok || !saveResult.success) {
+                            console.error("Failed to save restaurant preferences:", saveResult.message);
+                            return;
+                          }
+
+                          // Generate restaurants based on preferences
+                          const generateResponse = await fetch(getApiUrl(`api/trips/${tripId}/generate-restaurants`), {
+                            method: "POST",
+                            headers: {
+                              Authorization: `Bearer ${token}`,
+                              "Content-Type": "application/json",
+                            },
+                            body: JSON.stringify({
+                              testMode: useTestRestaurants,
+                            }),
+                          });
+
+                          const generateResult = await generateResponse.json();
+
+                          console.log("Generate restaurants response:", generateResult);
+
+                          if (generateResponse.ok && generateResult.success) {
+                            const restaurantsArray = Array.isArray(generateResult.restaurants) 
+                              ? generateResult.restaurants 
+                              : [];
+                            
+                            console.log("Setting restaurants:", restaurantsArray.length, restaurantsArray);
+                            
+                            setRestaurants(restaurantsArray);
+                            setHasStartedRestaurants(true);
+
+                            if (restaurantsArray.length > 0) {
+                              // Switch to restaurants tab to show the cards
+                              setActiveTab("restaurants");
+                              
+                              const assistantMessage: Message = {
+                                role: "assistant",
+                                content: `I found ${restaurantsArray.length} restaurants based on your preferences. Swipe through them below!`,
+                                timestamp: formatTime(),
+                              };
+                              setMessages((prev) => [...prev, assistantMessage]);
+                            } else {
+                              const assistantMessage: Message = {
+                                role: "assistant",
+                                content: "I couldn't find restaurants matching your preferences. Try adjusting your preferences and try again.",
+                                timestamp: formatTime(),
+                              };
+                              setMessages((prev) => [...prev, assistantMessage]);
+                            }
+                          } else {
+                            console.error("Failed to generate restaurants:", generateResult);
+                            const errorMessage: Message = {
+                              role: "assistant",
+                              content: `Failed to generate restaurants: ${generateResult.message || "Unknown error"}`,
+                              timestamp: formatTime(),
+                            };
+                            setMessages((prev) => [...prev, errorMessage]);
+                          }
+                        } catch (error) {
+                          console.error("Error saving restaurant preferences:", error);
+                        } finally {
+                          setIsSavingRestaurantPreferences(false);
+                        }
+                      }}
+                      disabled={isSavingRestaurantPreferences}
+                      className="w-full bg-blue-500 hover:bg-blue-600 text-white"
+                    >
+                      {isSavingRestaurantPreferences
+                        ? useTestRestaurants
+                          ? "Saving and Loading test restaurants..."
+                          : "Saving and Finding Restaurants..."
+                        : "Save Preferences & Find Restaurants"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          {activeTab === "restaurants" && restaurants.length > 0 && (
+            <div className="flex justify-center">
+              <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm">
+                <p className="text-xs font-semibold text-slate-600 mb-1">
+                  Phase 2: Explore restaurants
+                </p>
+                <p className="text-[11px] text-slate-600 mb-4">
+                  Swipe right to like, left to pass, or use the buttons below. Swipe up for maybe.
+                </p>
+
+                {/* Swipe Card Stack */}
+                <div className="relative h-[600px] w-full flex items-center justify-center">
+                  {restaurants
+                    .filter((r) => r.preference === "pending")
+                    .slice(0, 3)
+                    .map((restaurant, idx) => {
+                      return (
+                        <RestaurantSwipeCard
+                          key={restaurant.restaurant_id}
+                          restaurant={restaurant as any}
+                          index={idx}
+                          total={Math.min(3, restaurants.filter((r) => r.preference === "pending").length)}
+                          onSwipe={(direction) => {
+                            if (direction === "left") {
+                              updateRestaurantPreference(restaurant.restaurant_id, "disliked");
+                            } else if (direction === "right") {
+                              updateRestaurantPreference(restaurant.restaurant_id, "liked");
+                            } else if (direction === "up") {
+                              updateRestaurantPreference(restaurant.restaurant_id, "maybe");
+                            }
+                          }}
+                          onLike={() => {
+                            updateRestaurantPreference(restaurant.restaurant_id, "liked");
+                          }}
+                          onPass={() => {
+                            updateRestaurantPreference(restaurant.restaurant_id, "disliked");
+                          }}
+                          onMaybe={() => {
+                            updateRestaurantPreference(restaurant.restaurant_id, "maybe");
+                          }}
+                          isUpdating={isUpdatingRestaurantPreference[restaurant.restaurant_id]}
+                        />
+                      );
+                    })}
+
+                  {/* Empty state when all restaurants are reviewed */}
+                  {restaurants.filter((r) => r.preference === "pending").length === 0 && (
+                    <div className="flex h-full items-center justify-center">
+                      <div className="text-center">
+                        <p className="text-sm font-semibold text-slate-600 mb-2">
+                          All restaurants reviewed! 🎉
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          You've reacted to all {restaurants.length} restaurants.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Progress indicator */}
+                <div className="mt-4 flex items-center justify-between">
+                  <p className="text-[11px] text-slate-500">
+                    {restaurants.filter((r) => r.preference === "pending").length === 0
+                      ? "All done!"
+                      : `${restaurants.filter((r) => r.preference === "pending").length} remaining`}
+                  </p>
+                </div>
+
+                {/* Reviewed restaurants summary */}
+                {restaurants.filter((r) => r.preference !== "pending").length > 0 && (
+                  <div className="mt-4 border-t border-blue-100 pt-3">
+                    <p className="text-xs font-semibold text-slate-600 mb-2">
+                      Your reviewed restaurants
+                    </p>
+                    <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1">
+                      {restaurants
+                        .filter((r) => r.preference !== "pending")
+                        .map((r) => (
+                          <div
+                            key={r.restaurant_id}
+                            className="flex items-center justify-between rounded-md border border-blue-100 bg-blue-50/60 px-3 py-1.5 text-[11px]"
+                          >
+                            <div className="truncate">
+                              <span className="font-semibold text-slate-900 truncate">
+                                {r.name}
+                              </span>
+                              {r.location && (
+                                <span className="text-slate-500 ml-1 truncate">
+                                  • {r.location}
+                                </span>
+                              )}
+                              {r.cuisine_type && (
+                                <span className="text-slate-500 ml-1 truncate">
+                                  • {r.cuisine_type}
+                                </span>
+                              )}
+                            </div>
+                            <span
+                              className={
+                                r.preference === "liked"
+                                  ? "text-emerald-500 font-semibold ml-2 flex-shrink-0"
+                                  : r.preference === "maybe"
+                                  ? "text-amber-500 font-semibold ml-2 flex-shrink-0"
+                                  : "text-slate-400 font-semibold ml-2 flex-shrink-0"
+                              }
+                            >
+                              {r.preference === "liked"
+                                ? "Liked"
+                                : r.preference === "maybe"
+                                ? "Maybe"
+                                : "Passed"}
+                            </span>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
