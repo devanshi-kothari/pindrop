@@ -2970,7 +2970,7 @@ const FinalItinerary = () => {
                                             name: meal?.name || "",
                                             location: meal?.location || (itinerary.destination || ""),
                                             link: meal?.link || "",
-                                            cost: typeof meal?.cost === "number" ? String(meal.cost) : "",
+                                            cost: typeof meal?.cost === "number" ? String(meal.cost) : "30",
                                           });
                                         }}
                                       >
