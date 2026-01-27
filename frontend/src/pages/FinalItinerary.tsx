@@ -484,6 +484,47 @@ const FinalItinerary = () => {
     }
   };
 
+  const handleUpdateActivityCost = async (dayNumber: number, activityId: number, amount: number) => {
+    if (!tripId) return;
+    try {
+      const token = localStorage.getItem("token");
+      if (!token) {
+        navigate("/login");
+        return;
+      }
+      const response = await fetch(
+        getApiUrl(`api/trips/${tripId}/itinerary/${dayNumber}/activities/${activityId}`),
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ cost_estimate: amount }),
+        }
+      );
+      const result = await response.json();
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || "Failed to update activity cost");
+      }
+
+      const reloadResponse = await fetch(getApiUrl(`api/trips/${tripId}/final-itinerary`), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+      const reloadResult = await reloadResponse.json();
+      if (reloadResponse.ok && reloadResult.success && reloadResult.itinerary?.days?.length > 0) {
+        setItinerary(reloadResult.itinerary);
+      }
+    } catch (error) {
+      console.error("Error updating activity cost:", error);
+      alert("Failed to update activity cost. Please try again.");
+    }
+  };
+
   const handleConfirmReplacement = async (selectedActivity: any) => {
     if (!tripId || !selectedActivityToReplace) return;
 
@@ -934,6 +975,8 @@ const FinalItinerary = () => {
     amount: string;
     category: BudgetCategory;
   } | null>(null);
+  const [editingBudgetItemId, setEditingBudgetItemId] = useState<string | null>(null);
+  const [editingBudgetAmount, setEditingBudgetAmount] = useState("");
 
   const parseMoneyNumber = (value: unknown): number => {
     if (typeof value === "number") return Number.isFinite(value) ? value : 0;
@@ -2028,6 +2071,9 @@ const FinalItinerary = () => {
                                     amount: number;
                                     kind: BudgetCategory;
                                     source: "auto" | "extra";
+                                    dayNumber: number;
+                                    activityId?: number;
+                                    mealSlot?: MealSlot;
                                   };
 
                                   const items: BudgetItem[] = [];
@@ -2040,6 +2086,7 @@ const FinalItinerary = () => {
                                       amount: day.outbound_flight.price,
                                       kind: "transport",
                                       source: "auto",
+                                      dayNumber: day.day_number,
                                     });
                                   }
                                   if (day.return_flight?.price) {
@@ -2049,6 +2096,7 @@ const FinalItinerary = () => {
                                       amount: day.return_flight.price,
                                       kind: "transport",
                                       source: "auto",
+                                      dayNumber: day.day_number,
                                     });
                                   }
 
@@ -2060,34 +2108,37 @@ const FinalItinerary = () => {
                                       amount: day.hotel.rate_per_night,
                                       kind: "hotel",
                                       source: "auto",
+                                      dayNumber: day.day_number,
                                     });
                                   }
 
                                   // Activities
                                   (day.activities || []).forEach((act, idx) => {
-                                    if (typeof act.cost_estimate === "number" && act.cost_estimate > 0) {
-                                      items.push({
-                                        id: `activity-${day.day_number}-${idx}`,
-                                        label: act.name || "Activity",
-                                        amount: act.cost_estimate,
-                                        kind: "activity",
-                                        source: "auto",
-                                      });
-                                    }
+                                    items.push({
+                                      id: `activity-${day.day_number}-${act.activity_id ?? idx}`,
+                                      label: act.name || "Activity",
+                                      amount: parseMoneyNumber(act.cost_estimate),
+                                      kind: "activity",
+                                      source: "auto",
+                                      dayNumber: day.day_number,
+                                      activityId: act.activity_id,
+                                    });
                                   });
 
                                   // Meals from calendar
                                   const dayMeals = mealsByDay[day.day_number] || {};
                                   (["breakfast", "lunch", "dinner"] as MealSlot[]).forEach((slot) => {
                                     const meal = dayMeals[slot];
-                                    if (meal && typeof meal.cost === "number" && meal.cost > 0) {
+                                    if (meal) {
                                       const slotLabel = slot.charAt(0).toUpperCase() + slot.slice(1);
                                       items.push({
                                         id: `meal-${day.day_number}-${slot}`,
                                         label: meal.name || slotLabel,
-                                        amount: meal.cost,
+                                        amount: typeof meal.cost === "number" ? meal.cost : 0,
                                         kind: "meal",
                                         source: "auto",
+                                        dayNumber: day.day_number,
+                                        mealSlot: slot,
                                       });
                                     }
                                   });
@@ -2100,6 +2151,7 @@ const FinalItinerary = () => {
                                       amount: e.amount,
                                       kind: e.category,
                                       source: "extra",
+                                        dayNumber: day.day_number,
                                     });
                                   });
 
@@ -2151,8 +2203,92 @@ const FinalItinerary = () => {
                                           </p>
                                         )}
                                         {items.map((item) => {
+                                          const isAutoEditable =
+                                            item.source === "auto" && (item.kind === "activity" || item.kind === "meal");
+                                          const isEditingAuto = isAutoEditable && editingBudgetItemId === item.id;
                                           const isEditing =
                                             item.source === "extra" && editingExtraId === item.id && editingExtraDraft;
+
+                                          if (isEditingAuto) {
+                                            return (
+                                              <div
+                                                key={item.id}
+                                                className={`flex items-center justify-between rounded px-2 py-1 ${kindClasses[item.kind]}`}
+                                              >
+                                                <div className="flex flex-col">
+                                                  <span className="text-[11px] font-semibold">{item.label}</span>
+                                                  <span className="text-[10px] opacity-80">
+                                                    {kindLabel[item.kind]}
+                                                  </span>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                  <Input
+                                                    type="number"
+                                                    min={0}
+                                                    step="0.01"
+                                                    className="h-6 w-20 text-[11px]"
+                                                    value={editingBudgetAmount}
+                                                    onChange={(ev) => setEditingBudgetAmount(ev.target.value)}
+                                                  />
+                                                  <Button
+                                                    type="button"
+                                                    size="sm"
+                                                    className="h-6 px-2 text-[11px]"
+                                                    onClick={() => {
+                                                      const amountNum = parseFloat(editingBudgetAmount);
+                                                      if (Number.isNaN(amountNum)) return;
+                                                      const fixedAmount = Math.max(
+                                                        0,
+                                                        parseFloat(amountNum.toFixed(2))
+                                                      );
+                                                      if (item.kind === "meal" && item.mealSlot) {
+                                                        setMealsByDay((prev) => {
+                                                          const next = {
+                                                            ...prev,
+                                                            [item.dayNumber]: {
+                                                              ...(prev[item.dayNumber] || {}),
+                                                              [item.mealSlot]: {
+                                                                ...(prev[item.dayNumber]?.[item.mealSlot] || {
+                                                                  name: item.label,
+                                                                  location: "",
+                                                                }),
+                                                                cost: fixedAmount,
+                                                              },
+                                                            },
+                                                          };
+                                                          persistMeals(next);
+                                                          return next;
+                                                        });
+                                                      }
+                                                      if (item.kind === "activity" && item.activityId) {
+                                                        handleUpdateActivityCost(
+                                                          item.dayNumber,
+                                                          item.activityId,
+                                                          fixedAmount
+                                                        );
+                                                      }
+                                                      setEditingBudgetItemId(null);
+                                                      setEditingBudgetAmount("");
+                                                    }}
+                                                  >
+                                                    Save
+                                                  </Button>
+                                                  <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    className="h-6 px-2 text-[11px]"
+                                                    onClick={() => {
+                                                      setEditingBudgetItemId(null);
+                                                      setEditingBudgetAmount("");
+                                                    }}
+                                                  >
+                                                    Cancel
+                                                  </Button>
+                                                </div>
+                                              </div>
+                                            );
+                                          }
 
                                           if (isEditing && editingExtraDraft) {
                                             return (
@@ -2321,6 +2457,20 @@ const FinalItinerary = () => {
                                                       ×
                                                     </Button>
                                                   </>
+                                                )}
+                                                {isAutoEditable && (
+                                                  <Button
+                                                    type="button"
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    className="h-5 w-5 text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+                                                    onClick={() => {
+                                                      setEditingBudgetItemId(item.id);
+                                                      setEditingBudgetAmount(item.amount.toFixed(2));
+                                                    }}
+                                                  >
+                                                    ✎
+                                                  </Button>
                                                 )}
                                               </div>
                                             </div>

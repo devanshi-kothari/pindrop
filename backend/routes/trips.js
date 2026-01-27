@@ -2666,7 +2666,7 @@ router.put('/:tripId/itinerary/:dayNumber/activities/:activityId', authenticateT
     const tripId = parseInt(req.params.tripId, 10);
     const dayNumber = parseInt(req.params.dayNumber, 10);
     const activityId = parseInt(req.params.activityId, 10);
-    const { address } = req.body || {};
+    const { address, cost_estimate } = req.body || {};
 
     if (
       !Number.isFinite(tripId) ||
@@ -2725,9 +2725,16 @@ router.put('/:tripId/itinerary/:dayNumber/activities/:activityId', authenticateT
       });
     }
 
-    const cleanAddress =
-      typeof address === 'string' ? address.trim() : null;
+    const cleanAddress = typeof address === 'string' ? address.trim() : null;
     const finalAddress = cleanAddress && cleanAddress.length > 0 ? cleanAddress : null;
+    const costProvided = cost_estimate !== undefined && cost_estimate !== null;
+    const parsedCost = costProvided ? Number(cost_estimate) : null;
+    if (costProvided && !Number.isFinite(parsedCost)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Activity cost estimate must be a number.',
+      });
+    }
 
     // Fetch current activity
     const { data: currentActivity, error: fetchError } = await supabase
@@ -2752,6 +2759,7 @@ router.put('/:tripId/itinerary/:dayNumber/activities/:activityId', authenticateT
           address: finalAddress,
           // Keep location as destination for grouping
           location: trip.destination || null,
+          ...(costProvided ? { cost_estimate: parsedCost } : {}),
         })
         .eq('activity_id', activityId)
         .select()
@@ -2776,10 +2784,11 @@ router.put('/:tripId/itinerary/:dayNumber/activities/:activityId', authenticateT
         address: finalAddress,
         category: currentActivity.category || null,
         duration: currentActivity.duration || null,
-        cost_estimate:
-          currentActivity.cost_estimate !== undefined && currentActivity.cost_estimate !== null
-            ? currentActivity.cost_estimate
-            : null,
+        cost_estimate: costProvided
+          ? parsedCost
+          : currentActivity.cost_estimate !== undefined && currentActivity.cost_estimate !== null
+          ? currentActivity.cost_estimate
+          : null,
         rating: currentActivity.rating || null,
         tags: Array.isArray(currentActivity.tags) ? currentActivity.tags : [],
         source: 'manual-edit',
