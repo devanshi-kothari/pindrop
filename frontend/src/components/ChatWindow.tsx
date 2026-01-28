@@ -63,6 +63,7 @@ interface TripPreferences {
   accommodation_type: string;
   activity_categories: ActivityCategory[];
   avoid_activity_categories: ActivityCategory[];
+  selected_cities: string[];
   group_type: string;
   safety_notes: string;
   accessibility_notes: string;
@@ -116,6 +117,15 @@ const ChatWindow = ({
   const [hasConfirmedActivities, setHasConfirmedActivities] = useState(false);
   const [hasConfirmedTripSketch, setHasConfirmedTripSketch] = useState(false);
   const [tripDestination, setTripDestination] = useState<string | null>(null);
+  const [citySuggestions, setCitySuggestions] = useState<string[]>([]);
+  const [citySuggestionsMeta, setCitySuggestionsMeta] = useState<{
+    destination_type: "country" | "city" | "region" | "unknown";
+    normalized_destination: string | null;
+    country: string | null;
+    primary_city: string | null;
+  } | null>(null);
+  const [isLoadingCitySuggestions, setIsLoadingCitySuggestions] = useState(false);
+  const [citySuggestionsError, setCitySuggestionsError] = useState<string | null>(null);
   const [departureLocation, setDepartureLocation] = useState("");
   const [departureId, setDepartureId] = useState<string | null>(null);
   const [departureAirportCodes, setDepartureAirportCodes] = useState<string[]>([]); // All departure airport codes
@@ -323,11 +333,77 @@ const ChatWindow = ({
       accommodation_type: "",
       activity_categories: initialCategories,
       avoid_activity_categories: [],
+      selected_cities: [],
       group_type: "",
       safety_notes: "",
       accessibility_notes: "",
       custom_requests: "",
     };
+  };
+
+  const toggleSelectedCity = (city: string) => {
+    const cleaned = city.trim();
+    if (!cleaned) return;
+    setTripPreferences((prev) => {
+      const base = prev ?? buildDefaultPreferencesFromProfile();
+      const current = Array.isArray(base.selected_cities) ? base.selected_cities : [];
+      const exists = current.some((c) => c.toLowerCase() === cleaned.toLowerCase());
+      const next = exists
+        ? current.filter((c) => c.toLowerCase() !== cleaned.toLowerCase())
+        : [...current, cleaned];
+      return { ...base, selected_cities: next };
+    });
+  };
+
+  const fetchCitySuggestions = async () => {
+    if (!tripId || !tripDestination) return;
+    const token = getAuthToken();
+    if (!token) return;
+
+    try {
+      setIsLoadingCitySuggestions(true);
+      setCitySuggestionsError(null);
+
+      const response = await fetch(getApiUrl(`api/trips/${tripId}/city-suggestions`), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      const result = await response.json();
+      if (!response.ok || !result?.success) {
+        throw new Error(result?.message || "Failed to load city suggestions");
+      }
+
+      const cities: string[] = Array.isArray(result.cities) ? result.cities : [];
+      setCitySuggestions(cities);
+      setCitySuggestionsMeta({
+        destination_type: result.destination_type || "unknown",
+        normalized_destination: result.normalized_destination ?? null,
+        country: result.country ?? null,
+        primary_city: result.primary_city ?? null,
+      });
+
+      // If destination was a city and the user hasn't picked anything yet, preselect the primary city.
+      if (result.destination_type === "city") {
+        const primary = (result.primary_city || cities[0] || "").trim();
+        if (primary) {
+          setTripPreferences((prev) => {
+            const base = prev ?? buildDefaultPreferencesFromProfile();
+            const current = Array.isArray(base.selected_cities) ? base.selected_cities : [];
+            if (current.length > 0) return base;
+            return { ...base, selected_cities: [primary] };
+          });
+        }
+      }
+    } catch (error: any) {
+      console.error("Error fetching city suggestions:", error);
+      setCitySuggestionsError(error?.message || "Failed to load city suggestions");
+    } finally {
+      setIsLoadingCitySuggestions(false);
+    }
   };
 
   const sendMessage = useCallback(
@@ -515,7 +591,11 @@ const ChatWindow = ({
         const result = await response.json();
 
         if (response.ok && result.success && result.preferences) {
-          setTripPreferences(result.preferences);
+          const loaded = result.preferences;
+          setTripPreferences({
+            ...loaded,
+            selected_cities: Array.isArray(loaded?.selected_cities) ? loaded.selected_cities : [],
+          });
         } else {
           // Seed with defaults from user profile if no preferences yet
           setTripPreferences(buildDefaultPreferencesFromProfile());
@@ -2413,6 +2493,66 @@ const ChatWindow = ({
                   className="min-h-[60px] bg-white border-blue-200 text-xs resize-none"
                   placeholder="ex. Rooftop bars with a view, no super early mornings, vegetarian-friendly spots, kid-friendly afternoons..."
                 />
+              </div>
+
+              <div className="pt-2 border-t border-blue-100">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <Label className="text-slate-800 text-xs">Pick cities (optional)</Label>
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      If your destination is a country/region, choose one or more cities to focus the plan on.
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-blue-200 bg-white text-slate-900 hover:bg-blue-50"
+                    onClick={fetchCitySuggestions}
+                    disabled={isLoadingCitySuggestions || !tripDestination}
+                    type="button"
+                  >
+                    {isLoadingCitySuggestions ? "Loading..." : "Pick cities"}
+                  </Button>
+                </div>
+
+                {citySuggestionsError && (
+                  <p className="mt-2 text-[11px] text-rose-500">{citySuggestionsError}</p>
+                )}
+
+                {citySuggestionsMeta?.destination_type && tripDestination && (
+                  <p className="mt-2 text-[11px] text-slate-500">
+                    Destination: <span className="text-slate-700">{tripDestination}</span>{" "}
+                    {citySuggestionsMeta.destination_type !== "unknown" && (
+                      <span className="text-slate-400">({citySuggestionsMeta.destination_type})</span>
+                    )}
+                  </p>
+                )}
+
+                {citySuggestions.length > 0 && (
+                  <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {citySuggestions.map((city) => (
+                      <label
+                        key={city}
+                        className="flex items-center gap-2 rounded-md border border-blue-200 bg-white px-2 py-1 text-xs cursor-pointer hover:border-blue-300"
+                      >
+                        <Checkbox
+                          checked={!!tripPreferences?.selected_cities?.some(
+                            (c) => c.toLowerCase() === city.toLowerCase()
+                          )}
+                          onCheckedChange={() => toggleSelectedCity(city)}
+                          className="h-3.5 w-3.5 border-blue-200 data-[state=checked]:bg-blue-500 data-[state=checked]:border-blue-500"
+                        />
+                        <span className="text-slate-800">{city}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                {tripPreferences?.selected_cities?.length ? (
+                  <p className="mt-2 text-[11px] text-slate-600">
+                    Selected: <span className="text-slate-800">{tripPreferences.selected_cities.join(", ")}</span>
+                  </p>
+                ) : null}
               </div>
             </CardContent>
           </Card>

@@ -215,6 +215,12 @@ async function generateRefinedSearchQuery(trip, preferences, userProfile, activi
   // Improved query generation with category diversification
   try {
     const destination = trip?.destination || '';
+    const selectedCities = Array.isArray(preferences?.selected_cities)
+      ? preferences.selected_cities.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())
+      : [];
+    const uniqueCities = Array.from(new Set(selectedCities)).slice(0, 3);
+    const destinationScopes =
+      uniqueCities.length > 0 ? uniqueCities : destination ? [destination] : [];
 
     // Derive season/month context from preferences.start_date if available
     let seasonalQualifier = '';
@@ -249,31 +255,30 @@ async function generateRefinedSearchQuery(trip, preferences, userProfile, activi
 
     // If we have specific categories, create separate queries for each to ensure diversity
     if (includeCategories.length > 0) {
-      // Create one query per category to ensure we get diverse results
-      for (const category of includeCategories.slice(0, 5)) { // Limit to 5 categories max
-        if (destination) {
+      // Create queries across (up to) a few cities + categories so multi-city trips get coverage.
+      const categories = includeCategories.slice(0, 3); // Limit to 3 categories max
+      const scopes = destinationScopes.length > 0 ? destinationScopes : ['travel activities'];
+
+      for (const scope of scopes) {
+        for (const category of categories) {
           if (seasonalQualifier) {
-            // e.g. "winter things to do in New York, museums"
-            queries.push(`${seasonalQualifier} ${category} ${destination}`);
+            queries.push(`${seasonalQualifier} ${category} ${scope}`);
           } else {
-            queries.push(`${category} ${destination}`);
+            queries.push(`${category} ${scope}`);
           }
-        } else {
-          queries.push(category);
         }
       }
     }
 
     // If no specific categories, create a general query
     if (queries.length === 0) {
-      if (destination) {
+      const scopes = destinationScopes.length > 0 ? destinationScopes : ['travel activities'];
+      for (const scope of scopes) {
         if (seasonalQualifier) {
-          queries.push(`${seasonalQualifier} things to do ${destination}`);
+          queries.push(`${seasonalQualifier} things to do ${scope}`);
         } else {
-          queries.push(`things to do ${destination}`);
+          queries.push(`things to do ${scope}`);
         }
-      } else {
-        queries.push('travel activities');
       }
     }
 
@@ -291,6 +296,106 @@ async function generateRefinedSearchQuery(trip, preferences, userProfile, activi
     }
     return { query: 'travel activities', avoidCategories: [], allQueries: [] };
   }
+}
+
+async function suggestCitiesForDestination(destination) {
+  const cleaned = String(destination || '').trim();
+  if (!cleaned) {
+    return {
+      destination_type: 'unknown',
+      normalized_destination: null,
+      country: null,
+      primary_city: null,
+      cities: [],
+    };
+  }
+
+  const prompt = `You are a travel geo assistant. Given a user's destination input, determine if it is a COUNTRY, a CITY, or a broader REGION/UNKNOWN.
+
+Destination input: "${cleaned}"
+
+Return ONLY valid JSON with this exact shape:
+{
+  "destination_type": "country" | "city" | "region" | "unknown",
+  "normalized_destination": string | null,
+  "country": string | null,
+  "primary_city": string | null,
+  "cities": string[]
+}
+
+Rules:
+- If the input is a COUNTRY (ex. "Greece"), set destination_type="country" and return 12-20 major travel cities/areas in that country (tourist hubs + regional variety). Keep names short.
+- If the input is a CITY (ex. "Austin" or "Barcelona"), set destination_type="city", set primary_city to that city, and return an array where the first item is the primary city and the remaining items are up to 5 nearby/day-trip cities/areas in the same region/state/province (or closest notable places). Total max 6.
+- If the input is a REGION (ex. "Tuscany", "Bavaria") set destination_type="region" and return 8-15 cities/towns commonly visited within that region.
+- Never return more than 20 cities total.
+- Deduplicate city names and avoid empty strings.
+- Do NOT include any markdown or explanation.`;
+
+  const completion = await openaiClient.chat.completions.create({
+    model: DEFAULT_MODEL,
+    messages: [
+      { role: 'system', content: 'Return only valid JSON. No extra text.' },
+      { role: 'user', content: prompt },
+    ],
+    temperature: 0.2,
+    max_tokens: 450,
+    response_format: { type: 'json_object' },
+  });
+
+  const raw = completion.choices[0]?.message?.content || '{}';
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = {};
+  }
+
+  const cities = Array.isArray(parsed?.cities) ? parsed.cities : [];
+  const normalizedCities = Array.from(
+    new Set(
+      cities
+        .map((c) => (typeof c === 'string' ? c.trim() : ''))
+        .filter(Boolean),
+    ),
+  ).slice(0, 20);
+
+  const destinationType = ['country', 'city', 'region', 'unknown'].includes(parsed?.destination_type)
+    ? parsed.destination_type
+    : 'unknown';
+
+  const normalizedDestination =
+    typeof parsed?.normalized_destination === 'string' && parsed.normalized_destination.trim()
+      ? parsed.normalized_destination.trim()
+      : cleaned;
+
+  const country =
+    typeof parsed?.country === 'string' && parsed.country.trim() ? parsed.country.trim() : null;
+
+  let primaryCity =
+    typeof parsed?.primary_city === 'string' && parsed.primary_city.trim()
+      ? parsed.primary_city.trim()
+      : null;
+
+  // For city destinations, ensure the primary city is first and present.
+  if (destinationType === 'city') {
+    if (!primaryCity) primaryCity = normalizedCities[0] || cleaned;
+    const withoutPrimary = normalizedCities.filter((c) => c.toLowerCase() !== primaryCity.toLowerCase());
+    return {
+      destination_type: destinationType,
+      normalized_destination: normalizedDestination,
+      country,
+      primary_city: primaryCity,
+      cities: [primaryCity, ...withoutPrimary].slice(0, 6),
+    };
+  }
+
+  return {
+    destination_type: destinationType,
+    normalized_destination: normalizedDestination,
+    country,
+    primary_city: primaryCity,
+    cities: normalizedCities,
+  };
 }
 
 async function fetchActivitySearchResults(query, num = 10) {
@@ -1608,6 +1713,7 @@ router.put('/:tripId/preferences', authenticateToken, async (req, res) => {
       accommodation_type,
       activity_categories,
       avoid_activity_categories,
+      selected_cities,
       group_type,
       safety_notes,
       accessibility_notes,
@@ -1686,6 +1792,7 @@ router.put('/:tripId/preferences', authenticateToken, async (req, res) => {
     if (activity_categories !== undefined) preferenceData.activity_categories = activity_categories;
     if (avoid_activity_categories !== undefined)
       preferenceData.avoid_activity_categories = avoid_activity_categories;
+    if (selected_cities !== undefined) preferenceData.selected_cities = selected_cities;
     if (group_type !== undefined) preferenceData.group_type = group_type;
     if (safety_notes !== undefined) preferenceData.safety_notes = safety_notes;
     if (accessibility_notes !== undefined) preferenceData.accessibility_notes = accessibility_notes;
@@ -1720,6 +1827,43 @@ router.put('/:tripId/preferences', authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to save trip preferences',
+      error: error.message,
+    });
+  }
+});
+
+// Suggest cities for a trip destination (country -> many cities; city -> primary + nearby)
+router.get('/:tripId/city-suggestions', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+
+    // Ensure the trip belongs to the user
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id, destination')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (tripError || !trip) {
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
+
+    if (!trip.destination) {
+      return res.status(400).json({
+        success: false,
+        message: 'Trip destination is required before suggesting cities.',
+      });
+    }
+
+    const result = await suggestCitiesForDestination(trip.destination);
+    return res.status(200).json({ success: true, ...result });
+  } catch (error) {
+    console.error('Error suggesting cities:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to suggest cities',
       error: error.message,
     });
   }
@@ -1927,6 +2071,9 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       const activityCategories = Array.isArray(tripPreferences?.activity_categories)
         ? tripPreferences.activity_categories
         : [];
+      const selectedCities = Array.isArray(tripPreferences?.selected_cities)
+        ? tripPreferences.selected_cities.filter(Boolean).map((c) => String(c).trim()).filter(Boolean)
+        : [];
 
       const interestPhrases = [...likedTags, ...activityCategories]
         .filter(Boolean)
@@ -1935,8 +2082,9 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
         .join(' ');
 
       const rawDestination = String(trip.destination).trim();
+      const primaryScope = selectedCities.length > 0 ? selectedCities[0] : rawDestination;
       const destinationQuery =
-        rawDestination && rawDestination.includes(' ') ? `"${rawDestination}"` : rawDestination;
+        primaryScope && primaryScope.includes(' ') ? `"${primaryScope}"` : primaryScope;
 
       // Build a more contextual fallback query
       let queryParts = [`things to do in ${destinationQuery}`];
