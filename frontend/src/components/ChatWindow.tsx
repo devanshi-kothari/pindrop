@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { Send, Maximize2 } from "lucide-react";
+import { Send, Maximize2, ChevronUp, ChevronDown, X, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -18,7 +18,6 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Switch } from "@/components/ui/switch";
-import { ChevronDown } from "lucide-react";
 import { getApiUrl } from "@/lib/api";
 import ActivitySwipeCard from "./ActivitySwipeCard";
 import RestaurantSwipeCard from "./RestaurantSwipeCard";
@@ -118,15 +117,6 @@ const ChatWindow = ({
   const [hasConfirmedActivities, setHasConfirmedActivities] = useState(false);
   const [hasConfirmedTripSketch, setHasConfirmedTripSketch] = useState(false);
   const [tripDestination, setTripDestination] = useState<string | null>(null);
-  const [citySuggestions, setCitySuggestions] = useState<string[]>([]);
-  const [citySuggestionsMeta, setCitySuggestionsMeta] = useState<{
-    destination_type: "country" | "city" | "region" | "unknown";
-    normalized_destination: string | null;
-    country: string | null;
-    primary_city: string | null;
-  } | null>(null);
-  const [isLoadingCitySuggestions, setIsLoadingCitySuggestions] = useState(false);
-  const [citySuggestionsError, setCitySuggestionsError] = useState<string | null>(null);
   const [departureLocation, setDepartureLocation] = useState("");
   const [departureId, setDepartureId] = useState<string | null>(null);
   const [departureAirportCodes, setDepartureAirportCodes] = useState<string[]>([]); // All departure airport codes
@@ -206,6 +196,9 @@ const ChatWindow = ({
     "activities"
   );
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [orderedCities, setOrderedCities] = useState<string[]>([]); // Ordered list of cities to visit (allows duplicates)
+  const [hasConfirmedCityOrder, setHasConfirmedCityOrder] = useState(false); // Whether user has confirmed the city order
+  const [newCityInput, setNewCityInput] = useState(""); // Input for adding new cities
 
   useEffect(() => {
     setHasLockedDestination(planningMode === "known" || hasDestinationLocked);
@@ -340,71 +333,6 @@ const ChatWindow = ({
       accessibility_notes: "",
       custom_requests: "",
     };
-  };
-
-  const toggleSelectedCity = (city: string) => {
-    const cleaned = city.trim();
-    if (!cleaned) return;
-    setTripPreferences((prev) => {
-      const base = prev ?? buildDefaultPreferencesFromProfile();
-      const current = Array.isArray(base.selected_cities) ? base.selected_cities : [];
-      const exists = current.some((c) => c.toLowerCase() === cleaned.toLowerCase());
-      const next = exists
-        ? current.filter((c) => c.toLowerCase() !== cleaned.toLowerCase())
-        : [...current, cleaned];
-      return { ...base, selected_cities: next };
-    });
-  };
-
-  const fetchCitySuggestions = async () => {
-    if (!tripId || !tripDestination) return;
-    const token = getAuthToken();
-    if (!token) return;
-
-    try {
-      setIsLoadingCitySuggestions(true);
-      setCitySuggestionsError(null);
-
-      const response = await fetch(getApiUrl(`api/trips/${tripId}/city-suggestions`), {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-      });
-
-      const result = await response.json();
-      if (!response.ok || !result?.success) {
-        throw new Error(result?.message || "Failed to load city suggestions");
-      }
-
-      const cities: string[] = Array.isArray(result.cities) ? result.cities : [];
-      setCitySuggestions(cities);
-      setCitySuggestionsMeta({
-        destination_type: result.destination_type || "unknown",
-        normalized_destination: result.normalized_destination ?? null,
-        country: result.country ?? null,
-        primary_city: result.primary_city ?? null,
-      });
-
-      // If destination was a city and the user hasn't picked anything yet, preselect the primary city.
-      if (result.destination_type === "city") {
-        const primary = (result.primary_city || cities[0] || "").trim();
-        if (primary) {
-          setTripPreferences((prev) => {
-            const base = prev ?? buildDefaultPreferencesFromProfile();
-            const current = Array.isArray(base.selected_cities) ? base.selected_cities : [];
-            if (current.length > 0) return base;
-            return { ...base, selected_cities: [primary] };
-          });
-        }
-      }
-    } catch (error: any) {
-      console.error("Error fetching city suggestions:", error);
-      setCitySuggestionsError(error?.message || "Failed to load city suggestions");
-    } finally {
-      setIsLoadingCitySuggestions(false);
-    }
   };
 
   const sendMessage = useCallback(
@@ -592,11 +520,7 @@ const ChatWindow = ({
         const result = await response.json();
 
         if (response.ok && result.success && result.preferences) {
-          const loaded = result.preferences;
-          setTripPreferences({
-            ...loaded,
-            selected_cities: Array.isArray(loaded?.selected_cities) ? loaded.selected_cities : [],
-          });
+          setTripPreferences(result.preferences);
         } else {
           // Seed with defaults from user profile if no preferences yet
           setTripPreferences(buildDefaultPreferencesFromProfile());
@@ -648,6 +572,33 @@ const ChatWindow = ({
     loadActivities(tripId);
   }, [tripId, loadActivities]);
 
+  // Initialize ordered cities when preferences are loaded or when switching to flights tab
+  useEffect(() => {
+    if (activeTab === "flights" && hasLoadedPreferences && orderedCities.length === 0 && !hasConfirmedCityOrder) {
+      // Extract cities from tripPreferences.selected_cities or from activities
+      const citiesFromPreferences = tripPreferences?.selected_cities || [];
+      const citiesFromActivities = Array.from(
+        new Set(
+          activities
+            .map((a) => a.city || a.location)
+            .filter((c): c is string => !!c && typeof c === "string")
+        )
+      );
+      
+      // Use selected_cities if available, otherwise use cities from activities, otherwise use trip destination
+      const initialCities = citiesFromPreferences.length > 0
+        ? citiesFromPreferences
+        : citiesFromActivities.length > 0
+        ? citiesFromActivities
+        : tripDestination
+        ? [tripDestination]
+        : [];
+      
+      if (initialCities.length > 0) {
+        setOrderedCities(initialCities);
+      }
+    }
+  }, [activeTab, hasLoadedPreferences, tripPreferences, activities, tripDestination, orderedCities.length, hasConfirmedCityOrder]);
 
   const loadRestaurants = useCallback(
     async (id: number) => {
@@ -902,7 +853,6 @@ const ChatWindow = ({
         },
         body: JSON.stringify({
           testMode: useTestActivities,
-          selected_cities: tripPreferences?.selected_cities ?? [],
         }),
       });
 
@@ -1020,6 +970,221 @@ const ChatWindow = ({
     } finally {
       setIsUpdatingActivityPreference((prev) => ({ ...prev, [activityId]: false }));
     }
+  };
+
+  // Helper function to parse time string and extract hour (24-hour format)
+  const parseTimeToHour = (timeStr: string | null | undefined): number | null => {
+    if (!timeStr) return null;
+    
+    // Try to parse formats like "7:00 PM", "19:00", "7PM", etc.
+    const time = timeStr.trim().toUpperCase();
+    
+    // Handle 12-hour format with AM/PM
+    const amPmMatch = time.match(/(\d{1,2}):?(\d{2})?\s*(AM|PM)/);
+    if (amPmMatch) {
+      let hour = parseInt(amPmMatch[1], 10);
+      const amPm = amPmMatch[3];
+      if (amPm === "PM" && hour !== 12) hour += 12;
+      if (amPm === "AM" && hour === 12) hour = 0;
+      return hour;
+    }
+    
+    // Handle 24-hour format
+    const hourMatch = time.match(/(\d{1,2}):?(\d{2})?/);
+    if (hourMatch) {
+      return parseInt(hourMatch[1], 10);
+    }
+    
+    return null;
+  };
+
+  // Calculate days allocation per city based on activity counts and flight timings
+  const calculateCityDaysAllocation = (): Array<{ city: string; days: number; startDate: string | null; endDate: string | null }> => {
+    if (orderedCities.length === 0) return [];
+
+    // Get flight timing information
+    let arrivalTime: string | null = null;
+    let departureTime: string | null = null;
+    
+    if (selectedOutboundIndex !== null && bestFlights[selectedOutboundIndex]) {
+      const outboundFlight = bestFlights[selectedOutboundIndex];
+      const outboundFlights = outboundFlight.flights || [];
+      const lastOutbound = outboundFlights[outboundFlights.length - 1];
+      arrivalTime = lastOutbound?.arrival_airport?.time || null;
+    }
+    
+    if (selectedReturnIndex !== null && returnFlights[selectedReturnIndex]) {
+      const returnFlight = returnFlights[selectedReturnIndex];
+      const returnFlightLegs = returnFlight.flights || [];
+      const firstReturn = returnFlightLegs[0];
+      departureTime = firstReturn?.departure_airport?.time || null;
+    }
+    
+    // Check if we need to skip activities on first/last day
+    const arrivalHour = parseTimeToHour(arrivalTime);
+    const departureHour = parseTimeToHour(departureTime);
+    const skipActivitiesOnArrivalDay = arrivalHour !== null && arrivalHour >= 19; // 7pm or later
+    const skipActivitiesOnDepartureDay = departureHour !== null && departureHour <= 12; // 12pm or earlier
+
+    // First, group all activities by city name (case-insensitive)
+    const activitiesByCity = new Map<string, Array<typeof activities[0]>>();
+    
+    activities.forEach((activity) => {
+      const activityCity = (activity.city || activity.location || "").trim();
+      if (!activityCity) return;
+      
+      const normalizedCity = activityCity.toLowerCase();
+      if (!activitiesByCity.has(normalizedCity)) {
+        activitiesByCity.set(normalizedCity, []);
+      }
+      activitiesByCity.get(normalizedCity)!.push(activity);
+    });
+
+    // Count activities per city occurrence (splitting across duplicates)
+    const cityActivityCounts = new Map<number, number>(); // Map by index in orderedCities
+    
+    // For each city in the ordered list, find which activities belong to it
+    // If a city appears multiple times, split activities evenly across occurrences
+    orderedCities.forEach((city, index) => {
+      const normalizedCity = city.trim().toLowerCase();
+      const cityActivities = activitiesByCity.get(normalizedCity) || [];
+      
+      // Count how many times this city appears in orderedCities
+      const cityOccurrences = orderedCities.filter(
+        (c) => c.trim().toLowerCase() === normalizedCity
+      );
+      const occurrenceIndex = orderedCities
+        .slice(0, index + 1)
+        .filter((c) => c.trim().toLowerCase() === normalizedCity).length - 1;
+      
+      // Split activities evenly across all occurrences of this city
+      const totalOccurrences = cityOccurrences.length;
+      const activitiesPerOccurrence = Math.ceil(cityActivities.length / totalOccurrences);
+      const startIndex = occurrenceIndex * activitiesPerOccurrence;
+      const endIndex = Math.min(startIndex + activitiesPerOccurrence, cityActivities.length);
+      
+      // Count activities assigned to this specific occurrence
+      const assignedActivities = cityActivities.slice(startIndex, endIndex);
+      cityActivityCounts.set(index, assignedActivities.length);
+    });
+
+    // Get total number of days from trip preferences
+    let totalDays = tripPreferences?.num_days || null;
+    
+    // If num_days is not set, calculate from start_date and end_date
+    if (!totalDays && tripPreferences?.start_date && tripPreferences?.end_date) {
+      const start = new Date(tripPreferences.start_date);
+      const end = new Date(tripPreferences.end_date);
+      const diffTime = Math.abs(end.getTime() - start.getTime());
+      totalDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // +1 to include both start and end days
+    }
+
+    // If we still don't have total days, use a default (e.g., 7 days)
+    if (!totalDays) {
+      totalDays = 7;
+    }
+
+    // Calculate total activity count
+    const totalActivities = Array.from(cityActivityCounts.values()).reduce((sum, count) => sum + count, 0);
+
+    // Allocate days proportionally based on activity counts
+    // If a city has no activities, give it at least 1 day
+    const allocations: Array<{ city: string; days: number; startDate: string | null; endDate: string | null }> = [];
+    const minDaysPerCity = 1;
+    const minDaysTotal = orderedCities.length * minDaysPerCity;
+    
+    // Calculate days per city
+    let cityDays: number[] = [];
+    
+    if (minDaysTotal > totalDays) {
+      // Not enough days - distribute evenly
+      const daysPerCity = Math.floor(totalDays / orderedCities.length);
+      const extraDays = totalDays % orderedCities.length;
+      
+      cityDays = orderedCities.map((_, index) => 
+        daysPerCity + (index < extraDays ? 1 : 0)
+      );
+    } else {
+      // We have enough days - allocate proportionally
+      const remainingDaysAfterMin = totalDays - minDaysTotal;
+      
+      // Start with minimum days for each city
+      cityDays = orderedCities.map(() => minDaysPerCity);
+      
+      // Allocate remaining days proportionally based on activity counts
+      if (remainingDaysAfterMin > 0 && totalActivities > 0) {
+        // Calculate proportional allocation using index-based counts
+        const proportionalAllocations = orderedCities.map((city, index) => {
+          const activityCount = cityActivityCounts.get(index) || 0;
+          const proportion = activityCount / totalActivities;
+          return Math.round(proportion * remainingDaysAfterMin);
+        });
+
+        // Adjust to ensure we don't exceed remaining days
+        const totalProportional = proportionalAllocations.reduce((sum, days) => sum + days, 0);
+        const adjustment = remainingDaysAfterMin - totalProportional;
+        
+        // Distribute adjustment (add/subtract days to closest values)
+        if (adjustment !== 0) {
+          const sorted = proportionalAllocations
+            .map((days, index) => ({ days, index }))
+            .sort((a, b) => (adjustment > 0 ? b.days - a.days : a.days - b.days));
+          
+          for (let i = 0; i < Math.abs(adjustment) && i < sorted.length; i++) {
+            proportionalAllocations[sorted[i].index] += adjustment > 0 ? 1 : -1;
+          }
+        }
+
+        // Apply proportional allocations
+        cityDays = cityDays.map((days, index) => days + proportionalAllocations[index]);
+      } else if (remainingDaysAfterMin > 0) {
+        // No activities - distribute remaining days evenly
+        const daysPerCity = Math.floor(remainingDaysAfterMin / orderedCities.length);
+        const extraDays = remainingDaysAfterMin % orderedCities.length;
+        
+        cityDays = cityDays.map((days, index) => 
+          days + daysPerCity + (index < extraDays ? 1 : 0)
+        );
+      }
+    }
+
+    // Calculate dates for each city, accounting for flight timings
+    let currentDate = tripPreferences?.start_date ? new Date(tripPreferences.start_date) : null;
+    
+    orderedCities.forEach((city, index) => {
+      let days = cityDays[index];
+      let effectiveDays = days; // Days with activities
+      
+      // Adjust for flight timings
+      const isFirstCity = index === 0;
+      const isLastCity = index === orderedCities.length - 1;
+      
+      // If arrival is 7pm or later, first day of first city has no activities
+      if (isFirstCity && skipActivitiesOnArrivalDay) {
+        effectiveDays = Math.max(1, days - 1); // At least 1 day, but reduce effective days
+      }
+      
+      // If departure is 12pm or earlier, last day of last city has no activities
+      if (isLastCity && skipActivitiesOnDepartureDay) {
+        effectiveDays = Math.max(1, days - 1); // At least 1 day, but reduce effective days
+      }
+      
+      const startDate = currentDate ? new Date(currentDate) : null;
+      const endDate = startDate ? new Date(startDate.getTime() + (days - 1) * 24 * 60 * 60 * 1000) : null;
+      
+      allocations.push({
+        city,
+        days: effectiveDays, // Store effective days (with activities)
+        startDate: startDate?.toISOString().split('T')[0] || null,
+        endDate: endDate?.toISOString().split('T')[0] || null
+      });
+      
+      if (currentDate) {
+        currentDate = new Date(currentDate.getTime() + days * 24 * 60 * 60 * 1000);
+      }
+    });
+
+    return allocations;
   };
 
   // Extract arrival location from day 1 of the itinerary, or from trip destination/activities
@@ -2496,66 +2661,6 @@ const ChatWindow = ({
                   placeholder="ex. Rooftop bars with a view, no super early mornings, vegetarian-friendly spots, kid-friendly afternoons..."
                 />
               </div>
-
-              <div className="pt-2 border-t border-blue-100">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <Label className="text-slate-800 text-xs">Pick cities (optional)</Label>
-                    <p className="text-[11px] text-slate-500 mt-1">
-                      If your destination is a country/region, choose one or more cities to focus the plan on.
-                    </p>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="border-blue-200 bg-white text-slate-900 hover:bg-blue-50"
-                    onClick={fetchCitySuggestions}
-                    disabled={isLoadingCitySuggestions || !tripDestination}
-                    type="button"
-                  >
-                    {isLoadingCitySuggestions ? "Loading..." : "Pick cities"}
-                  </Button>
-                </div>
-
-                {citySuggestionsError && (
-                  <p className="mt-2 text-[11px] text-rose-500">{citySuggestionsError}</p>
-                )}
-
-                {citySuggestionsMeta?.destination_type && tripDestination && (
-                  <p className="mt-2 text-[11px] text-slate-500">
-                    Destination: <span className="text-slate-700">{tripDestination}</span>{" "}
-                    {citySuggestionsMeta.destination_type !== "unknown" && (
-                      <span className="text-slate-400">({citySuggestionsMeta.destination_type})</span>
-                    )}
-                  </p>
-                )}
-
-                {citySuggestions.length > 0 && (
-                  <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {citySuggestions.map((city) => (
-                      <label
-                        key={city}
-                        className="flex items-center gap-2 rounded-md border border-blue-200 bg-white px-2 py-1 text-xs cursor-pointer hover:border-blue-300"
-                      >
-                        <Checkbox
-                          checked={!!tripPreferences?.selected_cities?.some(
-                            (c) => c.toLowerCase() === city.toLowerCase()
-                          )}
-                          onCheckedChange={() => toggleSelectedCity(city)}
-                          className="h-3.5 w-3.5 border-blue-200 data-[state=checked]:bg-blue-500 data-[state=checked]:border-blue-500"
-                        />
-                        <span className="text-slate-800">{city}</span>
-                      </label>
-                    ))}
-                  </div>
-                )}
-
-                {tripPreferences?.selected_cities?.length ? (
-                  <p className="mt-2 text-[11px] text-slate-600">
-                    Selected: <span className="text-slate-800">{tripPreferences.selected_cities.join(", ")}</span>
-                  </p>
-                ) : null}
-              </div>
             </CardContent>
           </Card>
         </div>
@@ -3342,6 +3447,158 @@ const ChatWindow = ({
                   Phase 3: Plan your flights
                 </p>
 
+                {/* City Ordering UI - shown before flight booking */}
+                {!hasConfirmedCityOrder && (
+                  <div className="space-y-3 border-b border-blue-200 pb-4">
+                    <div className="space-y-2">
+                      <Label className="text-slate-800 text-xs font-semibold">
+                        Order your cities
+                      </Label>
+                      <p className="text-[10px] text-slate-600">
+                        Arrange the cities you want to visit in order. You can visit the same city multiple times.
+                      </p>
+                      
+                      {/* List of ordered cities */}
+                      {orderedCities.length > 0 && (
+                        <div className="space-y-2 mt-3">
+                          {orderedCities.map((city, index) => (
+                            <div
+                              key={`${city}-${index}`}
+                              className="flex items-center gap-2 p-2 border border-blue-200 rounded bg-white"
+                            >
+                              <span className="text-[10px] text-slate-500 font-semibold w-6 text-center">
+                                {index + 1}
+                              </span>
+                              <span className="flex-1 text-xs text-slate-900 font-medium">
+                                {city}
+                              </span>
+                              <div className="flex items-center gap-1">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-6 w-6 p-0 hover:bg-blue-100"
+                                  disabled={index === 0}
+                                  onClick={() => {
+                                    if (index > 0) {
+                                      const newCities = [...orderedCities];
+                                      [newCities[index - 1], newCities[index]] = [newCities[index], newCities[index - 1]];
+                                      setOrderedCities(newCities);
+                                    }
+                                  }}
+                                >
+                                  <ChevronUp className="h-3 w-3 text-slate-600" />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-6 w-6 p-0 hover:bg-blue-100"
+                                  disabled={index === orderedCities.length - 1}
+                                  onClick={() => {
+                                    if (index < orderedCities.length - 1) {
+                                      const newCities = [...orderedCities];
+                                      [newCities[index], newCities[index + 1]] = [newCities[index + 1], newCities[index]];
+                                      setOrderedCities(newCities);
+                                    }
+                                  }}
+                                >
+                                  <ChevronDown className="h-3 w-3 text-slate-600" />
+                                </Button>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-6 w-6 p-0 hover:bg-red-100"
+                                  onClick={() => {
+                                    setOrderedCities(orderedCities.filter((_, i) => i !== index));
+                                  }}
+                                >
+                                  <X className="h-3 w-3 text-slate-600" />
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Add city input */}
+                      <div className="flex gap-2 mt-3">
+                        <Input
+                          type="text"
+                          value={newCityInput}
+                          onChange={(e) => setNewCityInput(e.target.value)}
+                          placeholder="Add a city (e.g., Paris, Tokyo)"
+                          className="h-8 bg-white border-blue-200 text-xs text-slate-900"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && newCityInput.trim()) {
+                              setOrderedCities([...orderedCities, newCityInput.trim()]);
+                              setNewCityInput("");
+                            }
+                          }}
+                        />
+                        <Button
+                          size="sm"
+                          className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white"
+                          disabled={!newCityInput.trim()}
+                          onClick={() => {
+                            if (newCityInput.trim()) {
+                              setOrderedCities([...orderedCities, newCityInput.trim()]);
+                              setNewCityInput("");
+                            }
+                          }}
+                        >
+                          <Plus className="h-3 w-3 mr-1" />
+                          Add
+                        </Button>
+                      </div>
+
+                      {/* Confirm button */}
+                      {orderedCities.length > 0 && (
+                        <Button
+                          size="sm"
+                          className="w-full h-8 bg-emerald-500 hover:bg-emerald-600 text-xs text-white mt-3"
+                          onClick={() => {
+                            setHasConfirmedCityOrder(true);
+                          }}
+                        >
+                          Confirm City Order ({orderedCities.length} {orderedCities.length === 1 ? "city" : "cities"})
+                        </Button>
+                      )}
+
+                      {orderedCities.length === 0 && (
+                        <p className="text-[10px] text-slate-500 italic mt-2">
+                          Add at least one city to continue.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Flight booking UI - only shown after city order is confirmed */}
+                {hasConfirmedCityOrder && (
+                  <>
+                {/* City Order Summary */}
+                {orderedCities.length > 0 && (
+                  <div className="space-y-2 pb-3 border-b border-blue-200">
+                    <Label className="text-slate-800 text-xs font-semibold">Your city order</Label>
+                    <div className="flex flex-wrap gap-2">
+                      {orderedCities.map((city, index) => (
+                        <div
+                          key={`${city}-${index}`}
+                          className="flex items-center gap-1 px-2 py-1 bg-blue-50 border border-blue-200 rounded text-xs"
+                        >
+                          <span className="text-slate-500 font-semibold">{index + 1}.</span>
+                          <span className="text-slate-900">{city}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-slate-500 italic">
+                      Flights will be searched to the first city: <span className="font-semibold text-slate-700">{orderedCities[0]}</span>
+                    </p>
+                  </div>
+                )}
+
                 {/* Departure Location */}
                 <div className="space-y-2">
                   <Label className="text-slate-800 text-xs">Departure location (your home town)</Label>
@@ -3440,7 +3697,8 @@ const ChatWindow = ({
                 <div className="space-y-2">
                   <Label className="text-slate-800 text-xs">Arrival location</Label>
                   {(() => {
-                    const arrivalLocation = getArrivalLocation();
+                    // Use first city from ordered cities if available, otherwise fall back to getArrivalLocation
+                    const arrivalLocation = orderedCities.length > 0 ? orderedCities[0] : getArrivalLocation();
                     return (
                       <>
                         {arrivalLocation ? (
@@ -4160,6 +4418,8 @@ const ChatWindow = ({
                         );
                       })}
                     </div>
+                  </div>
+                )}
 
                     {/* Complete Round Trip Summary */}
                     {selectedOutboundIndex !== null && selectedReturnIndex !== null && (
@@ -4208,6 +4468,98 @@ const ChatWindow = ({
                       </div>
                     )}
 
+                    {/* Days and Dates Allocation - shown after both flights are selected */}
+                    {selectedOutboundIndex !== null && selectedReturnIndex !== null && (() => {
+                      const cityAllocations = calculateCityDaysAllocation();
+                      return cityAllocations.length > 0 ? (
+                        <div className="space-y-3 pt-4 border-t border-blue-200">
+                          <div className="space-y-2">
+                            <Label className="text-slate-800 text-xs font-semibold">
+                              Days allocation per city
+                            </Label>
+                            <p className="text-[10px] text-slate-600">
+                              Days are allocated based on the number of activities in each city, adjusted for flight timings.
+                            </p>
+                            
+                            <div className="space-y-2 mt-3">
+                              {cityAllocations.map((allocation, index) => {
+                                // Count activities for this specific city occurrence (handling duplicates)
+                                const normalizedCity = allocation.city.trim().toLowerCase();
+                                
+                                // Find all activities for this city
+                                const allCityActivities = activities.filter((activity) => {
+                                  const activityCity = (activity.city || activity.location || "").trim();
+                                  return activityCity.toLowerCase() === normalizedCity;
+                                });
+                                
+                                // Count how many times this city appears in orderedCities
+                                const cityOccurrences = orderedCities.filter(
+                                  (c) => c.trim().toLowerCase() === normalizedCity
+                                );
+                                const occurrenceIndex = orderedCities
+                                  .slice(0, index + 1)
+                                  .filter((c) => c.trim().toLowerCase() === normalizedCity).length - 1;
+                                
+                                // Split activities evenly across all occurrences
+                                const totalOccurrences = cityOccurrences.length;
+                                const activitiesPerOccurrence = Math.ceil(allCityActivities.length / totalOccurrences);
+                                const startIndex = occurrenceIndex * activitiesPerOccurrence;
+                                const endIndex = Math.min(startIndex + activitiesPerOccurrence, allCityActivities.length);
+                                
+                                // Count activities assigned to this specific occurrence
+                                const activityCount = endIndex - startIndex;
+                                
+                                return (
+                                  <div
+                                    key={`${allocation.city}-${index}`}
+                                    className="flex items-center justify-between p-2 border border-blue-200 rounded bg-white"
+                                  >
+                                    <div className="flex items-center gap-3 flex-1">
+                                      <span className="text-[10px] text-slate-500 font-semibold w-6 text-center">
+                                        {index + 1}
+                                      </span>
+                                      <div className="flex-1">
+                                        <span className="text-xs text-slate-900 font-medium">
+                                          {allocation.city}
+                                        </span>
+                                        {activityCount > 0 && (
+                                          <span className="text-[10px] text-slate-500 ml-2">
+                                            ({activityCount} {activityCount === 1 ? 'activity' : 'activities'})
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                      <div className="text-right">
+                                        <div className="text-xs font-semibold text-slate-900">
+                                          {allocation.days} {allocation.days === 1 ? 'day' : 'days'}
+                                        </div>
+                                        {allocation.startDate && allocation.endDate && (
+                                          <div className="text-[10px] text-slate-500">
+                                            {allocation.startDate === allocation.endDate ? (
+                                              allocation.startDate
+                                            ) : (
+                                              `${allocation.startDate} - ${allocation.endDate}`
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            
+                            {tripPreferences?.start_date && tripPreferences?.end_date && (
+                              <p className="text-[10px] text-slate-500 italic mt-2">
+                                Total trip: {tripPreferences.start_date} to {tripPreferences.end_date}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      ) : null;
+                    })()}
+
                     {/* Done Button */}
                     {selectedOutboundIndex !== null && selectedReturnIndex !== null && (
                       <div className="pt-2 flex justify-end">
@@ -4224,7 +4576,7 @@ const ChatWindow = ({
                         </Button>
                       </div>
                     )}
-                  </div>
+                  </>
                 )}
               </div>
             </div>
