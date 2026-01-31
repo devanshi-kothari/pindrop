@@ -4,7 +4,7 @@ import { Button } from "./ui/button";
 import { Heart, X, MapPin, DollarSign, Utensils, ExternalLink, Calendar } from "lucide-react";
 
 interface Restaurant {
-  trip_restaurant_preference_feedback_id: number;
+  trip_restaurant_preference_id?: number;
   restaurant_id: number;
   name: string;
   location: string | null;

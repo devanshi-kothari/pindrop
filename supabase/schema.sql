@@ -120,9 +120,47 @@ CREATE TABLE IF NOT EXISTS trip_preference (
     accessibility_notes TEXT,
     -- Free-form extra requests or constraints
     custom_requests TEXT,
+    -- Restaurant/dining preferences (JSON: cuisine_types, dietary_restrictions, meals_per_day, meal_types, min_price_range, max_price_range, custom_requests)
+    restaurant_preferences JSONB,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
+
+-- Reusable restaurant catalog (similar to activity)
+CREATE TABLE IF NOT EXISTS restaurant (
+    restaurant_id BIGSERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    location VARCHAR(255),
+    address VARCHAR(500),
+    cuisine_type VARCHAR(100),
+    meal_types TEXT[] DEFAULT '{}',
+    dietary_options TEXT[] DEFAULT '{}',
+    price_range VARCHAR(20),
+    cost_estimate DECIMAL(10, 2),
+    rating DECIMAL(3, 1),
+    review_count INT,
+    tags TEXT[] DEFAULT '{}',
+    source VARCHAR(50),
+    source_url TEXT,
+    reservation_url TEXT,
+    image_url TEXT,
+    description TEXT,
+    phone VARCHAR(50),
+    hours TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+);
+
+-- Trip-level feedback on restaurants (swipe-style selection, like trip_activity_preference)
+CREATE TABLE IF NOT EXISTS trip_restaurant_preference (
+    trip_restaurant_preference_id BIGSERIAL PRIMARY KEY,
+    trip_id BIGINT NOT NULL REFERENCES trip(trip_id) ON DELETE CASCADE,
+    restaurant_id BIGINT NOT NULL REFERENCES restaurant(restaurant_id) ON DELETE CASCADE,
+    preference VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (preference IN ('pending', 'liked', 'disliked', 'maybe')),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+);
+
+CREATE INDEX IF NOT EXISTS idx_trip_restaurant_preference_trip_id ON trip_restaurant_preference(trip_id);
+CREATE INDEX IF NOT EXISTS idx_restaurant_location ON restaurant(location);
 
 -- Trip-level feedback on reusable activities (for swipe-style selection)
 CREATE TABLE IF NOT EXISTS trip_activity_preference (

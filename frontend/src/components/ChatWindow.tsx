@@ -151,6 +151,8 @@ const ChatWindow = ({
     cuisineTypes: [] as string[],
     dietaryRestrictions: [] as string[],
     otherDietaryRestriction: "",
+    minPriceRange: null as string | null,
+    maxPriceRange: null as string | null,
   });
   const [isSavingRestaurantPreferences, setIsSavingRestaurantPreferences] = useState(false);
   const [hasConfirmedRestaurants, setHasConfirmedRestaurants] = useState(false);
@@ -598,6 +600,37 @@ const ChatWindow = ({
     if (!tripId) return;
     loadRestaurants(tripId);
   }, [tripId, loadRestaurants]);
+
+  const loadRestaurantPreferences = useCallback(async (id: number) => {
+    try {
+      const token = getAuthToken();
+      if (!token) return;
+      const response = await fetch(getApiUrl(`api/trips/${id}/restaurant-preferences`), {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      });
+      const result = await response.json();
+      if (response.ok && result.success && result.restaurant_preferences) {
+        const p = result.restaurant_preferences;
+        setRestaurantFormData((prev) => ({
+          ...prev,
+          mealsPerDay: p.meals_per_day ?? prev.mealsPerDay,
+          mealTypes: Array.isArray(p.meal_types) ? p.meal_types : prev.mealTypes,
+          cuisineTypes: Array.isArray(p.cuisine_types) ? p.cuisine_types : prev.cuisineTypes,
+          dietaryRestrictions: Array.isArray(p.dietary_restrictions) ? p.dietary_restrictions : prev.dietaryRestrictions,
+          minPriceRange: p.min_price_range ?? null,
+          maxPriceRange: p.max_price_range ?? null,
+        }));
+      }
+    } catch (e) {
+      console.error("Error loading restaurant preferences:", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!tripId) return;
+    loadRestaurantPreferences(tripId);
+  }, [tripId, loadRestaurantPreferences]);
 
   const generateRestaurants = async () => {
     if (!tripId) return;
@@ -2834,6 +2867,60 @@ const ChatWindow = ({
                     )}
                   </div>
 
+                  {/* Budget / Price range */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label className="text-sm font-semibold text-slate-700 mb-2 block">
+                        Min price range
+                      </Label>
+                      <Select
+                        value={restaurantFormData.minPriceRange ?? "any"}
+                        onValueChange={(v) =>
+                          setRestaurantFormData((prev) => ({
+                            ...prev,
+                            minPriceRange: v === "any" ? null : v,
+                          }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Any" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="any">Any</SelectItem>
+                          <SelectItem value="$">$ Budget</SelectItem>
+                          <SelectItem value="$$">$$ Moderate</SelectItem>
+                          <SelectItem value="$$$">$$$ Upscale</SelectItem>
+                          <SelectItem value="$$$$">$$$$ Fine dining</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label className="text-sm font-semibold text-slate-700 mb-2 block">
+                        Max price range
+                      </Label>
+                      <Select
+                        value={restaurantFormData.maxPriceRange ?? "any"}
+                        onValueChange={(v) =>
+                          setRestaurantFormData((prev) => ({
+                            ...prev,
+                            maxPriceRange: v === "any" ? null : v,
+                          }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Any" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="any">Any</SelectItem>
+                          <SelectItem value="$">$ Budget</SelectItem>
+                          <SelectItem value="$$">$$ Moderate</SelectItem>
+                          <SelectItem value="$$$">$$$ Upscale</SelectItem>
+                          <SelectItem value="$$$$">$$$$ Fine dining</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
                   {/* Test Mode Toggle */}
                   <div className="flex items-center gap-2 pt-2">
                     <Label className="text-[11px] text-slate-600">
@@ -2885,6 +2972,8 @@ const ChatWindow = ({
                               dietary_restrictions: dietaryRestrictions,
                               meals_per_day: restaurantFormData.mealsPerDay,
                               meal_types: restaurantFormData.mealTypes,
+                              min_price_range: restaurantFormData.minPriceRange ?? null,
+                              max_price_range: restaurantFormData.maxPriceRange ?? null,
                             }),
                           });
 

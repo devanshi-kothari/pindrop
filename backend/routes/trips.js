@@ -2338,6 +2338,457 @@ router.post('/:tripId/activities/:activityId/preference', authenticateToken, asy
   }
 });
 
+// --- Restaurant preferences (form data) ---
+router.get('/:tripId/restaurant-preferences', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
+
+    const { data: pref, error: prefError } = await supabase
+      .from('trip_preference')
+      .select('restaurant_preferences')
+      .eq('trip_id', tripId)
+      .maybeSingle();
+
+    if (prefError) throw prefError;
+
+    res.status(200).json({
+      success: true,
+      restaurant_preferences: pref?.restaurant_preferences || null,
+    });
+  } catch (error) {
+    console.error('Error fetching restaurant preferences:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.put('/:tripId/restaurant-preferences', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+    const body = req.body || {};
+
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
+
+    const restaurantPreferences = {
+      cuisine_types: Array.isArray(body.cuisine_types) ? body.cuisine_types : [],
+      dietary_restrictions: Array.isArray(body.dietary_restrictions) ? body.dietary_restrictions : [],
+      meals_per_day: typeof body.meals_per_day === 'number' ? body.meals_per_day : body.meals_per_day != null ? parseInt(body.meals_per_day, 10) : 2,
+      meal_types: Array.isArray(body.meal_types) ? body.meal_types : [],
+      min_price_range: body.min_price_range ?? null,
+      max_price_range: body.max_price_range ?? null,
+      custom_requests: typeof body.custom_requests === 'string' ? body.custom_requests : null,
+    };
+
+    const { data: existing } = await supabase
+      .from('trip_preference')
+      .select('trip_preference_id')
+      .eq('trip_id', tripId)
+      .maybeSingle();
+
+    if (existing) {
+      await supabase
+        .from('trip_preference')
+        .update({ restaurant_preferences: restaurantPreferences })
+        .eq('trip_id', tripId);
+    } else {
+      await supabase
+        .from('trip_preference')
+        .insert({ trip_id: tripId, restaurant_preferences: restaurantPreferences });
+    }
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('Error saving restaurant preferences:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// --- Restaurants: list and generate ---
+router.get('/:tripId/restaurants', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
+
+    const { data: prefs, error: prefsError } = await supabase
+      .from('trip_restaurant_preference')
+      .select('trip_restaurant_preference_id, trip_id, restaurant_id, preference')
+      .eq('trip_id', tripId);
+
+    if (prefsError) throw prefsError;
+
+    if (!prefs || prefs.length === 0) {
+      return res.status(200).json({ success: true, restaurants: [] });
+    }
+
+    const restaurantIds = [...new Set((prefs || []).map((p) => p.restaurant_id).filter(Boolean))];
+    const { data: restaurantsRaw, error: restError } = await supabase
+      .from('restaurant')
+      .select('*')
+      .in('restaurant_id', restaurantIds);
+
+    if (restError) throw restError;
+
+    const restMap = new Map((restaurantsRaw || []).map((r) => [r.restaurant_id, r]));
+    const restaurants = (prefs || []).map((row) => ({
+      trip_restaurant_preference_id: row.trip_restaurant_preference_id,
+      trip_id: row.trip_id,
+      restaurant_id: row.restaurant_id,
+      preference: row.preference,
+      ...(restMap.get(row.restaurant_id) || {}),
+    }));
+
+    res.status(200).json({ success: true, restaurants });
+  } catch (error) {
+    console.error('Error fetching trip restaurants:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Generate ~5 restaurants for the trip (LLM + optional test mode)
+router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+    const { testMode } = req.body || {};
+
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('*')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
+
+    if (!trip.destination) {
+      return res.status(400).json({
+        success: false,
+        message: 'Destination is required before generating restaurants.',
+      });
+    }
+
+    const { data: tripPreferences } = await supabase
+      .from('trip_preference')
+      .select('*')
+      .eq('trip_id', tripId)
+      .maybeSingle();
+
+    const restPrefs = tripPreferences?.restaurant_preferences || {};
+    const cuisineTypes = restPrefs.cuisine_types || [];
+    const dietaryRestrictions = restPrefs.dietary_restrictions || [];
+    const mealTypes = restPrefs.meal_types || [];
+    const mealsPerDay = restPrefs.meals_per_day ?? 2;
+    const minPrice = restPrefs.min_price_range ?? null;
+    const maxPrice = restPrefs.max_price_range ?? null;
+    const customRequests = restPrefs.custom_requests || '';
+
+    const { data: userProfile } = await supabase
+      .from('app_user')
+      .select('home_location, budget_preference, travel_style, liked_tags')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    const startDate = tripPreferences?.start_date || null;
+    const month = startDate ? new Date(startDate + 'T12:00:00').getMonth() : new Date().getMonth();
+    const season = month >= 2 && month <= 4 ? 'spring' : month >= 5 && month <= 7 ? 'summer' : month >= 8 && month <= 10 ? 'autumn' : 'winter';
+
+    if (testMode) {
+      const destinationName = (trip.destination || '').trim();
+      let baseRestaurants = [];
+
+      if (destinationName) {
+        const { data: destRest, error: destErr } = await supabase
+          .from('restaurant')
+          .select('*')
+          .ilike('location', `%${destinationName}%`);
+
+        if (!destErr && destRest && destRest.length > 0) {
+          baseRestaurants = destRest;
+        }
+      }
+
+      if (baseRestaurants.length < 3) {
+        const { data: anyRest, error: anyErr } = await supabase
+          .from('restaurant')
+          .select('*')
+          .limit(20);
+
+        if (!anyErr && anyRest && anyRest.length > 0) {
+          baseRestaurants = [...baseRestaurants, ...anyRest];
+        }
+      }
+
+      if (baseRestaurants.length === 0) {
+        console.log('[restaurants][testMode] No existing restaurants in DB; falling back to LLM generation.');
+      } else {
+        const shuffled = [...baseRestaurants].sort(() => Math.random() - 0.5);
+        const selected = shuffled.slice(0, 5);
+        const suggestions = [];
+
+        for (const rest of selected) {
+          const { data: existingPref } = await supabase
+            .from('trip_restaurant_preference')
+            .select('*')
+            .eq('trip_id', tripId)
+            .eq('restaurant_id', rest.restaurant_id)
+            .maybeSingle();
+
+          if (!existingPref) {
+            await supabase
+              .from('trip_restaurant_preference')
+              .insert({ trip_id: tripId, restaurant_id: rest.restaurant_id, preference: 'pending' });
+          }
+
+          const { data: prefRow } = await supabase
+            .from('trip_restaurant_preference')
+            .select('*')
+            .eq('trip_id', tripId)
+            .eq('restaurant_id', rest.restaurant_id)
+            .maybeSingle();
+
+          suggestions.push({
+            ...rest,
+            trip_restaurant_preference_id: prefRow?.trip_restaurant_preference_id,
+            preference: prefRow?.preference || 'pending',
+          });
+        }
+
+        return res.status(200).json({
+          success: true,
+          restaurants: suggestions,
+          message: 'Test mode: loaded existing restaurants.',
+        });
+      }
+    }
+
+    const systemPrompt = `You are an expert local food and restaurant recommender. Given a trip destination, user preferences (cuisines, dietary restrictions, meal types, budget), and the travel season, suggest exactly 5 real or realistic restaurants.
+
+Rules:
+- Return ONLY valid JSON. No markdown, no explanation.
+- Each restaurant MUST have: name, address (exact street address in the destination), location (neighborhood or area name), cuisine_type (single string), price_range (one of "$", "$$", "$$$", "$$$$"), cost_estimate (number in USD per person for a typical meal), link (URL to menu or reservation or official site; use a placeholder like "https://example.com/restaurant-name" if unknown).
+- Optionally include: description (1 sentence), meal_types (array e.g. ["Breakfast","Lunch","Dinner"]), dietary_options (array e.g. ["Vegetarian","Gluten-free"]), rating (1-5 number), review_count (number), tags (array of strings), hours (string).
+- Consider the season: in winter suggest cozy spots, soups, comfort food; in summer lighter fare, outdoor seating; spring/autumn seasonal ingredients.
+- Respect dietary_restrictions and cuisine_types. Stay within budget (min_price_range / max_price_range if provided).
+- Prefer well-known or plausible real places in the destination.`;
+
+    const userContent = JSON.stringify({
+      destination: trip.destination,
+      cuisine_types: cuisineTypes,
+      dietary_restrictions: dietaryRestrictions,
+      meal_types: mealTypes.length ? mealTypes : ['Breakfast', 'Lunch', 'Dinner'],
+      meals_per_day: mealsPerDay,
+      min_price_range: minPrice,
+      max_price_range: maxPrice,
+      custom_requests: customRequests,
+      season,
+      trip_budget: tripPreferences?.max_budget || userProfile?.budget_preference,
+    });
+
+    let rawContent;
+    try {
+      const completion = await openaiClient.chat.completions.create({
+        model: DEFAULT_MODEL,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent },
+        ],
+        temperature: 0.6,
+        max_tokens: 2000,
+      });
+      rawContent = completion.choices[0]?.message?.content || '[]';
+    } catch (llmError) {
+      console.error('Error calling LLM for restaurants:', llmError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to generate restaurant suggestions',
+        error: llmError.message,
+      });
+    }
+
+    let parsed;
+    try {
+      const cleaned = rawContent.replace(/```\w*\n?/g, '').trim();
+      parsed = JSON.parse(cleaned);
+    } catch (e) {
+      const match = rawContent.match(/\[[\s\S]*\]/);
+      parsed = match ? JSON.parse(match[0]) : [];
+    }
+
+    const list = Array.isArray(parsed) ? parsed : (parsed?.restaurants ? parsed.restaurants : []);
+    const toInsert = list.slice(0, 5);
+
+    const suggestions = [];
+    for (const r of toInsert) {
+      const name = r.name || 'Unknown Restaurant';
+      const address = r.address || r.location || trip.destination || '';
+      const location = r.location || trip.destination || '';
+      const cuisine_type = r.cuisine_type || 'Various';
+      const meal_types = Array.isArray(r.meal_types) ? r.meal_types : [];
+      const dietary_options = Array.isArray(r.dietary_options) ? r.dietary_options : [];
+      const price_range = r.price_range || (r.cost_estimate <= 15 ? '$' : r.cost_estimate <= 30 ? '$$' : r.cost_estimate <= 60 ? '$$$' : '$$$$');
+      const cost_estimate = r.cost_estimate != null ? parseFloat(r.cost_estimate) : null;
+      const rating = r.rating != null ? parseFloat(r.rating) : null;
+      const review_count = r.review_count != null ? parseInt(r.review_count, 10) : null;
+      const tags = Array.isArray(r.tags) ? r.tags : [];
+      const source_url = r.link || r.source_url || null;
+      const reservation_url = r.reservation_url || null;
+      const description = r.description || null;
+      const hours = r.hours || null;
+
+      const { data: inserted, error: insertErr } = await supabase
+        .from('restaurant')
+        .insert({
+          name,
+          location,
+          address,
+          cuisine_type,
+          meal_types,
+          dietary_options,
+          price_range,
+          cost_estimate,
+          rating,
+          review_count,
+          tags,
+          source: 'llm',
+          source_url: source_url || null,
+          reservation_url: reservation_url || null,
+          description,
+          hours,
+        })
+        .select()
+        .single();
+
+      if (insertErr || !inserted) {
+        console.error('Error inserting restaurant:', insertErr);
+        continue;
+      }
+
+      const { data: prefRow, error: prefErr } = await supabase
+        .from('trip_restaurant_preference')
+        .insert({ trip_id: tripId, restaurant_id: inserted.restaurant_id, preference: 'pending' })
+        .select()
+        .single();
+
+      if (prefErr) {
+        console.error('Error inserting trip_restaurant_preference:', prefErr);
+      }
+
+      suggestions.push({
+        ...inserted,
+        trip_restaurant_preference_id: prefRow?.trip_restaurant_preference_id,
+        preference: prefRow?.preference || 'pending',
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      restaurants: suggestions,
+    });
+  } catch (error) {
+    console.error('Error generating restaurants:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to generate restaurants',
+      error: error.message,
+    });
+  }
+});
+
+// Update restaurant preference (liked / disliked / maybe)
+router.post('/:tripId/restaurants/:restaurantId/preference', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId);
+    const restaurantId = parseInt(req.params.restaurantId);
+    const { preference } = req.body || {};
+
+    if (!['liked', 'disliked', 'maybe', 'pending'].includes(preference)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid preference value.',
+      });
+    }
+
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({ success: false, message: 'Trip not found' });
+    }
+
+    const { data: existing, error: existingError } = await supabase
+      .from('trip_restaurant_preference')
+      .select('*')
+      .eq('trip_id', tripId)
+      .eq('restaurant_id', restaurantId)
+      .maybeSingle();
+
+    if (existingError) throw existingError;
+
+    let result;
+    if (existing) {
+      result = await supabase
+        .from('trip_restaurant_preference')
+        .update({ preference })
+        .eq('trip_restaurant_preference_id', existing.trip_restaurant_preference_id)
+        .select()
+        .single();
+    } else {
+      result = await supabase
+        .from('trip_restaurant_preference')
+        .insert([{ trip_id: tripId, restaurant_id: restaurantId, preference }])
+        .select()
+        .single();
+    }
+
+    const { data, error } = result;
+    if (error) throw error;
+
+    res.status(200).json({ success: true, preference: data });
+  } catch (error) {
+    console.error('Error updating restaurant preference:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // Fetch the generated day-by-day itinerary and attached activities for a trip
 router.get('/:tripId/itinerary', authenticateToken, async (req, res) => {
   try {
@@ -3740,6 +4191,23 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
 
     const likedActivities = (likedActivityPrefs || []).map(ap => ap.activity).filter(Boolean);
 
+    // Get liked restaurants to populate trip_meal for final itinerary
+    const { data: likedRestaurantPrefs } = await supabase
+      .from('trip_restaurant_preference')
+      .select('restaurant_id')
+      .eq('trip_id', tripId)
+      .eq('preference', 'liked');
+
+    let likedRestaurants = [];
+    if (likedRestaurantPrefs && likedRestaurantPrefs.length > 0) {
+      const restIds = likedRestaurantPrefs.map((p) => p.restaurant_id).filter(Boolean);
+      const { data: restRows } = await supabase
+        .from('restaurant')
+        .select('restaurant_id, name, address, location, source_url, reservation_url, cost_estimate')
+        .in('restaurant_id', restIds);
+      likedRestaurants = restRows || [];
+    }
+
     // Calculate date range as pure calendar dates (avoid timezone off-by-one issues)
     const parseDateParts = (s) => {
       const [y, m, d] = String(s).split('-').map((part) => parseInt(part, 10));
@@ -3973,6 +4441,180 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
 
         if (linkError) {
           throw linkError;
+        }
+      }
+    }
+
+    // Populate trip_meal from liked restaurants + fill remaining slots with suggestions (budget, meals/day, cuisine, preferences)
+    const restPrefs = tripPreferences?.restaurant_preferences || {};
+    const mealsPerDay = Math.min(Math.max(restPrefs.meals_per_day ?? 2, 1), 3);
+    const totalMealSlots = numDays > 0 ? mealsPerDay * numDays : 0;
+    const slotOrder = ['breakfast', 'lunch', 'dinner'].slice(0, mealsPerDay);
+    const slotsToFill = [];
+    for (let d = 1; d <= numDays; d++) {
+      for (const slot of slotOrder) {
+        slotsToFill.push({ day_number: d, slot });
+      }
+    }
+    const slotsNeeded = slotsToFill.slice(0, totalMealSlots);
+
+    if (slotsNeeded.length > 0) {
+      const { error: deleteMealsError } = await supabase
+        .from('trip_meal')
+        .delete()
+        .eq('trip_id', tripId);
+      if (deleteMealsError) {
+        console.error('Error clearing existing trip_meal:', deleteMealsError);
+      }
+
+      const mealRows = [];
+      let likedIndex = 0;
+
+      // 1) Fill with liked restaurants first (user feedback)
+      for (let i = 0; i < slotsNeeded.length && likedIndex < likedRestaurants.length; i++) {
+        const { day_number, slot } = slotsNeeded[i];
+        const rest = likedRestaurants[likedIndex++];
+        const link = rest.reservation_url || rest.source_url || null;
+        mealRows.push({
+          trip_id: tripId,
+          day_number,
+          slot,
+          name: rest.name || null,
+          location: (rest.address || rest.location || '').trim() || null,
+          link,
+          cost: rest.cost_estimate != null ? parseFloat(rest.cost_estimate) : null,
+          finalized: false,
+        });
+      }
+
+      // 2) Fill remaining slots with LLM suggestions (budget, cuisine, dietary, meals/day, preferences)
+      const remainingSlots = slotsNeeded.slice(mealRows.length);
+      if (remainingSlots.length > 0 && trip.destination) {
+        const cuisineTypes = restPrefs.cuisine_types || [];
+        const dietaryRestrictions = restPrefs.dietary_restrictions || [];
+        const mealTypes = restPrefs.meal_types || [];
+        const minPrice = restPrefs.min_price_range ?? null;
+        const maxPrice = restPrefs.max_price_range ?? null;
+        const customRequests = restPrefs.custom_requests || '';
+        const startDate = tripPreferences?.start_date || null;
+        const month = startDate ? new Date(startDate + 'T12:00:00').getMonth() : new Date().getMonth();
+        const season = month >= 2 && month <= 4 ? 'spring' : month >= 5 && month <= 7 ? 'summer' : month >= 8 && month <= 10 ? 'autumn' : 'winter';
+        const budgetHint = tripPreferences?.max_budget ? `Daily/trip budget considered: ~$${Math.round(tripPreferences.max_budget / numDays)} per day for meals.` : '';
+
+        const systemPrompt = `You are an expert local restaurant recommender. Suggest exactly ${remainingSlots.length} real or realistic restaurants for a trip.
+
+Rules:
+- Return ONLY valid JSON: an array of objects. No markdown, no explanation.
+- Each object MUST have: name, address (exact street address in the destination), location (neighborhood or area), cuisine_type, price_range ("$","$$","$$$", or "$$$$"), cost_estimate (number USD per person), link (URL or "https://example.com/name" if unknown).
+- Match the user's cuisine preferences, dietary restrictions, and budget (min/max price range). Consider season (e.g. winter: cozy/soups; summer: lighter/outdoor).
+- Optionally include: description (1 sentence), meal_types array, dietary_options array.`;
+
+        const userContent = JSON.stringify({
+          destination: trip.destination,
+          number_of_restaurants: remainingSlots.length,
+          cuisine_types: cuisineTypes,
+          dietary_restrictions: dietaryRestrictions,
+          meal_types: mealTypes.length ? mealTypes : ['Breakfast', 'Lunch', 'Dinner'],
+          min_price_range: minPrice,
+          max_price_range: maxPrice,
+          custom_requests: customRequests,
+          season,
+          budget_note: budgetHint,
+          trip_budget_per_day: tripPreferences?.max_budget ? Math.round(tripPreferences.max_budget / numDays) : null,
+        });
+
+        let rawContent = '[]';
+        try {
+          const completion = await openaiClient.chat.completions.create({
+            model: DEFAULT_MODEL,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userContent },
+            ],
+            temperature: 0.6,
+            max_tokens: 2000,
+          });
+          rawContent = completion.choices[0]?.message?.content || '[]';
+        } catch (llmErr) {
+          console.error('Error generating meal suggestions for final itinerary:', llmErr);
+        }
+
+        let suggestedList = [];
+        try {
+          const cleaned = rawContent.replace(/```\w*\n?/g, '').trim();
+          const parsed = JSON.parse(cleaned);
+          suggestedList = Array.isArray(parsed) ? parsed : (parsed?.restaurants || []);
+        } catch (e) {
+          const match = rawContent.match(/\[[\s\S]*\]/);
+          if (match) {
+            try {
+              suggestedList = JSON.parse(match[0]);
+            } catch (_) {}
+          }
+        }
+
+        const toUse = suggestedList.slice(0, remainingSlots.length);
+        for (let i = 0; i < toUse.length && i < remainingSlots.length; i++) {
+          const r = toUse[i];
+          const { day_number, slot } = remainingSlots[i];
+          const name = r.name || 'Restaurant';
+          const address = r.address || r.location || trip.destination || '';
+          const location = (r.location || trip.destination || '').trim() || null;
+          const cost_estimate = r.cost_estimate != null ? parseFloat(r.cost_estimate) : null;
+          const link = r.link || r.source_url || null;
+
+          const { data: insertedRest, error: restErr } = await supabase
+            .from('restaurant')
+            .insert({
+              name,
+              location,
+              address: address.trim() || null,
+              cuisine_type: r.cuisine_type || 'Various',
+              meal_types: Array.isArray(r.meal_types) ? r.meal_types : [],
+              dietary_options: Array.isArray(r.dietary_options) ? r.dietary_options : [],
+              price_range: r.price_range || null,
+              cost_estimate,
+              source: 'llm-final-itinerary',
+              source_url: link,
+              reservation_url: r.reservation_url || null,
+              description: r.description || null,
+            })
+            .select('restaurant_id, name, address, location, source_url, reservation_url, cost_estimate')
+            .single();
+
+          if (restErr || !insertedRest) {
+            console.error('Error inserting suggested restaurant:', restErr);
+            mealRows.push({
+              trip_id: tripId,
+              day_number,
+              slot,
+              name,
+              location,
+              link,
+              cost: cost_estimate,
+              finalized: false,
+            });
+          } else {
+            const rest = insertedRest;
+            const restLink = rest.reservation_url || rest.source_url || null;
+            mealRows.push({
+              trip_id: tripId,
+              day_number,
+              slot,
+              name: rest.name || name,
+              location: (rest.address || rest.location || '').trim() || null,
+              link: restLink,
+              cost: rest.cost_estimate != null ? parseFloat(rest.cost_estimate) : null,
+              finalized: false,
+            });
+          }
+        }
+      }
+
+      if (mealRows.length > 0) {
+        const { error: mealsInsertError } = await supabase.from('trip_meal').insert(mealRows);
+        if (mealsInsertError) {
+          console.error('Error inserting trip_meal:', mealsInsertError);
         }
       }
     }
