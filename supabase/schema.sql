@@ -29,7 +29,6 @@ CREATE TABLE IF NOT EXISTS activity (
     activity_id BIGSERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     location VARCHAR(255),
-    city VARCHAR(255),
     address VARCHAR(255),
     category VARCHAR(100),
     duration VARCHAR(50),

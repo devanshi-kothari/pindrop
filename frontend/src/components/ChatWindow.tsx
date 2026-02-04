@@ -94,7 +94,6 @@ const ChatWindow = ({
       activity_id: number;
       name: string;
       location: string | null;
-      city?: string | null;
       category: string | null;
       duration: string | null;
       cost_estimate: number | null;

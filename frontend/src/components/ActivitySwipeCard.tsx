@@ -8,7 +8,6 @@ interface Activity {
   activity_id: number;
   name: string;
   location: string | null;
-  city?: string | null;
   category: string | null;
   duration: string | null;
   cost_estimate: number | null;
@@ -169,32 +168,15 @@ const ActivitySwipeCard = ({
               {activity.category}
             </div>
           )}
-          {/* City badge (multi-city) */}
-          {activity.city && (
-            <div className="absolute top-3 right-3 rounded-full bg-blue-600/90 px-3 py-1 text-xs font-medium text-white backdrop-blur-sm">
-              {activity.city}
-            </div>
-          )}
         </div>
 
         <CardContent className="space-y-3 p-4">
-          {/* Title, City, and Location */}
+          {/* Title and Location */}
           <div>
             <h3 className="text-xl font-bold text-white">{activity.name}</h3>
-            {activity.city && (
-              <div className="mt-1 flex items-center gap-1 text-sm font-medium text-blue-400">
-                <MapPin className="h-3 w-3" />
-                <span>{activity.city}</span>
-              </div>
-            )}
-            {activity.location && !activity.city && (
+            {activity.location && (
               <div className="mt-1 flex items-center gap-1 text-sm text-slate-400">
                 <MapPin className="h-3 w-3" />
-                <span>{activity.location}</span>
-              </div>
-            )}
-            {activity.location && activity.city && activity.location !== activity.city && (
-              <div className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
                 <span>{activity.location}</span>
               </div>
             )}

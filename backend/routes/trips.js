@@ -261,10 +261,11 @@ async function generateRefinedSearchQuery(trip, preferences, userProfile, activi
 
       for (const scope of scopes) {
         for (const category of categories) {
-          const q = seasonalQualifier
-            ? `${seasonalQualifier} ${category} ${scope}`
-            : `${category} ${scope}`;
-          queries.push({ query: q, scope });
+          if (seasonalQualifier) {
+            queries.push(`${seasonalQualifier} ${category} ${scope}`);
+          } else {
+            queries.push(`${category} ${scope}`);
+          }
         }
       }
     }
@@ -273,16 +274,17 @@ async function generateRefinedSearchQuery(trip, preferences, userProfile, activi
     if (queries.length === 0) {
       const scopes = destinationScopes.length > 0 ? destinationScopes : ['travel activities'];
       for (const scope of scopes) {
-        const q = seasonalQualifier
-          ? `${seasonalQualifier} things to do ${scope}`
-          : `things to do ${scope}`;
-        queries.push({ query: q, scope });
+        if (seasonalQualifier) {
+          queries.push(`${seasonalQualifier} things to do ${scope}`);
+        } else {
+          queries.push(`things to do ${scope}`);
+        }
       }
     }
 
     // For now, return the first query (we'll handle multiple queries in the caller)
-    const first = queries[0];
-    const query = first ? first.query : null;
+    // This ensures we get diverse results by making multiple search calls
+    const query = queries[0];
     console.log('[activities] Generated Google query:', query, '| Categories to avoid:', avoidCategories);
 
     return { query, avoidCategories, allQueries: queries };
@@ -290,10 +292,9 @@ async function generateRefinedSearchQuery(trip, preferences, userProfile, activi
     console.error('Error generating refined search query:', error);
     // Fallback to very simple query
     if (trip?.destination) {
-      const q = `things to do ${trip.destination}`;
-      return { query: q, avoidCategories: [], allQueries: [{ query: q, scope: trip.destination }] };
+      return { query: `things to do ${trip.destination}`, avoidCategories: [], allQueries: [] };
     }
-    return { query: 'travel activities', avoidCategories: [], allQueries: [{ query: 'travel activities', scope: 'travel activities' }] };
+    return { query: 'travel activities', avoidCategories: [], allQueries: [] };
   }
 }
 
@@ -871,12 +872,10 @@ function matchesAvoidCategory(activityName, activityCategory, snippet, avoidCate
   return false;
 }
 
-async function upsertReusableActivityFromSearchItem(item, destination, preferences = null, userProfile = null, opts = {}) {
-  // Keep location as the broader trip destination or city (e.g. "Paris, France" or "Paris")
+async function upsertReusableActivityFromSearchItem(item, destination, preferences = null, userProfile = null) {
+  // Keep location as the broader trip destination (e.g. "Paris, France")
   // and store precise street address separately in the "address" column.
-  // opts.city: when set (multi-city), which selected city this activity is for.
   const location = destination || null;
-  const city = opts && typeof opts.city === 'string' && opts.city.trim() ? opts.city.trim() : null;
   let address = null;
   const snippet = item.snippet || '';
   const originalLink = item.link || '';
@@ -1110,19 +1109,14 @@ Category:`;
     finalImageUrl = item.pagemap?.cse_image?.[0]?.src || item.pagemap?.metatags?.[0]?.['og:image'] || null;
   }
 
-  // Try to find an existing reusable activity with the same name/location/source (and city when multi-city)
-  let existingQuery = supabase
+  // Try to find an existing reusable activity with the same name/location/source
+  const { data: existing, error: existingError } = await supabase
     .from('activity')
     .select('*')
     .eq('name', name)
     .eq('location', location)
-    .eq('source', 'google-search');
-  if (city != null) {
-    existingQuery = existingQuery.eq('city', city);
-  } else {
-    existingQuery = existingQuery.is('city', null);
-  }
-  const { data: existing, error: existingError } = await existingQuery.maybeSingle();
+    .eq('source', 'google-search')
+    .maybeSingle();
 
   if (existingError) {
     console.error('Error checking for existing activity:', existingError);
@@ -1140,7 +1134,6 @@ Category:`;
     if (finalLink && finalLink !== existing.source_url && !isLowQualityLink(finalLink)) {
       updateData.source_url = finalLink;
     }
-    if (city != null && (existing.city == null || existing.city === '')) updateData.city = city;
 
     if (Object.keys(updateData).length > 0) {
       const { data: updated, error: updateError } = await supabase
@@ -1159,23 +1152,22 @@ Category:`;
     return { ...existing, image_url: finalImageUrl || null };
   }
 
-  const insertPayload = {
-    name,
-    location,
-    address,
-    category,
-    duration: duration || null,
-    cost_estimate: costEstimate,
-    rating: null,
-    tags,
-    source: 'google-search',
-    source_url: finalLink || null
-  };
-  if (city != null) insertPayload.city = city;
-
   const { data, error } = await supabase
     .from('activity')
-    .insert([insertPayload])
+    .insert([
+      {
+        name,
+        location,
+        address,
+        category,
+        duration: duration || null,
+        cost_estimate: costEstimate,
+        rating: null,
+        tags,
+        source: 'google-search',
+        source_url: finalLink || null
+      },
+    ])
     .select()
     .single();
 
@@ -1884,7 +1876,7 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
   try {
     const userId = req.user.userId;
     const tripId = parseInt(req.params.tripId);
-    const { testMode, selected_cities: bodySelectedCities } = req.body || {};
+    const { testMode } = req.body || {};
 
     // Ensure the trip belongs to the user
     const { data: trip, error: tripError } = await supabase
@@ -1922,50 +1914,54 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       .maybeSingle();
 
     // TEST MODE: instead of calling Google Custom Search, reuse existing activities
-    // from the trip's destination or selected_cities when possible, with a Rome fallback.
+    // from the trip's destination when possible, with a Rome fallback.
     if (testMode) {
       console.log('[activities] TEST MODE enabled – selecting existing activities from DB');
 
-      const selectedCities = Array.isArray(tripPreferences?.selected_cities)
-        ? tripPreferences.selected_cities.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())
-        : [];
       const destinationName = (trip.destination || '').trim();
-      const scopes = selectedCities.length > 0 ? selectedCities : (destinationName ? [destinationName] : []);
       let baseActivities = [];
 
-      if (scopes.length > 0) {
-        for (const scope of scopes) {
-          const { data: cityActivities, error: cityError } = await supabase
-            .from('activity')
-            .select('activity_id, name, location, city, address, category, duration, cost_estimate, rating, tags')
-            .ilike('location', `%${scope}%`);
+      // 1) Try to use activities for the current trip destination, if we have enough.
+      if (destinationName) {
+        const { data: destActivities, error: destError } = await supabase
+          .from('activity')
+          .select('activity_id, name, location, address, category, duration, cost_estimate, rating, tags')
+          .ilike('location', `%${destinationName}%`);
 
-          if (!cityError && cityActivities && cityActivities.length > 0) {
-            const withCity = cityActivities.map((a) => ({ ...a, city: a.city || scope }));
-            baseActivities.push(...withCity);
-            console.log(`[activities][testMode] Found ${cityActivities.length} activities for "${scope}"`);
-          }
+        if (destError) {
+          console.error('[activities][testMode] Error loading destination activities:', destError);
+        } else if (destActivities && destActivities.length > 0) {
+          console.log(
+            `[activities][testMode] Found ${destActivities.length} activities for destination "${destinationName}"`,
+          );
+          baseActivities = destActivities;
         }
       }
 
+      // 2) If there are not enough activities for this destination, fall back to Rome
       if (!baseActivities || baseActivities.length < 5) {
-        const fallbackScope = destinationName || 'Rome';
         console.log(
-          `[activities][testMode] Not enough for scopes (count=${baseActivities?.length || 0}). Falling back to ${fallbackScope}.`,
+          `[activities][testMode] Not enough activities for destination ("${destinationName}" count=${baseActivities?.length || 0}). Falling back to Rome with addresses.`,
         );
-        const { data: fallbackActivities, error: fallbackError } = await supabase
-          .from('activity')
-          .select('activity_id, name, location, city, address, category, duration, cost_estimate, rating, tags')
-          .ilike('location', `%${fallbackScope}%`);
 
-        if (!fallbackError && fallbackActivities && fallbackActivities.length > 0) {
-          const withCity = fallbackActivities.map((a) => ({ ...a, city: a.city || fallbackScope }));
-          baseActivities = [...(baseActivities || []), ...withCity];
+        const { data: romeActivities, error: romeError } = await supabase
+          .from('activity')
+          .select('activity_id, name, location, address, category, duration, cost_estimate, rating, tags')
+          .ilike('location', '%Rome%')
+          .not('address', 'is', null);
+
+        if (romeError) {
+          console.error('[activities][testMode] Error loading Rome activities for fallback:', romeError);
+        } else if (romeActivities && romeActivities.length > 0) {
+          console.log(
+            `[activities][testMode] Found ${romeActivities.length} Rome activities with addresses for fallback.`,
+          );
+          baseActivities = [...(baseActivities || []), ...romeActivities];
         }
       }
 
       if (!baseActivities || baseActivities.length === 0) {
-        console.warn('[activities][testMode] No suitable activities found.');
+        console.warn('[activities][testMode] No suitable activities found for destination or Rome fallback.');
         return res.status(200).json({
           success: true,
           activities: [],
@@ -1973,9 +1969,11 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
         });
       }
 
+      // Randomize and take a small batch (e.g., 10) so swipe UI behaves like normal
       const shuffled = [...baseActivities].sort(() => Math.random() - 0.5);
       const selected = shuffled.slice(0, 10);
 
+      // Ensure we have per-trip preference rows (pending) for these activities
       const activitiesWithPrefs = [];
       for (const act of selected) {
         try {
@@ -1986,27 +1984,38 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
             .eq('activity_id', act.activity_id)
             .maybeSingle();
 
-          if (prefError) console.error('Error checking existing preference in test mode:', prefError);
+          if (prefError) {
+            console.error('Error checking existing preference in test mode:', prefError);
+          }
 
           if (!existingPref) {
             const { error: insertError } = await supabase
               .from('trip_activity_preference')
-              .insert({ trip_id: tripId, activity_id: act.activity_id, preference: 'pending' });
-            if (insertError) console.error('Error inserting preference in test mode:', insertError);
+              .insert({
+                trip_id: tripId,
+                activity_id: act.activity_id,
+                preference: 'pending',
+              });
+
+            if (insertError) {
+              console.error('Error inserting preference in test mode:', insertError);
+            }
           }
 
           activitiesWithPrefs.push({
+            // We don't strictly need the preference row id on the frontend,
+            // but include it when available for consistency.
             trip_activity_preference_id: existingPref?.trip_activity_preference_id || null,
             activity_id: act.activity_id,
             name: act.name,
             location: act.location,
-            city: act.city || act.location || null,
             category: act.category,
             duration: act.duration,
             cost_estimate: act.cost_estimate,
             rating: act.rating,
             tags: act.tags,
             source: 'test-mode',
+            // Ensure the swipe UI sees these as *pending* so the user can choose.
             preference: 'pending',
           });
         } catch (e) {
@@ -2037,151 +2046,87 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       .eq('trip_id', tripId)
       .in('preference', ['liked', 'disliked']);
 
-    // Resolve cities: prefer body selected_cities (frontend state) > DB selected_cities > destination
-    const fromBody = Array.isArray(bodySelectedCities)
-      ? bodySelectedCities.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())
-      : [];
-    const fromDb = Array.isArray(tripPreferences?.selected_cities)
-      ? tripPreferences.selected_cities.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())
-      : [];
-    let selectedCities = fromBody.length > 0 ? fromBody : fromDb;
-    if (fromBody.length > 0) {
-      console.log(`[activities] Using selected_cities from request body: ${fromBody.join(', ')}`);
-    }
-    let cities =
-      selectedCities.length > 0
-        ? Array.from(new Set(selectedCities)).slice(0, 10)
-        : trip.destination
-          ? [String(trip.destination).trim()]
-          : [];
-
-    // Country/region fallback: when we only have destination (e.g. "France") and no selected cities,
-    // fetch suggested cities and use them for multi-city so we split by Paris, Nice, etc.
-    if (cities.length === 1 && cities[0] === (trip.destination || '').trim()) {
-      try {
-        const suggested = await suggestCitiesForDestination(trip.destination);
-        const destType = suggested.destination_type || '';
-        const suggestedCities = Array.isArray(suggested.cities)
-          ? suggested.cities.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())
-          : [];
-        if (
-          (destType === 'country' || destType === 'region') &&
-          suggestedCities.length >= 2
-        ) {
-          cities = suggestedCities.slice(0, 6);
-          console.log(
-            `[activities] Country/region fallback: using ${cities.length} suggested cities for "${trip.destination}" (${destType}): ${cities.join(', ')}`
-          );
-        }
-      } catch (err) {
-        console.error('[activities] suggestCitiesForDestination fallback failed:', err);
-      }
+    // Use LLM to generate refined, highly relevant search queries with category diversification
+    let queryResult = null;
+    try {
+      queryResult = await generateRefinedSearchQuery(trip, tripPreferences, userProfile, activityPreferences || []);
+    } catch (error) {
+      console.error('Error generating refined search query:', error);
     }
 
-    let avoidCategories = Array.isArray(tripPreferences?.avoid_activity_categories)
-      ? tripPreferences.avoid_activity_categories
-      : [];
+    // Extract queries and avoid categories
+    let queries = [];
+    let avoidCategories = [];
 
-    /** @type {{ query: string; scope: string }[]} */
-    let queryEntries = [];
-
-    // Multi-city: always build explicit per-city queries so we split activities by city
-    if (cities.length >= 2) {
-      for (const city of cities) {
-        const q = city.includes(' ') ? `things to do in "${city}"` : `things to do in ${city}`;
-        queryEntries.push({ query: q, scope: city });
-      }
-      console.log(`[activities] Multi-city: ${cities.length} cities → ${queryEntries.length} per-city queries`);
-    } else {
-      // Single city/destination: use LLM for query diversification, then fallback if needed
-      let queryResult = null;
-      try {
-        queryResult = await generateRefinedSearchQuery(trip, tripPreferences, userProfile, activityPreferences || []);
-      } catch (error) {
-        console.error('Error generating refined search query:', error);
-      }
-
-      if (queryResult && queryResult.query) {
-        const raw = queryResult.allQueries && queryResult.allQueries.length > 0
-          ? queryResult.allQueries
-          : [queryResult.query];
-        if (avoidCategories.length === 0 && Array.isArray(queryResult.avoidCategories)) {
-          avoidCategories = queryResult.avoidCategories;
-        }
-        const dest = (trip.destination || '').trim();
-        queryEntries = raw.map((r) => {
-          if (typeof r === 'object' && r && 'query' in r && 'scope' in r) {
-            return { query: r.query, scope: r.scope };
-          }
-          return { query: String(r), scope: dest || 'travel activities' };
-        });
-      }
-
-      if (queryEntries.length === 0) {
-        const likedTags = Array.isArray(userProfile?.liked_tags) ? userProfile.liked_tags : [];
-        const activityCategories = Array.isArray(tripPreferences?.activity_categories)
-          ? tripPreferences.activity_categories
-          : [];
-        const interestPhrases = [...likedTags, ...activityCategories]
-          .filter(Boolean)
-          .map((t) => String(t))
-          .slice(0, 5)
-          .join(' ');
-        const rawDestination = String(trip.destination).trim();
-        const scope = cities[0] || rawDestination || 'travel activities';
-        const destQ = scope.includes(' ') ? `"${scope}"` : scope;
-        let q = `things to do in ${destQ}`;
-        if (interestPhrases) q += ` ${interestPhrases}`;
-        if (tripPreferences?.group_type) q += ` for ${tripPreferences.group_type}`;
-        queryEntries = [{ query: q, scope }];
-      }
+    if (queryResult && queryResult.query) {
+      queries = queryResult.allQueries && queryResult.allQueries.length > 0
+        ? queryResult.allQueries
+        : [queryResult.query];
+      avoidCategories = queryResult.avoidCategories || [];
     }
 
+    // Fallback to basic query if LLM fails
+    if (queries.length === 0) {
+      const likedTags = Array.isArray(userProfile?.liked_tags) ? userProfile.liked_tags : [];
+      const activityCategories = Array.isArray(tripPreferences?.activity_categories)
+        ? tripPreferences.activity_categories
+        : [];
+      const selectedCities = Array.isArray(tripPreferences?.selected_cities)
+        ? tripPreferences.selected_cities.filter(Boolean).map((c) => String(c).trim()).filter(Boolean)
+        : [];
+
+      const interestPhrases = [...likedTags, ...activityCategories]
+        .filter(Boolean)
+        .map((t) => String(t))
+        .slice(0, 5)
+        .join(' ');
+
+      const rawDestination = String(trip.destination).trim();
+      const primaryScope = selectedCities.length > 0 ? selectedCities[0] : rawDestination;
+      const destinationQuery =
+        primaryScope && primaryScope.includes(' ') ? `"${primaryScope}"` : primaryScope;
+
+      // Build a more contextual fallback query
+      let queryParts = [`things to do in ${destinationQuery}`];
+
+      if (interestPhrases) {
+        queryParts.push(interestPhrases);
+      }
+
+      if (tripPreferences?.group_type) {
+        queryParts.push(`for ${tripPreferences.group_type}`);
+      }
+
+      queries = [queryParts.join(' ')];
+    }
+
+    // Get avoid categories from preferences if not already set
     if (avoidCategories.length === 0 && Array.isArray(tripPreferences?.avoid_activity_categories)) {
       avoidCategories = tripPreferences.avoid_activity_categories;
     }
 
-    // Fetch results per query/scope; process with scope so we can store city and distribute across cities
-    const itemsPerQuery = Math.max(5, Math.floor(15 / Math.max(1, queryEntries.length)));
-    const activityCandidates = [];
-    const processedActivityIds = new Set();
+    // Fetch results from multiple queries to ensure category diversification
+    const allItems = [];
+    const itemsPerQuery = Math.max(5, Math.floor(15 / Math.max(1, queries.length)));
 
-    for (const entry of queryEntries.slice(0, 10)) {
+    for (const query of queries.slice(0, 5)) { // Limit to 5 queries max
       try {
-        const items = await fetchActivitySearchResults(entry.query, itemsPerQuery);
-        const filteredItems = items.filter((item) => {
+        const items = await fetchActivitySearchResults(query, itemsPerQuery);
+
+        // Filter out low-quality links before processing
+        const filteredItems = items.filter(item => {
           const link = item.link || '';
           return !isLowQualityLink(link);
         });
 
-        const dest = entry.scope === 'travel activities' ? (trip.destination || null) : entry.scope;
-        const opts = entry.scope === 'travel activities' ? {} : { city: entry.scope };
-
-        for (const item of filteredItems) {
-          try {
-            const activity = await upsertReusableActivityFromSearchItem(
-              item,
-              dest,
-              tripPreferences,
-              userProfile,
-              opts
-            );
-            if (!activity) continue;
-            if (processedActivityIds.has(activity.activity_id)) continue;
-            processedActivityIds.add(activity.activity_id);
-            const city = opts.city || null;
-            activityCandidates.push({ ...activity, city });
-          } catch (innerError) {
-            console.error('Error processing search item into activity:', innerError);
-          }
-        }
-        console.log(`[activities] Query "${entry.query}" (scope: ${entry.scope}) returned ${filteredItems.length} items`);
+        allItems.push(...filteredItems);
+        console.log(`[activities] Query "${query}" returned ${filteredItems.length} items (after filtering)`);
       } catch (error) {
-        console.error(`[activities] Error fetching results for query "${entry.query}":`, error);
+        console.error(`[activities] Error fetching results for query "${query}":`, error);
       }
     }
 
-    if (activityCandidates.length === 0) {
+    if (allItems.length === 0) {
       return res.status(200).json({
         success: true,
         activities: [],
@@ -2189,109 +2134,173 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       });
     }
 
+    console.log(`[activities] Total items collected: ${allItems.length} (from ${queries.length} queries)`);
+
+    // Filter and prioritize results, then take top 8 with strong category diversification
+    const suggestions = [];
+    const processedActivityIds = new Set();
+    const categoryCounts = new Map(); // Track category diversity
+    const categorySeen = new Set(); // Track which categories we've seen at least once
+
+    // Get preferred categories from user preferences
+    const preferredCategories = Array.isArray(tripPreferences?.activity_categories)
+      ? tripPreferences.activity_categories.map(c => c.toLowerCase())
+      : [];
+
+    console.log(`Processing ${allItems.length} search results for destination: ${trip.destination}`);
+    console.log(`Preferred categories: ${preferredCategories.join(', ') || 'none'}`);
+
+    // First pass: Collect activities, prioritizing diversity
+    const activityCandidates = [];
+
+    for (const item of allItems) {
+      try {
+        const activity = await upsertReusableActivityFromSearchItem(item, trip.destination, tripPreferences, userProfile);
+
+        // Skip if activity extraction failed or returned null
+        if (!activity) {
+          console.log(`Skipped activity from: ${item.title?.substring(0, 50)}`);
+          continue;
+        }
+
+        // Skip duplicates
+        if (processedActivityIds.has(activity.activity_id)) {
+          continue;
+        }
+        processedActivityIds.add(activity.activity_id);
+
+        activityCandidates.push(activity);
+      } catch (innerError) {
+        console.error('Error processing search item into activity:', innerError);
+      }
+    }
+
     console.log(`[activities] Collected ${activityCandidates.length} unique activity candidates`);
 
-    const preferredCategories = Array.isArray(tripPreferences?.activity_categories)
-      ? tripPreferences.activity_categories.map((c) => c.toLowerCase())
-      : [];
-    console.log(`Processing for destination: ${trip.destination} | Preferred categories: ${preferredCategories.join(', ') || 'none'}`);
+    // Second pass: Select activities with strong diversification
+    // Priority: 1) New categories (especially preferred ones), 2) Categories we haven't seen yet, 3) Balance
 
-    // Group by city for multi-city distribution; then select up to 8 with category diversity per city
-    const byCity = new Map();
-    for (const a of activityCandidates) {
-      const c = a.city != null ? a.city : (a.location || null);
-      const key = c != null && String(c).trim() ? String(c).trim() : '__single__';
-      if (!byCity.has(key)) byCity.set(key, []);
-      byCity.get(key).push(a);
-    }
-    let cityKeys = Array.from(byCity.keys());
-    const selectedOrder =
-      cities.length >= 2
-        ? cities
-        : Array.isArray(tripPreferences?.selected_cities)
-          ? tripPreferences.selected_cities.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())
-          : [];
-    if (selectedOrder.length > 0) {
-      cityKeys = [
-        ...selectedOrder.filter((c) => byCity.has(c)),
-        ...cityKeys.filter((k) => !selectedOrder.includes(k)),
-      ];
-    }
-    const numCities = cityKeys.length;
-    const perCity = Math.max(1, Math.ceil(8 / numCities));
-    const suggestions = [];
-    const categoryCounts = new Map();
-    const categorySeen = new Set();
+    for (const activity of activityCandidates) {
+      try {
+        const category = activity.category || 'other';
+      const categoryLower = category.toLowerCase();
+      const currentCount = categoryCounts.get(category) || 0;
+      const isPreferred = preferredCategories.length > 0 && preferredCategories.includes(categoryLower);
+      const isNewCategory = !categorySeen.has(category);
 
-    // Sort each city's pool: preferred categories first, then category diversity for stability
-    for (const key of cityKeys) {
-      const list = byCity.get(key);
-      list.sort((a, b) => {
-        const ca = (a.category || 'other').toLowerCase();
-        const cb = (b.category || 'other').toLowerCase();
-        const pa = preferredCategories.length > 0 && preferredCategories.includes(ca);
-        const pb = preferredCategories.length > 0 && preferredCategories.includes(cb);
-        if (pa && !pb) return -1;
-        if (!pa && pb) return 1;
-        return ca.localeCompare(cb);
-      });
-    }
+      // If we already have 8 activities, check if we should replace one
+      if (suggestions.length >= 8) {
+        // Always accept if it's a preferred category we haven't seen yet
+        if (isPreferred && isNewCategory) {
+          // Remove the most over-represented category
+          const sortedCategories = Array.from(categoryCounts.entries())
+            .sort((a, b) => {
+              const aPreferred = preferredCategories.includes(a[0].toLowerCase());
+              const bPreferred = preferredCategories.includes(b[0].toLowerCase());
+              if (aPreferred && !bPreferred) return 1; // Keep preferred
+              if (!aPreferred && bPreferred) return -1; // Remove non-preferred
+              return b[1] - a[1]; // Remove most common
+            });
 
-    // Round-robin take from each city up to perCity each, cap 8 total
-    const indices = new Map(cityKeys.map((k) => [k, 0]));
-    while (suggestions.length < 8) {
-      let added = 0;
-      for (const key of cityKeys) {
-        if (suggestions.length >= 8) break;
-        const list = byCity.get(key);
-        const idx = indices.get(key);
-        const taken = list.filter((a) => suggestions.some((s) => s.activity_id === a.activity_id)).length;
-        if (taken >= perCity || idx >= list.length) continue;
-        const activity = list[idx];
-        try {
-          const { data: existingPref, error: prefError } = await supabase
-            .from('trip_activity_preference')
-            .select('*')
-            .eq('trip_id', tripId)
-            .eq('activity_id', activity.activity_id)
-            .maybeSingle();
-          if (prefError) {
-            console.error('Error checking trip_activity_preference:', prefError);
-            indices.set(key, idx + 1);
-            continue;
-          }
-          let prefRow = existingPref;
-          if (!prefRow) {
-            const { data: inserted, error: insertError } = await supabase
-              .from('trip_activity_preference')
-              .insert([{ trip_id: tripId, activity_id: activity.activity_id, preference: 'pending' }])
-              .select()
-              .single();
-            if (insertError) {
-              console.error('Error inserting trip_activity_preference:', insertError);
-              indices.set(key, idx + 1);
-              continue;
+          const categoryToRemove = sortedCategories[0]?.[0];
+          if (categoryToRemove && categoryToRemove !== category) {
+            const indexToRemove = suggestions.findIndex(a => a.category === categoryToRemove);
+            if (indexToRemove !== -1) {
+              suggestions.splice(indexToRemove, 1);
+              const removedCount = categoryCounts.get(categoryToRemove) || 0;
+              categoryCounts.set(categoryToRemove, Math.max(0, removedCount - 1));
+              if (removedCount <= 1) {
+                categorySeen.delete(categoryToRemove);
+              }
             }
-            prefRow = inserted;
           }
-          const category = activity.category || 'other';
-          suggestions.push({
-            ...activity,
-            city: activity.city ?? activity.location ?? (key === '__single__' ? null : key),
-            trip_activity_preference_id: prefRow.trip_activity_preference_id,
-            preference: prefRow.preference,
-          });
-          categorySeen.add(category);
-          categoryCounts.set(category, (categoryCounts.get(category) || 0) + 1);
-          indices.set(key, idx + 1);
-          console.log(`[activities] Added: ${activity.name} (${category}) [${activity.city ?? key}] - Total: ${suggestions.length}`);
-          added++;
-        } catch (innerError) {
-          console.error('Error processing activity candidate:', innerError);
-          indices.set(key, idx + 1);
+        } else if (isNewCategory && !isPreferred) {
+          // New non-preferred category - only add if we have space or can replace a duplicate
+          if (currentCount === 0) {
+            // Find a category with 2+ items to replace
+            const categoryToRemove = Array.from(categoryCounts.entries())
+              .filter(([cat, count]) => count >= 2 && cat !== category)
+              .sort((a, b) => b[1] - a[1])[0]?.[0];
+
+            if (categoryToRemove) {
+              const indexToRemove = suggestions.findIndex(a => a.category === categoryToRemove);
+              if (indexToRemove !== -1) {
+                suggestions.splice(indexToRemove, 1);
+                categoryCounts.set(categoryToRemove, categoryCounts.get(categoryToRemove) - 1);
+              }
+            } else {
+              continue; // Skip if we can't make room
+            }
+          } else {
+            continue; // Skip duplicates of non-preferred categories
+          }
+        } else if (currentCount >= 2) {
+          // Already have 2+ of this category, skip unless it's preferred and we have few preferred categories
+          if (isPreferred && preferredCategories.length <= 3 && currentCount < 3) {
+            // Allow up to 3 of preferred categories if there are few preferred categories
+          } else {
+            continue; // Skip duplicates
+          }
+        } else if (currentCount >= 1 && !isPreferred) {
+          // Already have 1 of this non-preferred category, skip
+          continue;
         }
       }
-      if (added === 0) break;
+
+      // Add the activity
+      categorySeen.add(category);
+      categoryCounts.set(category, currentCount + 1);
+
+      // Ensure we have a per-trip preference row (pending by default)
+      const { data: existingPref, error: prefError } = await supabase
+        .from('trip_activity_preference')
+        .select('*')
+        .eq('trip_id', tripId)
+        .eq('activity_id', activity.activity_id)
+        .maybeSingle();
+
+      if (prefError) {
+        console.error('Error checking existing trip_activity_preference:', prefError);
+        continue;
+      }
+
+      let prefRow = existingPref;
+
+      if (!prefRow) {
+        const { data: inserted, error: insertError } = await supabase
+          .from('trip_activity_preference')
+          .insert([
+            {
+              trip_id: tripId,
+              activity_id: activity.activity_id,
+              preference: 'pending',
+            },
+          ])
+          .select()
+          .single();
+
+        if (insertError) {
+          console.error('Error inserting trip_activity_preference:', insertError);
+          continue;
+        }
+
+        prefRow = inserted;
+      }
+
+      suggestions.push({
+        ...activity,
+        trip_activity_preference_id: prefRow.trip_activity_preference_id,
+        preference: prefRow.preference,
+      });
+
+      console.log(`[activities] Added: ${activity.name} (${category}) - Total: ${suggestions.length}, Categories seen: ${Array.from(categorySeen).join(', ')}`);
+
+      if (suggestions.length >= 8) {
+        break;
+      }
+      } catch (innerError) {
+        console.error('Error processing activity candidate:', innerError);
+      }
     }
 
     res.status(200).json({
@@ -2358,7 +2367,7 @@ router.get('/:tripId/activities', authenticateToken, async (req, res) => {
     const { data: activitiesRaw, error: activitiesError } = await supabase
       .from('activity')
       .select(
-        'activity_id, name, location, city, category, duration, cost_estimate, rating, tags, source, source_url'
+        'activity_id, name, location, category, duration, cost_estimate, rating, tags, source, source_url'
       )
       .in('activity_id', activityIds);
 
