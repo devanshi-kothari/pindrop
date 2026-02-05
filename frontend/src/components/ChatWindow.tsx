@@ -905,7 +905,7 @@ const ChatWindow = ({
     }
   };
 
-  const [useTestActivities, setUseTestActivities] = useState(false);
+  const [useTestActivities, setUseTestActivities] = useState(true); // Default to true for Greece test activities
   const [useTestRestaurants, setUseTestRestaurants] = useState(false);
 
   const generateActivities = async () => {
@@ -1089,18 +1089,170 @@ const ChatWindow = ({
     return tripDestination;
   };
 
-  // Calculate day allocation for each city based on activity counts
+  // Calculate day allocation for each city based on activity counts and flight dates
   // This function handles duplicate cities by splitting activities across instances
-  const calculateCityDaysAllocation = useCallback(() => {
-    if (orderedCities.length === 0 || !tripPreferences?.start_date || !tripPreferences?.end_date) {
+  // Uses actual flight arrival/departure dates to account for travel time
+  const calculateCityDaysAllocation = useCallback(async () => {
+    // Only calculate when both flights are selected (not just confirmed)
+    if (selectedOutboundIndex === null || selectedReturnIndex === null || orderedCities.length === 0 || !tripId) {
       setCityDaysAllocation([]);
       return;
     }
 
-    // Calculate total trip days
-    const startDate = new Date(tripPreferences.start_date);
-    const endDate = new Date(tripPreferences.end_date);
-    const totalDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    if (!tripPreferences?.start_date || !tripPreferences?.end_date) {
+      setCityDaysAllocation([]);
+      return;
+    }
+
+    // Get selected flight dates - fetch from database to get complete flight data
+    let actualStartDate: Date | null = null;
+    let actualEndDate: Date | null = null;
+
+    try {
+      const token = getAuthToken();
+      if (!token) {
+        setCityDaysAllocation([]);
+        return;
+      }
+
+      // Fetch selected flights from database
+      const flightsResponse = await fetch(getApiUrl(`api/flights/trip/${tripId}`), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      const flightsResult = await flightsResponse.json();
+      
+      if (flightsResponse.ok && flightsResult.success) {
+        // Get selected outbound flight
+        const selectedOutboundFlightId = flightsResult.outbound_flight_ids?.[flightsResult.selected_outbound_index];
+        const selectedReturnFlightId = flightsResult.return_flight_ids?.[flightsResult.selected_return_index];
+        
+        if (selectedOutboundFlightId && flightsResult.outbound_flights) {
+          const selectedOutbound = flightsResult.outbound_flights[flightsResult.selected_outbound_index];
+          const flightLegs = selectedOutbound?.flights || [];
+          
+          if (flightLegs.length > 0) {
+            const lastLeg = flightLegs[flightLegs.length - 1];
+            // Try different possible structures for arrival time/date
+            const arrivalTime = lastLeg.arrival_airport?.time || 
+                               lastLeg.arrival_airport?.date ||
+                               lastLeg.arrival?.time || 
+                               lastLeg.arrival?.date ||
+                               lastLeg.arrival_time ||
+                               lastLeg.arrival_date ||
+                               null;
+            
+            if (arrivalTime) {
+              console.log(`[CityDaysAllocation] Found arrival time: ${arrivalTime}`);
+              // Parse arrival time/date - could be ISO string, timestamp, or date string
+              const parsedDate = new Date(arrivalTime);
+              
+              // Check if date is valid
+              if (!isNaN(parsedDate.getTime())) {
+                // Extract just the date part (YYYY-MM-DD) to avoid timezone issues
+                const year = parsedDate.getFullYear();
+                const month = parsedDate.getMonth();
+                const day = parsedDate.getDate();
+                actualStartDate = new Date(year, month, day);
+                
+                console.log(`[CityDaysAllocation] Parsed arrival date: ${actualStartDate.toISOString().split('T')[0]}`);
+                
+                // If arrival is late in the day (after 6 PM), activities start the next day
+                const arrivalHour = parsedDate.getHours();
+                if (arrivalHour >= 18) {
+                  actualStartDate.setDate(actualStartDate.getDate() + 1);
+                  console.log(`[CityDaysAllocation] Arrival after 6 PM, starting activities next day: ${actualStartDate.toISOString().split('T')[0]}`);
+                }
+              } else {
+                // If parsing failed, try to extract date from string format like "2024-03-05 14:30"
+                const dateMatch = String(arrivalTime).match(/(\d{4}-\d{2}-\d{2})/);
+                if (dateMatch) {
+                  actualStartDate = new Date(dateMatch[1]);
+                  console.log(`[CityDaysAllocation] Extracted date from string: ${actualStartDate.toISOString().split('T')[0]}`);
+                }
+              }
+            } else {
+              console.log(`[CityDaysAllocation] No arrival time found in flight leg:`, lastLeg);
+            }
+          }
+          
+          // If we still don't have a date, check total duration to estimate
+          if (!actualStartDate) {
+            const outboundDate = new Date(tripPreferences.start_date);
+            const totalDurationHours = (selectedOutbound?.total_duration || 0) / 60;
+            // If flight duration suggests it crosses midnight or is very long, add a day
+            if (totalDurationHours > 12 || (totalDurationHours > 6 && outboundDate.getHours() >= 18)) {
+              outboundDate.setDate(outboundDate.getDate() + 1);
+            }
+            actualStartDate = outboundDate;
+          }
+        }
+
+        // Get selected return flight
+        if (selectedReturnFlightId && flightsResult.return_flights) {
+          const selectedReturn = flightsResult.return_flights[flightsResult.selected_return_index];
+          const flightLegs = selectedReturn?.flights || [];
+          
+          if (flightLegs.length > 0) {
+            const firstLeg = flightLegs[0];
+            // Try different possible structures for departure time
+            const departureTime = firstLeg.departure_airport?.time || 
+                                firstLeg.departure_airport?.date ||
+                                firstLeg.departure?.time || 
+                                firstLeg.departure?.date ||
+                                firstLeg.departure_time ||
+                                firstLeg.departure_date ||
+                                null;
+            
+            if (departureTime) {
+              const parsedDate = new Date(departureTime);
+              if (!isNaN(parsedDate.getTime())) {
+                const year = parsedDate.getFullYear();
+                const month = parsedDate.getMonth();
+                const day = parsedDate.getDate();
+                actualEndDate = new Date(year, month, day);
+              } else {
+                const dateMatch = String(departureTime).match(/(\d{4}-\d{2}-\d{2})/);
+                if (dateMatch) {
+                  actualEndDate = new Date(dateMatch[1]);
+                }
+              }
+            }
+          }
+          
+          if (!actualEndDate) {
+            actualEndDate = new Date(tripPreferences.end_date);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error fetching flight data for date calculation:", error);
+    }
+
+    // Final fallback to trip dates if still not available
+    if (!actualStartDate && tripPreferences?.start_date) {
+      const outboundDate = new Date(tripPreferences.start_date);
+      outboundDate.setDate(outboundDate.getDate() + 1); // Add 1 day for travel
+      actualStartDate = outboundDate;
+    }
+    if (!actualEndDate && tripPreferences?.end_date) {
+      actualEndDate = new Date(tripPreferences.end_date);
+    }
+
+    if (!actualStartDate || !actualEndDate) {
+      setCityDaysAllocation([]);
+      return;
+    }
+
+    console.log(`[CityDaysAllocation] Using dates - Start: ${actualStartDate.toISOString().split('T')[0]}, End: ${actualEndDate.toISOString().split('T')[0]}`);
+    console.log(`[CityDaysAllocation] Trip dates were - Start: ${tripPreferences.start_date}, End: ${tripPreferences.end_date}`);
+
+    // Calculate total available days (from arrival to departure)
+    const totalDays = Math.ceil((actualEndDate.getTime() - actualStartDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
     
     if (totalDays <= 0) {
       setCityDaysAllocation([]);
@@ -1226,12 +1378,17 @@ const ChatWindow = ({
       }
     }
 
-    // Calculate dates for each city segment
-    let currentDate = new Date(startDate);
+    // Calculate dates for each city segment starting from actual arrival date
+    let currentDate = new Date(actualStartDate);
     const result = allocations.map((alloc) => {
       const cityStartDate = new Date(currentDate);
       const cityEndDate = new Date(currentDate);
       cityEndDate.setDate(cityEndDate.getDate() + alloc.days - 1);
+      
+      // Ensure we don't exceed the actual end date
+      if (cityEndDate > actualEndDate) {
+        cityEndDate.setTime(actualEndDate.getTime());
+      }
       
       // Format dates as YYYY-MM-DD
       const formatDate = (date: Date) => {
@@ -1255,12 +1412,16 @@ const ChatWindow = ({
     });
 
     setCityDaysAllocation(result);
-  }, [orderedCities, activities, tripPreferences?.start_date, tripPreferences?.end_date]);
+  }, [orderedCities, activities, selectedOutboundIndex, selectedReturnIndex, tripId, tripPreferences?.start_date, tripPreferences?.end_date]);
 
-  // Recalculate city days allocation when dependencies change
+  // Call the async calculation function when dependencies change
   useEffect(() => {
-    calculateCityDaysAllocation();
-  }, [calculateCityDaysAllocation]);
+    if (selectedOutboundIndex !== null && selectedReturnIndex !== null && orderedCities.length > 0 && tripId) {
+      calculateCityDaysAllocation();
+    } else {
+      setCityDaysAllocation([]);
+    }
+  }, [calculateCityDaysAllocation, selectedOutboundIndex, selectedReturnIndex, orderedCities.length, tripId]);
 
   // Fetch flights from SerpAPI for all departure airports
   const fetchFlights = async () => {
@@ -2362,8 +2523,8 @@ const ChatWindow = ({
                 </div>
                 <div className="flex flex-col gap-2 items-end">
                   <div className="flex items-center gap-2">
-                    <Label className="text-[11px] text-slate-600">
-                      Use test activities
+                    <Label className="text-[11px] text-slate-600" title="Uses Greece activities (Athens, Mykonos, Santorini) instead of Google Search API">
+                      Use test activities (Greece)
                     </Label>
                     <Switch
                       checked={useTestActivities}
@@ -3672,59 +3833,6 @@ const ChatWindow = ({
                   )}
                 </div>
 
-                {/* City Days Allocation Display */}
-                {cityDaysAllocation.length > 0 && tripPreferences?.start_date && tripPreferences?.end_date && (
-                  <div className="space-y-2 pb-3 border-b border-blue-200">
-                    <Label className="text-slate-800 text-xs">Days allocated per city</Label>
-                    <p className="text-[11px] text-slate-500">
-                      Days are allocated based on the number of activities in each city.
-                    </p>
-                    
-                    <div className="space-y-2 mt-2">
-                      {cityDaysAllocation.map((allocation, index) => (
-                        <div
-                          key={`${allocation.city}-${index}`}
-                          className="flex items-start gap-3 p-2.5 rounded border border-blue-200 bg-blue-50/30"
-                        >
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="text-xs font-semibold text-slate-900">{allocation.city}</span>
-                              <span className="text-[10px] text-slate-500">
-                                ({allocation.displayActivityCount || allocation.activityCount} {(allocation.displayActivityCount || allocation.activityCount) === 1 ? 'activity' : 'activities'})
-                                {allocation.activityCount === 0 && (
-                                  <span className="text-slate-400 italic ml-1">(estimated)</span>
-                                )}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-3 text-[11px] text-slate-600">
-                              <span className="font-medium">
-                                {allocation.days} {allocation.days === 1 ? 'day' : 'days'}
-                              </span>
-                              {allocation.startDate && allocation.endDate && (
-                                <span className="text-slate-500">
-                                  {new Date(allocation.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                  {allocation.startDate !== allocation.endDate && (
-                                    <>
-                                      {' - '}
-                                      {new Date(allocation.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                    </>
-                                  )}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="mt-2 pt-2 border-t border-blue-100">
-                      <p className="text-[10px] text-slate-500">
-                        <span className="font-semibold">Total:</span> {cityDaysAllocation.reduce((sum, a) => sum + a.days, 0)} days across {cityDaysAllocation.length} {cityDaysAllocation.length === 1 ? 'city' : 'cities'}
-                      </p>
-                    </div>
-                  </div>
-                )}
-
                 {/* Departure Location */}
                 <div className="space-y-2">
                   <Label className="text-slate-800 text-xs">Departure location (your home town)</Label>
@@ -4586,6 +4694,59 @@ const ChatWindow = ({
                               (bestFlights[selectedOutboundIndex]?.price || 0) +
                               (returnFlights[selectedReturnIndex]?.price || 0)
                             ).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* City Days Allocation Display - shown when both flights are selected */}
+                    {selectedOutboundIndex !== null && selectedReturnIndex !== null && cityDaysAllocation.length > 0 && (
+                      <div className="space-y-2 pb-3 border-t border-blue-200 pt-3 mt-3">
+                        <Label className="text-slate-800 text-xs">Days allocated per city</Label>
+                        <p className="text-[11px] text-slate-500">
+                          Days are allocated based on the number of activities in each city, accounting for flight arrival times.
+                        </p>
+                        
+                        <div className="space-y-2 mt-2">
+                          {cityDaysAllocation.map((allocation, index) => (
+                            <div
+                              key={`${allocation.city}-${index}`}
+                              className="flex items-start gap-3 p-2.5 rounded border border-blue-200 bg-blue-50/30"
+                            >
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="text-xs font-semibold text-slate-900">{allocation.city}</span>
+                                  <span className="text-[10px] text-slate-500">
+                                    ({allocation.displayActivityCount || allocation.activityCount} {(allocation.displayActivityCount || allocation.activityCount) === 1 ? 'activity' : 'activities'})
+                                    {allocation.activityCount === 0 && (
+                                      <span className="text-slate-400 italic ml-1">(estimated)</span>
+                                    )}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-3 text-[11px] text-slate-600">
+                                  <span className="font-medium">
+                                    {allocation.days} {allocation.days === 1 ? 'day' : 'days'}
+                                  </span>
+                                  {allocation.startDate && allocation.endDate && (
+                                    <span className="text-slate-500">
+                                      {new Date(allocation.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                      {allocation.startDate !== allocation.endDate && (
+                                        <>
+                                          {' - '}
+                                          {new Date(allocation.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                        </>
+                                      )}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="mt-2 pt-2 border-t border-blue-100">
+                          <p className="text-[10px] text-slate-500">
+                            <span className="font-semibold">Total:</span> {cityDaysAllocation.reduce((sum, a) => sum + a.days, 0)} days across {cityDaysAllocation.length} {cityDaysAllocation.length === 1 ? 'city' : 'cities'}
                           </p>
                         </div>
                       </div>

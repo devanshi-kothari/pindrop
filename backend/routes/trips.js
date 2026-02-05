@@ -1922,103 +1922,142 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       .maybeSingle();
 
     // TEST MODE: instead of calling Google Custom Search, reuse existing activities
-    // from the trip's destination or selected_cities when possible, with a Rome fallback.
+    // from Greece cities (Athens, Mykonos, Santorini) by default, grouped by city
     if (testMode) {
-      console.log('[activities] TEST MODE enabled – selecting existing activities from DB');
+      console.log('[activities] TEST MODE enabled – selecting Greece activities (Athens, Mykonos, Santorini)');
 
-      const selectedCities = Array.isArray(tripPreferences?.selected_cities)
-        ? tripPreferences.selected_cities.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())
-        : [];
-      const destinationName = (trip.destination || '').trim();
-      const scopes = selectedCities.length > 0 ? selectedCities : (destinationName ? [destinationName] : []);
-      let baseActivities = [];
+      // Default Greece cities for test mode
+      const greeceCities = ['Athens', 'Mykonos', 'Santorini'];
+      const activitiesByCity = new Map();
 
-      if (scopes.length > 0) {
-        for (const scope of scopes) {
-          const { data: cityActivities, error: cityError } = await supabase
-            .from('activity')
-            .select('activity_id, name, location, city, address, category, duration, cost_estimate, rating, tags')
-            .ilike('location', `%${scope}%`);
-
-          if (!cityError && cityActivities && cityActivities.length > 0) {
-            const withCity = cityActivities.map((a) => ({ ...a, city: a.city || scope }));
-            baseActivities.push(...withCity);
-            console.log(`[activities][testMode] Found ${cityActivities.length} activities for "${scope}"`);
-          }
-        }
-      }
-
-      if (!baseActivities || baseActivities.length < 5) {
-        const fallbackScope = destinationName || 'Rome';
-        console.log(
-          `[activities][testMode] Not enough for scopes (count=${baseActivities?.length || 0}). Falling back to ${fallbackScope}.`,
-        );
-        const { data: fallbackActivities, error: fallbackError } = await supabase
+      // Fetch activities for each Greece city
+      for (const city of greeceCities) {
+        const { data: cityActivities, error: cityError } = await supabase
           .from('activity')
-          .select('activity_id, name, location, city, address, category, duration, cost_estimate, rating, tags')
-          .ilike('location', `%${fallbackScope}%`);
+          .select('activity_id, name, location, city, address, category, duration, cost_estimate, rating, tags, image_url, description, source_url')
+          .or(`city.ilike.%${city}%,location.ilike.%${city}%`);
 
-        if (!fallbackError && fallbackActivities && fallbackActivities.length > 0) {
-          const withCity = fallbackActivities.map((a) => ({ ...a, city: a.city || fallbackScope }));
-          baseActivities = [...(baseActivities || []), ...withCity];
+        if (!cityError && cityActivities && cityActivities.length > 0) {
+          // Ensure city field is set properly
+          const withCity = cityActivities.map((a) => ({ 
+            ...a, 
+            city: a.city || city,
+            location: a.location || city
+          }));
+          activitiesByCity.set(city, withCity);
+          console.log(`[activities][testMode] Found ${cityActivities.length} activities for "${city}"`);
+        } else {
+          console.log(`[activities][testMode] No activities found for "${city}"`);
         }
       }
 
-      if (!baseActivities || baseActivities.length === 0) {
-        console.warn('[activities][testMode] No suitable activities found.');
+      // Collect all activities grouped by city
+      let allActivities = [];
+      for (const [city, acts] of activitiesByCity.entries()) {
+        allActivities.push(...acts.map(a => ({ ...a, city })));
+      }
+
+      if (allActivities.length === 0) {
+        console.warn('[activities][testMode] No Greece activities found in database.');
         return res.status(200).json({
           success: true,
           activities: [],
-          message: 'No existing activities found in test mode for this destination or Rome fallback.',
+          message: 'No Greece activities found in test mode. Please ensure activities for Athens, Mykonos, and Santorini exist in the database.',
         });
       }
 
-      const shuffled = [...baseActivities].sort(() => Math.random() - 0.5);
-      const selected = shuffled.slice(0, 10);
+      // Group activities by city and select up to 8 total with city diversity (similar to normal mode)
+      const byCity = new Map();
+      for (const act of allActivities) {
+        const cityKey = act.city || 'Unknown';
+        if (!byCity.has(cityKey)) byCity.set(cityKey, []);
+        byCity.get(cityKey).push(act);
+      }
 
-      const activitiesWithPrefs = [];
-      for (const act of selected) {
-        try {
-          const { data: existingPref, error: prefError } = await supabase
-            .from('trip_activity_preference')
-            .select('*')
-            .eq('trip_id', tripId)
-            .eq('activity_id', act.activity_id)
-            .maybeSingle();
+      // Sort cities in order: Athens, Mykonos, Santorini
+      const cityOrder = ['Athens', 'Mykonos', 'Santorini'];
+      const cityKeys = [
+        ...cityOrder.filter(c => byCity.has(c)),
+        ...Array.from(byCity.keys()).filter(k => !cityOrder.includes(k))
+      ];
 
-          if (prefError) console.error('Error checking existing preference in test mode:', prefError);
+      const numCities = cityKeys.length;
+      const perCity = Math.max(1, Math.ceil(8 / numCities));
+      const suggestions = [];
+      const indices = new Map(cityKeys.map((k) => [k, 0]));
 
-          if (!existingPref) {
-            const { error: insertError } = await supabase
+      // Round-robin selection from each city (similar to normal mode)
+      while (suggestions.length < 8 && cityKeys.length > 0) {
+        let added = 0;
+        for (const cityKey of cityKeys) {
+          if (suggestions.length >= 8) break;
+          const list = byCity.get(cityKey);
+          const idx = indices.get(cityKey);
+          const taken = list.filter((a) => suggestions.some((s) => s.activity_id === a.activity_id)).length;
+          if (taken >= perCity || idx >= list.length) continue;
+          
+          const activity = list[idx];
+          try {
+            const { data: existingPref, error: prefError } = await supabase
               .from('trip_activity_preference')
-              .insert({ trip_id: tripId, activity_id: act.activity_id, preference: 'pending' });
-            if (insertError) console.error('Error inserting preference in test mode:', insertError);
-          }
+              .select('*')
+              .eq('trip_id', tripId)
+              .eq('activity_id', activity.activity_id)
+              .maybeSingle();
 
-          activitiesWithPrefs.push({
-            trip_activity_preference_id: existingPref?.trip_activity_preference_id || null,
-            activity_id: act.activity_id,
-            name: act.name,
-            location: act.location,
-            city: act.city || act.location || null,
-            category: act.category,
-            duration: act.duration,
-            cost_estimate: act.cost_estimate,
-            rating: act.rating,
-            tags: act.tags,
-            source: 'test-mode',
-            preference: 'pending',
-          });
-        } catch (e) {
-          console.error('Error processing test-mode activity:', e);
+            if (prefError) {
+              console.error('Error checking existing preference in test mode:', prefError);
+              indices.set(cityKey, idx + 1);
+              continue;
+            }
+
+            let prefRow = existingPref;
+            if (!prefRow) {
+              const { data: inserted, error: insertError } = await supabase
+                .from('trip_activity_preference')
+                .insert([{ trip_id: tripId, activity_id: activity.activity_id, preference: 'pending' }])
+                .select()
+                .single();
+              if (insertError) {
+                console.error('Error inserting preference in test mode:', insertError);
+                indices.set(cityKey, idx + 1);
+                continue;
+              }
+              prefRow = inserted;
+            }
+
+            suggestions.push({
+              trip_activity_preference_id: prefRow.trip_activity_preference_id,
+              activity_id: activity.activity_id,
+              name: activity.name,
+              location: activity.location || activity.city || cityKey,
+              city: activity.city || cityKey,
+              category: activity.category,
+              duration: activity.duration,
+              cost_estimate: activity.cost_estimate,
+              rating: activity.rating,
+              tags: activity.tags,
+              image_url: activity.image_url || null,
+              description: activity.description || null,
+              source_url: activity.source_url || null,
+              source: 'test-mode',
+              preference: prefRow.preference || 'pending',
+            });
+            indices.set(cityKey, idx + 1);
+            console.log(`[activities][testMode] Added: ${activity.name} [${activity.city || cityKey}] - Total: ${suggestions.length}`);
+            added++;
+          } catch (e) {
+            console.error('Error processing test-mode activity:', e);
+            indices.set(cityKey, idx + 1);
+          }
         }
+        if (added === 0) break;
       }
 
       return res.status(200).json({
         success: true,
-        activities: activitiesWithPrefs,
-        message:
-          'Loaded test activities from existing records (trip destination when available, otherwise Rome fallback, no Google API used).',
+        activities: suggestions,
+        message: 'Loaded test activities from Greece (Athens, Mykonos, Santorini), grouped by city (no Google API used).',
       });
     }
 
