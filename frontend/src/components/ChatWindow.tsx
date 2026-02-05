@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { Send, Maximize2 } from "lucide-react";
+import { Send, Maximize2, ChevronUp, ChevronDown, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -18,7 +18,6 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Switch } from "@/components/ui/switch";
-import { ChevronDown } from "lucide-react";
 import { getApiUrl } from "@/lib/api";
 import ActivitySwipeCard from "./ActivitySwipeCard";
 import RestaurantSwipeCard from "./RestaurantSwipeCard";
@@ -198,6 +197,16 @@ const ChatWindow = ({
   const [hasSentInitialExploreMessage, setHasSentInitialExploreMessage] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [lockDestination, setLockDestination] = useState("");
+  const [orderedCities, setOrderedCities] = useState<string[]>([]); // Ordered list of cities for flight booking
+  const [newCityInput, setNewCityInput] = useState(""); // Input for adding new city
+  const [cityDaysAllocation, setCityDaysAllocation] = useState<Array<{
+    city: string;
+    days: number;
+    startDate: string | null;
+    endDate: string | null;
+    activityCount: number; // Actual activity count
+    displayActivityCount: number; // Display count (minimum 2 for cities with 0 activities)
+  }>>([]); // Days allocated to each city segment
   const [isLockingDestination, setIsLockingDestination] = useState(false);
   const [hasLockedDestination, setHasLockedDestination] = useState(
     planningMode === "known" || hasDestinationLocked
@@ -615,6 +624,25 @@ const ChatWindow = ({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tripId, hasLoadedPreferences, loadItineraryDays]);
+
+  // Initialize ordered cities from tripPreferences or citySuggestions when they become available
+  useEffect(() => {
+    if (hasConfirmedTripSketch && activeTab === "flights" && orderedCities.length === 0) {
+      // Initialize from selected_cities if available, otherwise from citySuggestions
+      const citiesToUse = 
+        tripPreferences?.selected_cities && tripPreferences.selected_cities.length > 0
+          ? tripPreferences.selected_cities
+          : citySuggestions.length > 0
+          ? citySuggestions
+          : tripDestination
+          ? [tripDestination]
+          : [];
+      
+      if (citiesToUse.length > 0) {
+        setOrderedCities([...citiesToUse]);
+      }
+    }
+  }, [hasConfirmedTripSketch, activeTab, tripPreferences?.selected_cities, citySuggestions, tripDestination, orderedCities.length]);
 
   const loadActivities = useCallback(
     async (id: number) => {
@@ -1060,6 +1088,179 @@ const ChatWindow = ({
     // Last resort: use trip destination
     return tripDestination;
   };
+
+  // Calculate day allocation for each city based on activity counts
+  // This function handles duplicate cities by splitting activities across instances
+  const calculateCityDaysAllocation = useCallback(() => {
+    if (orderedCities.length === 0 || !tripPreferences?.start_date || !tripPreferences?.end_date) {
+      setCityDaysAllocation([]);
+      return;
+    }
+
+    // Calculate total trip days
+    const startDate = new Date(tripPreferences.start_date);
+    const endDate = new Date(tripPreferences.end_date);
+    const totalDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    
+    if (totalDays <= 0) {
+      setCityDaysAllocation([]);
+      return;
+    }
+
+    // Group activities by city name (case-insensitive, normalized)
+    const normalizeCityName = (name: string | null | undefined): string => {
+      if (!name) return '';
+      return name.trim().toLowerCase();
+    };
+
+    const activitiesByCity = new Map<string, typeof activities>();
+    
+    // Group activities by their city field (or location as fallback)
+    activities.forEach((activity) => {
+      const cityName = activity.city || activity.location || '';
+      if (cityName) {
+        const normalized = normalizeCityName(cityName);
+        if (!activitiesByCity.has(normalized)) {
+          activitiesByCity.set(normalized, []);
+        }
+        activitiesByCity.get(normalized)!.push(activity);
+      }
+    });
+
+    // For each city in orderedCities, find matching activities
+    // If a city appears multiple times, split activities evenly across instances
+    const cityInstances: Array<{ city: string; activities: typeof activities }> = [];
+    const cityActivityCounts = new Map<string, number>();
+    
+    // Count total activities per city name
+    orderedCities.forEach((city) => {
+      const normalized = normalizeCityName(city);
+      const count = activitiesByCity.get(normalized)?.length || 0;
+      cityActivityCounts.set(city, (cityActivityCounts.get(city) || 0) + count);
+    });
+
+    // Distribute activities across duplicate city instances
+    orderedCities.forEach((city) => {
+      const normalized = normalizeCityName(city);
+      const allCityActivities = activitiesByCity.get(normalized) || [];
+      
+      // Count how many times this city appears in orderedCities
+      const cityOccurrences = orderedCities.filter(c => normalizeCityName(c) === normalized).length;
+      
+      // Split activities evenly across occurrences
+      const activitiesPerInstance = Math.ceil(allCityActivities.length / cityOccurrences);
+      const instanceIndex = orderedCities.slice(0, orderedCities.indexOf(city) + 1)
+        .filter(c => normalizeCityName(c) === normalized).length - 1;
+      
+      const startIdx = instanceIndex * activitiesPerInstance;
+      const endIdx = Math.min(startIdx + activitiesPerInstance, allCityActivities.length);
+      const instanceActivities = allCityActivities.slice(startIdx, endIdx);
+      
+      cityInstances.push({
+        city,
+        activities: instanceActivities,
+      });
+    });
+
+    // Calculate activity counts for each city instance
+    const activityCounts = cityInstances.map(instance => instance.activities.length);
+    const totalActivities = activityCounts.reduce((sum, count) => sum + count, 0);
+
+    // Allocate days proportionally based on activity counts
+    // If no activities, distribute days equally
+    // Otherwise, minimum 1 day per city, distribute remaining days proportionally
+    const baseDays = cityInstances.length; // At least 1 day per city
+    const remainingDays = Math.max(0, totalDays - baseDays);
+    
+    const allocations = cityInstances.map((instance, index) => {
+      let days = 1; // Base: at least 1 day
+      
+      if (totalActivities === 0) {
+        // No activities: distribute days equally
+        const daysPerCity = Math.floor(totalDays / cityInstances.length);
+        const extraDays = totalDays % cityInstances.length;
+        days = daysPerCity + (index < extraDays ? 1 : 0);
+      } else if (remainingDays > 0) {
+        // Allocate remaining days proportionally based on activity count
+        const activityRatio = activityCounts[index] / totalActivities;
+        days += Math.round(activityRatio * remainingDays);
+      }
+      
+      // For cities with 0 activities, show at least 2 as a placeholder/estimate
+      const displayActivityCount = activityCounts[index] === 0 ? 2 : activityCounts[index];
+      
+      return {
+        city: instance.city,
+        days,
+        activityCount: activityCounts[index], // Actual count for calculation
+        displayActivityCount, // Display count (minimum 2 for cities with 0 activities)
+      };
+    });
+
+    // Adjust if total exceeds available days (rounding errors)
+    const totalAllocated = allocations.reduce((sum, a) => sum + a.days, 0);
+    if (totalAllocated > totalDays) {
+      // Reduce from cities with most days
+      const sorted = [...allocations].sort((a, b) => b.days - a.days);
+      let excess = totalAllocated - totalDays;
+      for (const alloc of sorted) {
+        if (excess <= 0) break;
+        const reduction = Math.min(excess, alloc.days - 1); // Keep at least 1 day
+        alloc.days -= reduction;
+        excess -= reduction;
+      }
+    } else if (totalAllocated < totalDays) {
+      // Distribute remaining days to cities with most activities
+      // Prioritize cities with activities over cities with 0 activities
+      const remaining = totalDays - totalAllocated;
+      const sorted = [...allocations].sort((a, b) => {
+        // First sort by activity count (cities with activities first)
+        if (b.activityCount !== a.activityCount) {
+          return b.activityCount - a.activityCount;
+        }
+        // If same activity count, sort by current days (fewer days first)
+        return a.days - b.days;
+      });
+      for (let i = 0; i < remaining; i++) {
+        sorted[i % sorted.length].days += 1;
+      }
+    }
+
+    // Calculate dates for each city segment
+    let currentDate = new Date(startDate);
+    const result = allocations.map((alloc) => {
+      const cityStartDate = new Date(currentDate);
+      const cityEndDate = new Date(currentDate);
+      cityEndDate.setDate(cityEndDate.getDate() + alloc.days - 1);
+      
+      // Format dates as YYYY-MM-DD
+      const formatDate = (date: Date) => {
+        return date.toISOString().split('T')[0];
+      };
+      
+      const startDateStr = formatDate(cityStartDate);
+      const endDateStr = formatDate(cityEndDate);
+      
+      // Move to next city's start date
+      currentDate.setDate(currentDate.getDate() + alloc.days);
+      
+      return {
+        city: alloc.city,
+        days: alloc.days,
+        startDate: startDateStr,
+        endDate: endDateStr,
+        activityCount: alloc.activityCount, // Actual activity count
+        displayActivityCount: alloc.displayActivityCount || alloc.activityCount, // Display count (min 2 for 0-activity cities)
+      };
+    });
+
+    setCityDaysAllocation(result);
+  }, [orderedCities, activities, tripPreferences?.start_date, tripPreferences?.end_date]);
+
+  // Recalculate city days allocation when dependencies change
+  useEffect(() => {
+    calculateCityDaysAllocation();
+  }, [calculateCityDaysAllocation]);
 
   // Fetch flights from SerpAPI for all departure airports
   const fetchFlights = async () => {
@@ -3341,6 +3542,188 @@ const ChatWindow = ({
                 <p className="text-xs font-semibold text-slate-600">
                   Phase 3: Plan your flights
                 </p>
+
+                {/* City Ordering UI */}
+                <div className="space-y-2 pb-3 border-b border-blue-200">
+                  <Label className="text-slate-800 text-xs">Order your cities</Label>
+                  <p className="text-[11px] text-slate-500">
+                    Arrange the cities you want to visit in order. You can visit the same city multiple times.
+                  </p>
+                  
+                  {orderedCities.length > 0 && (
+                    <div className="space-y-1.5 mt-2">
+                      {orderedCities.map((city, index) => (
+                        <div
+                          key={`${city}-${index}`}
+                          className="flex items-center gap-2 p-2 rounded border border-blue-200 bg-white hover:border-blue-300"
+                        >
+                          <div className="flex items-center gap-1">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 w-6 p-0 hover:bg-blue-100 disabled:opacity-30"
+                              disabled={index === 0}
+                              onClick={() => {
+                                const newCities = [...orderedCities];
+                                [newCities[index - 1], newCities[index]] = [newCities[index], newCities[index - 1]];
+                                setOrderedCities(newCities);
+                              }}
+                            >
+                              <ChevronUp className="h-3 w-3 text-slate-600" />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 w-6 p-0 hover:bg-blue-100 disabled:opacity-30"
+                              disabled={index === orderedCities.length - 1}
+                              onClick={() => {
+                                const newCities = [...orderedCities];
+                                [newCities[index], newCities[index + 1]] = [newCities[index + 1], newCities[index]];
+                                setOrderedCities(newCities);
+                              }}
+                            >
+                              <ChevronDown className="h-3 w-3 text-slate-600" />
+                            </Button>
+                          </div>
+                          <div className="flex-1 flex items-center gap-2">
+                            <span className="text-[11px] font-semibold text-slate-700 w-5 text-center">
+                              {index + 1}
+                            </span>
+                            <span className="text-xs text-slate-900 flex-1">{city}</span>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 w-6 p-0 hover:bg-rose-100 text-rose-500"
+                            onClick={() => {
+                              setOrderedCities(orderedCities.filter((_, i) => i !== index));
+                            }}
+                          >
+                            <X className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="flex gap-2 mt-2">
+                    <Input
+                      type="text"
+                      value={newCityInput}
+                      onChange={(e) => setNewCityInput(e.target.value)}
+                      placeholder="Add a city..."
+                      className="h-8 bg-white border-blue-200 text-xs text-slate-900 flex-1"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && newCityInput.trim()) {
+                          setOrderedCities([...orderedCities, newCityInput.trim()]);
+                          setNewCityInput("");
+                        }
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                      disabled={!newCityInput.trim()}
+                      onClick={() => {
+                        if (newCityInput.trim()) {
+                          setOrderedCities([...orderedCities, newCityInput.trim()]);
+                          setNewCityInput("");
+                        }
+                      }}
+                    >
+                      <Plus className="h-3 w-3 mr-1" />
+                      Add
+                    </Button>
+                  </div>
+
+                  {orderedCities.length === 0 && (
+                    <p className="text-[11px] text-slate-400 italic mt-1">
+                      No cities added yet. Add cities to plan your multi-city trip.
+                    </p>
+                  )}
+
+                  {citySuggestions.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-blue-100">
+                      <p className="text-[11px] text-slate-600 font-semibold mb-1.5">Quick add from suggestions:</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {citySuggestions.map((city) => (
+                          <Button
+                            key={city}
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-7 px-2 text-[10px] border-blue-200 bg-white text-slate-700 hover:bg-blue-50 hover:border-blue-300"
+                            onClick={() => {
+                              if (!orderedCities.includes(city)) {
+                                setOrderedCities([...orderedCities, city]);
+                              }
+                            }}
+                          >
+                            <Plus className="h-2.5 w-2.5 mr-1" />
+                            {city}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* City Days Allocation Display */}
+                {cityDaysAllocation.length > 0 && tripPreferences?.start_date && tripPreferences?.end_date && (
+                  <div className="space-y-2 pb-3 border-b border-blue-200">
+                    <Label className="text-slate-800 text-xs">Days allocated per city</Label>
+                    <p className="text-[11px] text-slate-500">
+                      Days are allocated based on the number of activities in each city.
+                    </p>
+                    
+                    <div className="space-y-2 mt-2">
+                      {cityDaysAllocation.map((allocation, index) => (
+                        <div
+                          key={`${allocation.city}-${index}`}
+                          className="flex items-start gap-3 p-2.5 rounded border border-blue-200 bg-blue-50/30"
+                        >
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-xs font-semibold text-slate-900">{allocation.city}</span>
+                              <span className="text-[10px] text-slate-500">
+                                ({allocation.displayActivityCount || allocation.activityCount} {(allocation.displayActivityCount || allocation.activityCount) === 1 ? 'activity' : 'activities'})
+                                {allocation.activityCount === 0 && (
+                                  <span className="text-slate-400 italic ml-1">(estimated)</span>
+                                )}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-3 text-[11px] text-slate-600">
+                              <span className="font-medium">
+                                {allocation.days} {allocation.days === 1 ? 'day' : 'days'}
+                              </span>
+                              {allocation.startDate && allocation.endDate && (
+                                <span className="text-slate-500">
+                                  {new Date(allocation.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                  {allocation.startDate !== allocation.endDate && (
+                                    <>
+                                      {' - '}
+                                      {new Date(allocation.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                    </>
+                                  )}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="mt-2 pt-2 border-t border-blue-100">
+                      <p className="text-[10px] text-slate-500">
+                        <span className="font-semibold">Total:</span> {cityDaysAllocation.reduce((sum, a) => sum + a.days, 0)} days across {cityDaysAllocation.length} {cityDaysAllocation.length === 1 ? 'city' : 'cities'}
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Departure Location */}
                 <div className="space-y-2">
