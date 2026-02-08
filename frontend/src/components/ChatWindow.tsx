@@ -2385,43 +2385,105 @@ const ChatWindow = ({
     }
   };
 
+  // Helper function to extract arrival date from selected outbound flight
+  const getFlightArrivalDate = (): Date | null => {
+    if (selectedOutboundIndex === null || !bestFlights[selectedOutboundIndex]) {
+      return null;
+    }
+
+    const selectedFlight = bestFlights[selectedOutboundIndex];
+    const flightLegs = selectedFlight?.flights || [];
+    
+    if (flightLegs.length === 0) {
+      return null;
+    }
+
+    const lastLeg = flightLegs[flightLegs.length - 1];
+    // Try different possible structures for arrival time/date
+    const arrivalTime = lastLeg.arrival_airport?.time || 
+                       lastLeg.arrival_airport?.date ||
+                       lastLeg.arrival?.time || 
+                       lastLeg.arrival?.date ||
+                       lastLeg.arrival_time ||
+                       lastLeg.arrival_date ||
+                       null;
+
+    if (!arrivalTime) {
+      return null;
+    }
+
+    // Parse arrival time/date
+    const parsedDate = new Date(arrivalTime);
+    
+    if (isNaN(parsedDate.getTime())) {
+      // Try to extract date from string format like "2024-03-05 14:30"
+      const dateMatch = String(arrivalTime).match(/(\d{4}-\d{2}-\d{2})/);
+      if (dateMatch) {
+        return new Date(dateMatch[1]);
+      }
+      return null;
+    }
+
+    // Extract just the date part (YYYY-MM-DD) to avoid timezone issues
+    const year = parsedDate.getFullYear();
+    const month = parsedDate.getMonth();
+    const day = parsedDate.getDate();
+    return new Date(year, month, day);
+  };
+
   // Derived helpers for dates / num_days validation and UX
   const { dateError, computedNumDays } = (() => {
     let localError: string | null = null;
     let localNumDays: number | null = null;
 
-    if (tripPreferences?.start_date && tripPreferences?.end_date) {
-      const start = new Date(tripPreferences.start_date);
+    // First, try to get start date from flight arrival
+    const flightArrivalDate = getFlightArrivalDate();
+    const startDate = flightArrivalDate 
+      ? flightArrivalDate 
+      : (tripPreferences?.start_date ? new Date(tripPreferences.start_date) : null);
+
+    if (startDate && tripPreferences?.end_date) {
       const end = new Date(tripPreferences.end_date);
 
-      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+      if (Number.isNaN(startDate.getTime()) || Number.isNaN(end.getTime())) {
         localError = "Please enter valid dates.";
-      } else if (end < start) {
-        localError = "End date must be on or after the start date.";
+      } else if (end < startDate) {
+        localError = "End date must be on or after the flight arrival date.";
       } else {
-        const diffMs = end.getTime() - start.getTime();
+        const diffMs = end.getTime() - startDate.getTime();
         localNumDays = Math.round(diffMs / (1000 * 60 * 60 * 24)) + 1;
       }
+    } else if (tripPreferences?.num_days) {
+      // Fallback to num_days if dates aren't available
+      localNumDays = tripPreferences.num_days;
     }
 
     return { dateError: localError, computedNumDays: localNumDays };
   })();
 
   // Initialize manualCityDaysAllocation when entering multi-city planning tab
+  // Re-initialize when flight is selected (so it uses flight arrival date for calculation)
   useEffect(() => {
-    if (activeTab === "multi-city" && orderedCities.length > 1 && Object.keys(manualCityDaysAllocation).length === 0) {
+    if (activeTab === "multi-city" && orderedCities.length > 1) {
       const totalDays = computedNumDays || tripPreferences?.num_days || 0;
       if (totalDays > 0) {
-        const daysPerCity = Math.floor(totalDays / orderedCities.length);
-        const remainder = totalDays % orderedCities.length;
-        const initial: Record<string, number> = {};
-        orderedCities.forEach((city, index) => {
-          initial[city] = daysPerCity + (index < remainder ? 1 : 0);
-        });
-        setManualCityDaysAllocation(initial);
+        // Initialize if empty, or reset if flight was just selected (to recalculate with flight arrival date)
+        const currentTotal = Object.values(manualCityDaysAllocation).reduce((sum, days) => sum + days, 0);
+        const shouldInitialize = Object.keys(manualCityDaysAllocation).length === 0 || 
+                                 (currentTotal === 0 && selectedOutboundIndex !== null);
+        
+        if (shouldInitialize) {
+          const daysPerCity = Math.floor(totalDays / orderedCities.length);
+          const remainder = totalDays % orderedCities.length;
+          const initial: Record<string, number> = {};
+          orderedCities.forEach((city, index) => {
+            initial[city] = daysPerCity + (index < remainder ? 1 : 0);
+          });
+          setManualCityDaysAllocation(initial);
+        }
       }
     }
-  }, [activeTab, orderedCities, computedNumDays, tripPreferences?.num_days, manualCityDaysAllocation]);
+  }, [activeTab, orderedCities, computedNumDays, tripPreferences?.num_days, selectedOutboundIndex, manualCityDaysAllocation]);
 
   const allActivitiesAnswered =
     activities.length > 0 && activities.every((a) => a.preference !== "pending");
@@ -4858,6 +4920,11 @@ const ChatWindow = ({
                 </p>
                 <p className="text-[11px] text-slate-500">
                   Distribute your {computedNumDays || tripPreferences?.num_days || 0} trip days across the cities you&apos;re visiting.
+                  {getFlightArrivalDate() && (
+                    <span className="block mt-1 text-[10px] text-slate-400">
+                      Trip starts on {getFlightArrivalDate()?.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })} (flight arrival date)
+                    </span>
+                  )}
                 </p>
 
                 <div className="space-y-4">
