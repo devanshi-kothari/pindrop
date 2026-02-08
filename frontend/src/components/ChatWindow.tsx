@@ -211,6 +211,7 @@ const ChatWindow = ({
   const [hasLockedDestination, setHasLockedDestination] = useState(
     planningMode === "known" || hasDestinationLocked
   );
+  const [hasStartedPlanning, setHasStartedPlanning] = useState(false); // Track if "Start planning" has been clicked
   const [activeTab, setActiveTab] = useState<"activities" | "restaurants" | "flights" | "hotels" | "summary">(
     "activities"
   );
@@ -2544,14 +2545,73 @@ const ChatWindow = ({
                     <Button
                       size="sm"
                       className="bg-yellow-400 text-slate-900 font-semibold hover:bg-yellow-300 disabled:opacity-60"
-                      onClick={generateActivities}
-                      disabled={isGeneratingActivities}
+                      onClick={async () => {
+                        if (!tripId) return;
+
+                        try {
+                          setIsGeneratingActivities(true);
+
+                          // Save preferences first so activities can reflect latest constraints
+                          if (tripPreferences) {
+                            await savePreferences();
+                          }
+
+                          const token = getAuthToken();
+                          if (!token) return;
+
+                          const response = await fetch(getApiUrl(`api/trips/${tripId}/generate-activities`), {
+                            method: "POST",
+                            headers: {
+                              Authorization: `Bearer ${token}`,
+                              "Content-Type": "application/json",
+                            },
+                            body: JSON.stringify({
+                              testMode: useTestActivities,
+                              selected_cities: tripPreferences?.selected_cities ?? [],
+                            }),
+                          });
+
+                          const result = await response.json();
+
+                          if (response.ok && result.success && Array.isArray(result.activities)) {
+                            setActivities(result.activities);
+
+                            if (result.activities.length > 0) {
+                              const assistantMessage: Message = {
+                                role: "assistant",
+                                content:
+                                  "I pulled together a small set of activity ideas based on your preferences. Swipe through them below and tell me what you like.",
+                                timestamp: formatTime(),
+                              };
+                              setMessages((prev) => [...prev, assistantMessage]);
+                            } else {
+                              window.alert(
+                                "I wasn't able to find good activity ideas just yet. You can adjust your preferences or try again."
+                              );
+                            }
+                          } else {
+                            console.error("Failed to generate activities:", result.message);
+                          }
+
+                          // Set hasStartedPlanning to show tabs
+                          setHasStartedPlanning(true);
+                          // Set hasConfirmedTripSketch to allow flights section to show
+                          setHasConfirmedTripSketch(true);
+                          // Navigate to flights tab instead of activities
+                          setActiveTab("flights");
+                        } catch (error) {
+                          console.error("Error generating activities:", error);
+                        } finally {
+                          setIsGeneratingActivities(false);
+                        }
+                      }}
+                      disabled={isSavingPreferences || isGeneratingActivities || !tripPreferences}
                     >
-                      {isGeneratingActivities
+                      {isSavingPreferences || isGeneratingActivities
                         ? useTestActivities
                           ? "Loading test activities..."
                           : "Finding activities..."
-                        : "Generate activities"}
+                        : "Start planning"}
                     </Button>
                   </div>
                 </div>
@@ -3018,24 +3078,51 @@ const ChatWindow = ({
       {/* Main planning scroll area (tabs + phases) */}
       <ScrollArea className="flex-1 p-4">
         <div className="space-y-4">
-          {tripId && (
+          {tripId && hasStartedPlanning && (
             <div className="mt-6 mb-3 flex items-center justify-center">
-              <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="w-full max-w-xl">
+              <Tabs value={activeTab} onValueChange={(v) => {
+                // Prevent navigation to tabs that aren't unlocked yet
+                if (v === "hotels" && !hasConfirmedFlights) return;
+                if (v === "activities" && !hasConfirmedHotels) return;
+                if (v === "restaurants" && !hasConfirmedActivities) return;
+                if (v === "summary" && !hasConfirmedRestaurants) return;
+                setActiveTab(v as any);
+              }} className="w-full max-w-xl">
                 <TabsList className="grid grid-cols-5 w-full">
-                  <TabsTrigger value="activities" className="text-xs">Activities</TabsTrigger>
-                  <TabsTrigger value="restaurants" className="text-xs">Restaurants</TabsTrigger>
                   <TabsTrigger value="flights" className="text-xs">Flights</TabsTrigger>
-                  <TabsTrigger value="hotels" className="text-xs">Hotels</TabsTrigger>
-                  <TabsTrigger value="summary" className="text-xs">Summary</TabsTrigger>
+                  <TabsTrigger value="hotels" className="text-xs" disabled={!hasConfirmedFlights}>Hotels</TabsTrigger>
+                  <TabsTrigger value="activities" className="text-xs" disabled={!hasConfirmedHotels}>Activities</TabsTrigger>
+                  <TabsTrigger value="restaurants" className="text-xs" disabled={!hasConfirmedActivities}>Restaurants</TabsTrigger>
+                  <TabsTrigger value="summary" className="text-xs" disabled={!hasConfirmedRestaurants}>Summary</TabsTrigger>
                 </TabsList>
               </Tabs>
             </div>
           )}
-          {tripId && activities.length > 0 && activeTab === "activities" && (
+          {tripId && hasStartedPlanning && hasConfirmedHotels && activeTab === "activities" && activities.length === 0 && (
             <div className="flex justify-center">
               <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm">
                 <p className="text-xs font-semibold text-slate-600 mb-1">
-                  Phase 2: Explore activities
+                  Phase 4: Explore activities
+                </p>
+                <p className="text-[11px] text-slate-600 mb-4">
+                  Generating activities based on your preferences...
+                </p>
+                {isGeneratingActivities && (
+                  <div className="flex items-center gap-2">
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                    <p className="text-xs text-slate-500">
+                      {useTestActivities ? "Loading test activities..." : "Finding activities..."}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {tripId && hasStartedPlanning && hasConfirmedHotels && activities.length > 0 && activeTab === "activities" && (
+            <div className="flex justify-center">
+              <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm">
+                <p className="text-xs font-semibold text-slate-600 mb-1">
+                  Phase 4: Explore activities
                 </p>
                 <p className="text-[11px] text-slate-600 mb-4">
                   Swipe right to like, left to pass, or use the buttons below. Swipe up for maybe.
@@ -3120,13 +3207,10 @@ const ChatWindow = ({
                     disabled={!allActivitiesAnswered}
                     onClick={() => {
                       setHasConfirmedActivities(true);
-                      // Skip trip sketch and go straight to flights
-                      setHasConfirmedTripSketch(true);
-                      setHasShownTripSketchPrompt(true);
-                      setActiveTab("flights");
+                      setActiveTab("restaurants");
                     }}
                   >
-                    I&apos;m done with activities
+                    Done with activities
                   </Button>
                 </div>
 
@@ -3177,7 +3261,7 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {activeTab === "restaurants" && restaurants.length === 0 && (
+          {hasStartedPlanning && hasConfirmedActivities && activeTab === "restaurants" && restaurants.length === 0 && (
             <div className="flex justify-center">
               <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm">
                 <div className="space-y-6">
@@ -3472,11 +3556,11 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {activeTab === "restaurants" && restaurants.length > 0 && (
+          {hasStartedPlanning && hasConfirmedActivities && activeTab === "restaurants" && restaurants.length > 0 && (
             <div className="flex justify-center">
               <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm">
                 <p className="text-xs font-semibold text-slate-600 mb-1">
-                  Phase 2: Explore restaurants
+                  Phase 5: Explore restaurants
                 </p>
                 <p className="text-[11px] text-slate-600 mb-4">
                   Swipe right to like, left to pass, or use the buttons below. Swipe up for maybe.
@@ -3539,6 +3623,18 @@ const ChatWindow = ({
                       ? "All done!"
                       : `${restaurants.filter((r) => r.preference === "pending").length} remaining`}
                   </p>
+                  <Button
+                    size="sm"
+                    className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                    disabled={restaurants.filter((r) => r.preference === "pending").length > 0}
+                    onClick={() => {
+                      setHasConfirmedRestaurants(true);
+                      // Navigate to summary or final itinerary
+                      setActiveTab("summary");
+                    }}
+                  >
+                    Done with restaurants
+                  </Button>
                 </div>
 
                 {/* Reviewed restaurants summary */}
@@ -3593,7 +3689,7 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {itinerarySummary && activeTab === "summary" && (
+          {hasStartedPlanning && itinerarySummary && activeTab === "summary" && (
             <div className="flex justify-start">
               <div className="bg-white border border-emerald-500/60 text-slate-900 rounded-lg px-4 py-3 shadow-sm max-w-[75%]">
                 <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
@@ -3602,11 +3698,11 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {itineraryDays.length > 0 && activeTab === "summary" && (
+          {hasStartedPlanning && itineraryDays.length > 0 && activeTab === "summary" && (
             <div className="flex justify-center">
               <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
                 <p className="text-xs font-semibold text-slate-600">
-                  Phase 5: Day-by-day trip sketch
+                  Phase 6: Day-by-day trip sketch
                 </p>
                 {(() => {
                   const maxIndex = itineraryDays.length - 1;
@@ -3697,11 +3793,14 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {hasConfirmedTripSketch && activeTab === "flights" && (
+          {hasStartedPlanning && hasConfirmedTripSketch && activeTab === "flights" && (
             <div className="flex justify-center">
               <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
                 <p className="text-xs font-semibold text-slate-600">
-                  Phase 3: Plan your flights
+                  Phase 2: Plan your flights
+                </p>
+                <p className="text-[11px] text-slate-500 mb-2">
+                  Let&apos;s book round trip flights. For multi-city trips, you&apos;ll book flights between cities next.
                 </p>
 
                 {/* City Ordering UI */}
@@ -4752,7 +4851,7 @@ const ChatWindow = ({
                       </div>
                     )}
 
-                    {/* Done Button */}
+                    {/* Continue to Hotels Button */}
                     {selectedOutboundIndex !== null && selectedReturnIndex !== null && (
                       <div className="pt-2 flex justify-end">
                         <Button
@@ -4764,7 +4863,7 @@ const ChatWindow = ({
                             setActiveTab("hotels");
                           }}
                         >
-                          I&apos;m done planning flights. Now let&apos;s move on to hotels
+                          Continue to Hotels
                         </Button>
                       </div>
                     )}
@@ -4773,11 +4872,11 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {hasStartedHotels && activeTab === "hotels" && (
+          {hasStartedPlanning && hasConfirmedFlights && hasStartedHotels && activeTab === "hotels" && (
             <div className="flex justify-center">
               <div className="w-full max-w-4xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
                 <p className="text-xs font-semibold text-slate-600">
-                  Phase 4: Book your hotels
+                  Phase 3: Book your hotels
                 </p>
 
                 {/* Hotel Location and Dates Info */}
@@ -5047,20 +5146,78 @@ const ChatWindow = ({
                       })}
                     </div>
 
-                    {/* Done Button */}
+                    {/* Continue to Activities Button */}
                     {selectedHotelIndex !== null && (
                       <div className="pt-2 flex justify-end">
                         <Button
                           size="sm"
                           className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                          onClick={() => {
+                          onClick={async () => {
                             setHasConfirmedHotels(true);
-                            // Automatically generate final itinerary when hotels are confirmed
-                            generateFinalItinerary();
-                            setActiveTab("summary");
+                            
+                            // Generate activities when moving from hotels to activities
+                            if (!tripId) return;
+
+                            try {
+                              setIsGeneratingActivities(true);
+
+                              // Save preferences first so activities can reflect latest constraints
+                              if (tripPreferences) {
+                                await savePreferences();
+                              }
+
+                              const token = getAuthToken();
+                              if (!token) return;
+
+                              const response = await fetch(getApiUrl(`api/trips/${tripId}/generate-activities`), {
+                                method: "POST",
+                                headers: {
+                                  Authorization: `Bearer ${token}`,
+                                  "Content-Type": "application/json",
+                                },
+                                body: JSON.stringify({
+                                  testMode: useTestActivities,
+                                  selected_cities: tripPreferences?.selected_cities ?? [],
+                                }),
+                              });
+
+                              const result = await response.json();
+
+                              if (response.ok && result.success && Array.isArray(result.activities)) {
+                                setActivities(result.activities);
+
+                                if (result.activities.length > 0) {
+                                  const assistantMessage: Message = {
+                                    role: "assistant",
+                                    content:
+                                      "I pulled together a small set of activity ideas based on your preferences. Swipe through them below and tell me what you like.",
+                                    timestamp: formatTime(),
+                                  };
+                                  setMessages((prev) => [...prev, assistantMessage]);
+                                } else {
+                                  window.alert(
+                                    "I wasn't able to find good activity ideas just yet. You can adjust your preferences or try again."
+                                  );
+                                }
+                              } else {
+                                console.error("Failed to generate activities:", result.message);
+                              }
+                            } catch (error) {
+                              console.error("Error generating activities:", error);
+                            } finally {
+                              setIsGeneratingActivities(false);
+                            }
+                            
+                            // Navigate to activities tab
+                            setActiveTab("activities");
                           }}
+                          disabled={isGeneratingActivities}
                         >
-                          I&apos;m done planning hotels
+                          {isGeneratingActivities
+                            ? useTestActivities
+                              ? "Loading test activities..."
+                              : "Finding activities..."
+                            : "Continue to Activities"}
                         </Button>
                       </div>
                     )}
@@ -5069,7 +5226,7 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {hasConfirmedHotels && activeTab === "summary" && (
+          {hasStartedPlanning && hasConfirmedHotels && activeTab === "summary" && (
             <div className="flex justify-center">
               <div className="w-full max-w-4xl bg-white border border-blue-100 text-slate-900 rounded-lg px-6 py-5 shadow-lg space-y-4">
                 {isGeneratingFinalItinerary ? (
