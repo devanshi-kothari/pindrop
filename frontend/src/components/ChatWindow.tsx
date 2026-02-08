@@ -149,6 +149,8 @@ const ChatWindow = ({
   const [selectedReturnIndex, setSelectedReturnIndex] = useState<number | null>(null);
   const [expandedLayovers, setExpandedLayovers] = useState<Record<number, boolean>>({});
   const [hasConfirmedFlights, setHasConfirmedFlights] = useState(false);
+  const [hasConfirmedMultiCityPlanning, setHasConfirmedMultiCityPlanning] = useState(false);
+  const [manualCityDaysAllocation, setManualCityDaysAllocation] = useState<Record<string, number>>({}); // Manual days allocation per city
   const [hasStartedRestaurants, setHasStartedRestaurants] = useState(false);
   const [restaurants, setRestaurants] = useState<any[]>([]);
   const [isGeneratingRestaurants, setIsGeneratingRestaurants] = useState(false);
@@ -212,7 +214,7 @@ const ChatWindow = ({
     planningMode === "known" || hasDestinationLocked
   );
   const [hasStartedPlanning, setHasStartedPlanning] = useState(false); // Track if "Start planning" has been clicked
-  const [activeTab, setActiveTab] = useState<"activities" | "restaurants" | "flights" | "hotels" | "summary">(
+  const [activeTab, setActiveTab] = useState<"activities" | "restaurants" | "flights" | "hotels" | "summary" | "multi-city">(
     "activities"
   );
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -644,6 +646,7 @@ const ChatWindow = ({
       }
     }
   }, [hasConfirmedTripSketch, activeTab, tripPreferences?.selected_cities, citySuggestions, tripDestination, orderedCities.length]);
+
 
   const loadActivities = useCallback(
     async (id: number) => {
@@ -2404,6 +2407,22 @@ const ChatWindow = ({
     return { dateError: localError, computedNumDays: localNumDays };
   })();
 
+  // Initialize manualCityDaysAllocation when entering multi-city planning tab
+  useEffect(() => {
+    if (activeTab === "multi-city" && orderedCities.length > 1 && Object.keys(manualCityDaysAllocation).length === 0) {
+      const totalDays = computedNumDays || tripPreferences?.num_days || 0;
+      if (totalDays > 0) {
+        const daysPerCity = Math.floor(totalDays / orderedCities.length);
+        const remainder = totalDays % orderedCities.length;
+        const initial: Record<string, number> = {};
+        orderedCities.forEach((city, index) => {
+          initial[city] = daysPerCity + (index < remainder ? 1 : 0);
+        });
+        setManualCityDaysAllocation(initial);
+      }
+    }
+  }, [activeTab, orderedCities, computedNumDays, tripPreferences?.num_days, manualCityDaysAllocation]);
+
   const allActivitiesAnswered =
     activities.length > 0 && activities.every((a) => a.preference !== "pending");
   const hasAnyLikedActivity = activities.some((a) => a.preference === "liked");
@@ -3082,15 +3101,21 @@ const ChatWindow = ({
             <div className="mt-6 mb-3 flex items-center justify-center">
               <Tabs value={activeTab} onValueChange={(v) => {
                 // Prevent navigation to tabs that aren't unlocked yet
+                const isMultiCity = orderedCities.length > 1;
+                if (v === "multi-city" && !hasConfirmedFlights) return;
                 if (v === "hotels" && !hasConfirmedFlights) return;
+                if (v === "hotels" && isMultiCity && !hasConfirmedMultiCityPlanning) return;
                 if (v === "activities" && !hasConfirmedHotels) return;
                 if (v === "restaurants" && !hasConfirmedActivities) return;
                 if (v === "summary" && !hasConfirmedRestaurants) return;
                 setActiveTab(v as any);
               }} className="w-full max-w-xl">
-                <TabsList className="grid grid-cols-5 w-full">
+                <TabsList className={`grid w-full ${orderedCities.length > 1 ? 'grid-cols-6' : 'grid-cols-5'}`}>
                   <TabsTrigger value="flights" className="text-xs">Flights</TabsTrigger>
-                  <TabsTrigger value="hotels" className="text-xs" disabled={!hasConfirmedFlights}>Hotels</TabsTrigger>
+                  {orderedCities.length > 1 && (
+                    <TabsTrigger value="multi-city" className="text-xs" disabled={!hasConfirmedFlights}>Multi-City</TabsTrigger>
+                  )}
+                  <TabsTrigger value="hotels" className="text-xs" disabled={!hasConfirmedFlights || (orderedCities.length > 1 && !hasConfirmedMultiCityPlanning)}>Hotels</TabsTrigger>
                   <TabsTrigger value="activities" className="text-xs" disabled={!hasConfirmedHotels}>Activities</TabsTrigger>
                   <TabsTrigger value="restaurants" className="text-xs" disabled={!hasConfirmedActivities}>Restaurants</TabsTrigger>
                   <TabsTrigger value="summary" className="text-xs" disabled={!hasConfirmedRestaurants}>Summary</TabsTrigger>
@@ -3102,7 +3127,7 @@ const ChatWindow = ({
             <div className="flex justify-center">
               <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm">
                 <p className="text-xs font-semibold text-slate-600 mb-1">
-                  Phase 4: Explore activities
+                  Phase {orderedCities.length > 1 ? '5' : '4'}: Explore activities
                 </p>
                 <p className="text-[11px] text-slate-600 mb-4">
                   Generating activities based on your preferences...
@@ -3122,7 +3147,7 @@ const ChatWindow = ({
             <div className="flex justify-center">
               <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm">
                 <p className="text-xs font-semibold text-slate-600 mb-1">
-                  Phase 4: Explore activities
+                  Phase {orderedCities.length > 1 ? '5' : '4'}: Explore activities
                 </p>
                 <p className="text-[11px] text-slate-600 mb-4">
                   Swipe right to like, left to pass, or use the buttons below. Swipe up for maybe.
@@ -3560,7 +3585,7 @@ const ChatWindow = ({
             <div className="flex justify-center">
               <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm">
                 <p className="text-xs font-semibold text-slate-600 mb-1">
-                  Phase 5: Explore restaurants
+                  Phase {orderedCities.length > 1 ? '6' : '5'}: Explore restaurants
                 </p>
                 <p className="text-[11px] text-slate-600 mb-4">
                   Swipe right to like, left to pass, or use the buttons below. Swipe up for maybe.
@@ -3702,7 +3727,7 @@ const ChatWindow = ({
             <div className="flex justify-center">
               <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
                 <p className="text-xs font-semibold text-slate-600">
-                  Phase 6: Day-by-day trip sketch
+                  Phase {orderedCities.length > 1 ? '7' : '6'}: Day-by-day trip sketch
                 </p>
                 {(() => {
                   const maxIndex = itineraryDays.length - 1;
@@ -4798,60 +4823,7 @@ const ChatWindow = ({
                       </div>
                     )}
 
-                    {/* City Days Allocation Display - shown when both flights are selected */}
-                    {selectedOutboundIndex !== null && selectedReturnIndex !== null && cityDaysAllocation.length > 0 && (
-                      <div className="space-y-2 pb-3 border-t border-blue-200 pt-3 mt-3">
-                        <Label className="text-slate-800 text-xs">Days allocated per city</Label>
-                        <p className="text-[11px] text-slate-500">
-                          Days are allocated based on the number of activities in each city, accounting for flight arrival times.
-                        </p>
-                        
-                        <div className="space-y-2 mt-2">
-                          {cityDaysAllocation.map((allocation, index) => (
-                            <div
-                              key={`${allocation.city}-${index}`}
-                              className="flex items-start gap-3 p-2.5 rounded border border-blue-200 bg-blue-50/30"
-                            >
-                              <div className="flex-1">
-                                <div className="flex items-center gap-2 mb-1">
-                                  <span className="text-xs font-semibold text-slate-900">{allocation.city}</span>
-                                  <span className="text-[10px] text-slate-500">
-                                    ({allocation.displayActivityCount || allocation.activityCount} {(allocation.displayActivityCount || allocation.activityCount) === 1 ? 'activity' : 'activities'})
-                                    {allocation.activityCount === 0 && (
-                                      <span className="text-slate-400 italic ml-1">(estimated)</span>
-                                    )}
-                                  </span>
-                                </div>
-                                <div className="flex items-center gap-3 text-[11px] text-slate-600">
-                                  <span className="font-medium">
-                                    {allocation.days} {allocation.days === 1 ? 'day' : 'days'}
-                                  </span>
-                                  {allocation.startDate && allocation.endDate && (
-                                    <span className="text-slate-500">
-                                      {new Date(allocation.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                      {allocation.startDate !== allocation.endDate && (
-                                        <>
-                                          {' - '}
-                                          {new Date(allocation.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                                        </>
-                                      )}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-
-                        <div className="mt-2 pt-2 border-t border-blue-100">
-                          <p className="text-[10px] text-slate-500">
-                            <span className="font-semibold">Total:</span> {cityDaysAllocation.reduce((sum, a) => sum + a.days, 0)} days across {cityDaysAllocation.length} {cityDaysAllocation.length === 1 ? 'city' : 'cities'}
-                          </p>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Continue to Hotels Button */}
+                    {/* Continue Button */}
                     {selectedOutboundIndex !== null && selectedReturnIndex !== null && (
                       <div className="pt-2 flex justify-end">
                         <Button
@@ -4859,11 +4831,16 @@ const ChatWindow = ({
                           className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
                           onClick={() => {
                             setHasConfirmedFlights(true);
-                            setHasStartedHotels(true);
-                            setActiveTab("hotels");
+                            // If multi-city trip, go to multi-city planning; otherwise go to hotels
+                            if (orderedCities.length > 1) {
+                              setActiveTab("multi-city");
+                            } else {
+                              setHasStartedHotels(true);
+                              setActiveTab("hotels");
+                            }
                           }}
                         >
-                          Continue to Hotels
+                          {orderedCities.length > 1 ? "Continue to Multi-City Planning" : "Continue to Hotels"}
                         </Button>
                       </div>
                     )}
@@ -4872,11 +4849,119 @@ const ChatWindow = ({
               </div>
             </div>
           )}
+          {/* Multi-City Planning Tab */}
+          {hasStartedPlanning && hasConfirmedFlights && orderedCities.length > 1 && activeTab === "multi-city" && (
+            <div className="flex justify-center">
+              <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm space-y-4">
+                <p className="text-xs font-semibold text-slate-600">
+                  Phase 3: Allocate days to cities
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  Distribute your {computedNumDays || tripPreferences?.num_days || 0} trip days across the cities you&apos;re visiting.
+                </p>
+
+                <div className="space-y-4">
+                  {orderedCities.map((city, index) => {
+                    const currentDays = manualCityDaysAllocation[city] || 0;
+                    const totalAllocated = Object.values(manualCityDaysAllocation).reduce((sum, days) => sum + days, 0);
+                    const remainingDays = (computedNumDays || tripPreferences?.num_days || 0) - totalAllocated + currentDays;
+
+                    return (
+                      <div key={`${city}-${index}`} className="p-4 border border-blue-200 rounded-lg bg-white">
+                        <div className="flex items-center justify-between mb-3">
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">{city}</p>
+                            <p className="text-[11px] text-slate-500 mt-0.5">City {index + 1} of {orderedCities.length}</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 w-7 p-0 border-blue-200 hover:bg-blue-50 disabled:opacity-30"
+                              disabled={currentDays <= 0}
+                              onClick={() => {
+                                setManualCityDaysAllocation(prev => ({
+                                  ...prev,
+                                  [city]: Math.max(0, (prev[city] || 0) - 1)
+                                }));
+                              }}
+                            >
+                              -
+                            </Button>
+                            <Input
+                              type="number"
+                              min={0}
+                              max={remainingDays}
+                              value={currentDays}
+                              onChange={(e) => {
+                                const value = parseInt(e.target.value) || 0;
+                                const maxDays = remainingDays;
+                                const newValue = Math.min(Math.max(0, value), maxDays);
+                                setManualCityDaysAllocation(prev => ({
+                                  ...prev,
+                                  [city]: newValue
+                                }));
+                              }}
+                              className="h-8 w-20 text-center bg-white border-blue-200 text-xs"
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 w-7 p-0 border-blue-200 hover:bg-blue-50 disabled:opacity-30"
+                              disabled={remainingDays <= 0}
+                              onClick={() => {
+                                setManualCityDaysAllocation(prev => ({
+                                  ...prev,
+                                  [city]: (prev[city] || 0) + 1
+                                }));
+                              }}
+                            >
+                              +
+                            </Button>
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-slate-500">
+                          {currentDays} {currentDays === 1 ? 'day' : 'days'} allocated
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="pt-3 border-t border-blue-200">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-xs font-semibold text-slate-700">
+                      Total days allocated: {Object.values(manualCityDaysAllocation).reduce((sum, days) => sum + days, 0)} / {computedNumDays || tripPreferences?.num_days || 0}
+                    </p>
+                    {Object.values(manualCityDaysAllocation).reduce((sum, days) => sum + days, 0) !== (computedNumDays || tripPreferences?.num_days || 0) && (
+                      <p className="text-[10px] text-rose-400">
+                        Please allocate all {computedNumDays || tripPreferences?.num_days || 0} days
+                      </p>
+                    )}
+                  </div>
+                  <Button
+                    size="sm"
+                    className="w-full h-8 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                    disabled={Object.values(manualCityDaysAllocation).reduce((sum, days) => sum + days, 0) !== (computedNumDays || tripPreferences?.num_days || 0)}
+                    onClick={() => {
+                      setHasConfirmedMultiCityPlanning(true);
+                      setHasStartedHotels(true);
+                      setActiveTab("hotels");
+                    }}
+                  >
+                    Continue to Hotels
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
           {hasStartedPlanning && hasConfirmedFlights && hasStartedHotels && activeTab === "hotels" && (
             <div className="flex justify-center">
               <div className="w-full max-w-4xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
                 <p className="text-xs font-semibold text-slate-600">
-                  Phase 3: Book your hotels
+                  Phase {orderedCities.length > 1 ? '4' : '3'}: Book your hotels
                 </p>
 
                 {/* Hotel Location and Dates Info */}
