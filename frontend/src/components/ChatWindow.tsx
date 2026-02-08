@@ -151,6 +151,16 @@ const ChatWindow = ({
   const [hasConfirmedFlights, setHasConfirmedFlights] = useState(false);
   const [hasConfirmedMultiCityPlanning, setHasConfirmedMultiCityPlanning] = useState(false);
   const [manualCityDaysAllocation, setManualCityDaysAllocation] = useState<Record<string, number>>({}); // Manual days allocation per city
+  const [interCityTransportStep, setInterCityTransportStep] = useState<"allocation" | "transportation">("allocation"); // Current step in multi-city tab
+  const [currentInterCitySegment, setCurrentInterCitySegment] = useState<number>(0); // Which city-to-city segment we're booking (0 = city 1->2, 1 = city 2->3, etc.)
+  const [interCityFlights, setInterCityFlights] = useState<Record<number, any[]>>({}); // Flights for each inter-city segment
+  const [selectedInterCityFlights, setSelectedInterCityFlights] = useState<Record<number, number | null>>({}); // Selected flight index for each segment
+  const [interCityTransportation, setInterCityTransportation] = useState<Record<number, "flight" | "driving">>({}); // Transportation type for each segment
+  const [isFetchingInterCityFlights, setIsFetchingInterCityFlights] = useState<Record<number, boolean>>({});
+  const [interCityDepartureCodes, setInterCityDepartureCodes] = useState<Record<number, string[]>>({});
+  const [interCityArrivalCodes, setInterCityArrivalCodes] = useState<Record<number, string[]>>({});
+  const [interCityDepartureId, setInterCityDepartureId] = useState<Record<number, string | null>>({});
+  const [interCityArrivalId, setInterCityArrivalId] = useState<Record<number, string | null>>({});
   const [hasStartedRestaurants, setHasStartedRestaurants] = useState(false);
   const [restaurants, setRestaurants] = useState<any[]>([]);
   const [isGeneratingRestaurants, setIsGeneratingRestaurants] = useState(false);
@@ -5013,17 +5023,372 @@ const ChatWindow = ({
                     className="w-full h-8 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
                     disabled={Object.values(manualCityDaysAllocation).reduce((sum, days) => sum + days, 0) !== (computedNumDays || tripPreferences?.num_days || 0)}
                     onClick={() => {
-                      setHasConfirmedMultiCityPlanning(true);
-                      setHasStartedHotels(true);
-                      setActiveTab("hotels");
+                      setInterCityTransportStep("transportation");
+                      setCurrentInterCitySegment(0);
                     }}
                   >
-                    Continue to Hotels
+                    Book transportation between cities
                   </Button>
                 </div>
               </div>
             </div>
           )}
+          {/* Inter-City Transportation Booking Section */}
+          {hasStartedPlanning && hasConfirmedFlights && orderedCities.length > 1 && activeTab === "multi-city" && interCityTransportStep === "transportation" && (() => {
+            // Calculate segments: city 1->2, 2->3, etc., and potentially last city -> original destination
+            const segments: Array<{ from: string; to: string; isReturn: boolean }> = [];
+            for (let i = 0; i < orderedCities.length - 1; i++) {
+              segments.push({ from: orderedCities[i], to: orderedCities[i + 1], isReturn: false });
+            }
+            
+            // Check if last city matches return flight destination
+            const returnFlightDestination = getArrivalLocation(); // This gets the original destination from round trip
+            const lastCity = orderedCities[orderedCities.length - 1];
+            if (returnFlightDestination && lastCity.toLowerCase() !== returnFlightDestination.toLowerCase()) {
+              segments.push({ from: lastCity, to: returnFlightDestination, isReturn: true });
+            }
+            
+            const currentSegment = segments[currentInterCitySegment];
+            const totalSegments = segments.length;
+            const isLastSegment = currentInterCitySegment === totalSegments - 1;
+            const segmentKey = `${currentSegment.from}-${currentSegment.to}`;
+            
+            return (
+              <div className="flex justify-center">
+                <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm space-y-4">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-slate-600">
+                      Book transportation: {currentSegment.from} → {currentSegment.to}
+                    </p>
+                    <p className="text-[10px] text-slate-500">
+                      Segment {currentInterCitySegment + 1} of {totalSegments}
+                    </p>
+                  </div>
+                  
+                  {/* Transportation Type Selection */}
+                  <div className="space-y-2">
+                    <Label className="text-slate-800 text-xs">Transportation type</Label>
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant={interCityTransportation[currentInterCitySegment] === "flight" ? "default" : "outline"}
+                        size="sm"
+                        className={`flex-1 ${interCityTransportation[currentInterCitySegment] === "flight" ? "bg-blue-500 text-white" : "border-blue-200"}`}
+                        onClick={() => {
+                          setInterCityTransportation(prev => ({ ...prev, [currentInterCitySegment]: "flight" }));
+                        }}
+                      >
+                        Flight
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={interCityTransportation[currentInterCitySegment] === "driving" ? "default" : "outline"}
+                        size="sm"
+                        className={`flex-1 ${interCityTransportation[currentInterCitySegment] === "driving" ? "bg-blue-500 text-white" : "border-blue-200"}`}
+                        onClick={() => {
+                          setInterCityTransportation(prev => ({ ...prev, [currentInterCitySegment]: "driving" }));
+                          setSelectedInterCityFlights(prev => ({ ...prev, [currentInterCitySegment]: null }));
+                        }}
+                      >
+                        Driving
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Driving Option Display */}
+                  {interCityTransportation[currentInterCitySegment] === "driving" && (
+                    <div className="p-4 border border-blue-200 rounded-lg bg-blue-50/30">
+                      <p className="text-xs text-slate-700">
+                        You&apos;ll drive from <span className="font-semibold">{currentSegment.from}</span> to <span className="font-semibold">{currentSegment.to}</span>
+                      </p>
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        No flights available or you selected driving as your transportation method.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Flight Booking UI (similar to main flights tab) */}
+                  {interCityTransportation[currentInterCitySegment] === "flight" && (
+                    <div className="space-y-4 pt-2 border-t border-blue-200">
+                      {/* Departure Location */}
+                      <div className="space-y-2">
+                        <Label className="text-slate-800 text-xs">Departure location: {currentSegment.from}</Label>
+                        <div className="flex gap-2">
+                          <Input
+                            type="text"
+                            value={currentSegment.from}
+                            disabled
+                            className="h-8 bg-slate-50 border-blue-200 text-xs text-slate-500"
+                          />
+                          <Button
+                            size="sm"
+                            className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                            disabled={isFetchingInterCityFlights[currentInterCitySegment] || !!interCityDepartureId[currentInterCitySegment]}
+                            onClick={async () => {
+                              setIsFetchingInterCityFlights(prev => ({ ...prev, [currentInterCitySegment]: true }));
+                              try {
+                                const token = getAuthToken();
+                                if (!token) return;
+
+                                const response = await fetch(getApiUrl("api/chat/airport-code"), {
+                                  method: "POST",
+                                  headers: {
+                                    Authorization: `Bearer ${token}`,
+                                    "Content-Type": "application/json",
+                                  },
+                                  body: JSON.stringify({
+                                    location: currentSegment.from,
+                                  }),
+                                });
+
+                                const result = await response.json();
+
+                                if (response.ok && result.success && result.airport_codes && Array.isArray(result.airport_codes) && result.airport_codes.length > 0) {
+                                  const code = result.airport_codes[0];
+                                  setInterCityDepartureId(prev => ({ ...prev, [currentInterCitySegment]: code }));
+                                  setInterCityDepartureCodes(prev => ({ ...prev, [currentInterCitySegment]: result.airport_codes }));
+                                }
+                              } catch (error) {
+                                console.error("Error fetching airport code:", error);
+                              } finally {
+                                setIsFetchingInterCityFlights(prev => ({ ...prev, [currentInterCitySegment]: false }));
+                              }
+                            }}
+                          >
+                            {isFetchingInterCityFlights[currentInterCitySegment] ? "Finding..." : interCityDepartureId[currentInterCitySegment] || "Find airport code"}
+                          </Button>
+                        </div>
+                      </div>
+
+                      {/* Arrival Location */}
+                      <div className="space-y-2">
+                        <Label className="text-slate-800 text-xs">Arrival location: {currentSegment.to}</Label>
+                        <div className="flex gap-2">
+                          <Input
+                            type="text"
+                            value={currentSegment.to}
+                            disabled
+                            className="h-8 bg-slate-50 border-blue-200 text-xs text-slate-500"
+                          />
+                          <Button
+                            size="sm"
+                            className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                            disabled={isFetchingInterCityFlights[currentInterCitySegment] || !!interCityArrivalId[currentInterCitySegment]}
+                            onClick={async () => {
+                              setIsFetchingInterCityFlights(prev => ({ ...prev, [currentInterCitySegment]: true }));
+                              try {
+                                const token = getAuthToken();
+                                if (!token) return;
+
+                                const response = await fetch(getApiUrl("api/chat/airport-code"), {
+                                  method: "POST",
+                                  headers: {
+                                    Authorization: `Bearer ${token}`,
+                                    "Content-Type": "application/json",
+                                  },
+                                  body: JSON.stringify({
+                                    location: currentSegment.to,
+                                  }),
+                                });
+
+                                const result = await response.json();
+
+                                if (response.ok && result.success && result.airport_codes && Array.isArray(result.airport_codes) && result.airport_codes.length > 0) {
+                                  const code = result.airport_codes[0];
+                                  setInterCityArrivalId(prev => ({ ...prev, [currentInterCitySegment]: code }));
+                                  setInterCityArrivalCodes(prev => ({ ...prev, [currentInterCitySegment]: result.airport_codes }));
+                                }
+                              } catch (error) {
+                                console.error("Error fetching airport code:", error);
+                              } finally {
+                                setIsFetchingInterCityFlights(prev => ({ ...prev, [currentInterCitySegment]: false }));
+                              }
+                            }}
+                          >
+                            {isFetchingInterCityFlights[currentInterCitySegment] ? "Finding..." : interCityArrivalId[currentInterCitySegment] || "Find airport code"}
+                          </Button>
+                        </div>
+                      </div>
+
+                      {/* Search Flights Button */}
+                      {interCityDepartureId[currentInterCitySegment] && interCityArrivalId[currentInterCitySegment] && (
+                        <Button
+                          size="sm"
+                          className="w-full h-8 bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-xs font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400 disabled:opacity-60"
+                          disabled={isFetchingInterCityFlights[currentInterCitySegment]}
+                          onClick={async () => {
+                            if (!tripId) return;
+                            setIsFetchingInterCityFlights(prev => ({ ...prev, [currentInterCitySegment]: true }));
+                            
+                            try {
+                              const token = getAuthToken();
+                              if (!token) return;
+
+                              // Calculate departure date based on days allocated to previous cities
+                              let departureDate = getFlightArrivalDate();
+                              if (departureDate) {
+                                // Add days from previous cities (including the current departure city)
+                                for (let i = 0; i <= currentInterCitySegment; i++) {
+                                  const days = manualCityDaysAllocation[orderedCities[i]] || 0;
+                                  departureDate = new Date(departureDate.getTime() + days * 24 * 60 * 60 * 1000);
+                                }
+                              } else if (tripPreferences?.start_date) {
+                                // Fallback to trip start date if flight arrival date not available
+                                departureDate = new Date(tripPreferences.start_date);
+                                // Add days from previous cities (including the current departure city)
+                                for (let i = 0; i <= currentInterCitySegment; i++) {
+                                  const days = manualCityDaysAllocation[orderedCities[i]] || 0;
+                                  departureDate = new Date(departureDate.getTime() + days * 24 * 60 * 60 * 1000);
+                                }
+                              }
+
+                              const params = new URLSearchParams({
+                                departure_id: interCityDepartureId[currentInterCitySegment]!,
+                                arrival_id: interCityArrivalId[currentInterCitySegment]!,
+                                outbound_date: departureDate ? departureDate.toISOString().split('T')[0] : tripPreferences?.start_date || '',
+                                currency: 'USD',
+                                type: '0', // One-way flight for inter-city
+                              });
+
+                              const response = await fetch(getApiUrl(`api/flights/search?${params.toString()}`), {
+                                method: "GET",
+                                headers: {
+                                  Authorization: `Bearer ${token}`,
+                                  "Content-Type": "application/json",
+                                },
+                              });
+
+                              const result = await response.json();
+
+                              if (response.ok && result.success) {
+                                let flights: any[] = [];
+                                if (Array.isArray(result.best_flights) && result.best_flights.length > 0) {
+                                  flights = result.best_flights;
+                                } else if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
+                                  flights = result.other_flights;
+                                }
+                                
+                                if (flights.length > 0) {
+                                  setInterCityFlights(prev => ({ ...prev, [currentInterCitySegment]: flights }));
+                                } else {
+                                  // No flights found, default to driving
+                                  setInterCityTransportation(prev => ({ ...prev, [currentInterCitySegment]: "driving" }));
+                                  const errorMessage: Message = {
+                                    role: "assistant",
+                                    content: `No flights found between ${currentSegment.from} and ${currentSegment.to}. Defaulting to driving.`,
+                                    timestamp: formatTime(),
+                                  };
+                                  setMessages((prev) => [...prev, errorMessage]);
+                                }
+                              } else {
+                                // No flights found, default to driving
+                                setInterCityTransportation(prev => ({ ...prev, [currentInterCitySegment]: "driving" }));
+                              }
+                            } catch (error) {
+                              console.error("Error fetching inter-city flights:", error);
+                              // Default to driving on error
+                              setInterCityTransportation(prev => ({ ...prev, [currentInterCitySegment]: "driving" }));
+                            } finally {
+                              setIsFetchingInterCityFlights(prev => ({ ...prev, [currentInterCitySegment]: false }));
+                            }
+                          }}
+                        >
+                          {isFetchingInterCityFlights[currentInterCitySegment] ? "Searching for flights..." : "Search for flights"}
+                        </Button>
+                      )}
+
+                      {/* Flight Results */}
+                      {interCityFlights[currentInterCitySegment] && interCityFlights[currentInterCitySegment].length > 0 && (
+                        <div className="space-y-3 pt-2 border-t border-blue-200">
+                          <p className="text-xs font-semibold text-slate-600">Select a flight</p>
+                          {interCityFlights[currentInterCitySegment].map((flightOption: any, index: number) => {
+                            const flightLegs = flightOption.flights || [];
+                            const firstLeg = flightLegs[0];
+                            const lastLeg = flightLegs[flightLegs.length - 1];
+                            const isSelected = selectedInterCityFlights[currentInterCitySegment] === index;
+                            const formatDuration = (minutes: number) => {
+                              const hours = Math.floor(minutes / 60);
+                              const mins = minutes % 60;
+                              return `${hours}h ${mins}m`;
+                            };
+
+                            return (
+                              <div
+                                key={index}
+                                className={`border rounded-lg p-3 cursor-pointer transition-colors ${
+                                  isSelected
+                                    ? "border-blue-500 bg-blue-500/10"
+                                    : "border-blue-200 bg-white/60 hover:border-blue-200"
+                                }`}
+                                onClick={() => {
+                                  setSelectedInterCityFlights(prev => ({ ...prev, [currentInterCitySegment]: index }));
+                                }}
+                              >
+                                <div className="space-y-1">
+                                  <p className="text-xs text-slate-800">
+                                    <span className="font-semibold">{firstLeg?.departure_airport?.name || firstLeg?.departure_airport?.id}</span>
+                                    {" → "}
+                                    <span className="font-semibold">{lastLeg?.arrival_airport?.name || lastLeg?.arrival_airport?.id}</span>
+                                  </p>
+                                  <p className="text-[11px] text-slate-500">
+                                    {firstLeg?.departure_airport?.time} → {lastLeg?.arrival_airport?.time}
+                                  </p>
+                                  <p className="text-[11px] text-slate-500">
+                                    Duration: {formatDuration(flightOption.total_duration || 0)}
+                                  </p>
+                                  <p className="text-xs font-semibold text-emerald-400">
+                                    ${flightOption.price?.toLocaleString() || "N/A"}
+                                  </p>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Navigation Buttons */}
+                  <div className="pt-3 border-t border-blue-200 flex items-center justify-between">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-3 border-blue-200 text-slate-900 hover:bg-blue-50 disabled:opacity-40"
+                      disabled={currentInterCitySegment === 0}
+                      onClick={() => {
+                        setCurrentInterCitySegment(prev => prev - 1);
+                      }}
+                    >
+                      ← Previous
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                      disabled={
+                        interCityTransportation[currentInterCitySegment] === "flight" && 
+                        selectedInterCityFlights[currentInterCitySegment] === null &&
+                        interCityFlights[currentInterCitySegment] &&
+                        interCityFlights[currentInterCitySegment].length > 0
+                      }
+                      onClick={() => {
+                        if (isLastSegment) {
+                          // All segments done, continue to hotels
+                          setHasConfirmedMultiCityPlanning(true);
+                          setHasStartedHotels(true);
+                          setActiveTab("hotels");
+                        } else {
+                          // Move to next segment
+                          setCurrentInterCitySegment(prev => prev + 1);
+                        }
+                      }}
+                    >
+                      {isLastSegment ? "Continue to Hotels" : "Next Segment →"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
           {hasStartedPlanning && hasConfirmedFlights && hasStartedHotels && activeTab === "hotels" && (
             <div className="flex justify-center">
               <div className="w-full max-w-4xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
