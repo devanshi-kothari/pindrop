@@ -181,6 +181,11 @@ const ChatWindow = ({
   const [isFetchingHotels, setIsFetchingHotels] = useState(false);
   const [selectedHotelIndex, setSelectedHotelIndex] = useState<number | null>(null);
   const [hasConfirmedHotels, setHasConfirmedHotels] = useState(false);
+  const [currentHotelCityIndex, setCurrentHotelCityIndex] = useState<number>(0); // Which city's hotel we're booking
+  const [hotelsByCity, setHotelsByCity] = useState<Record<number, any[]>>({}); // Hotels for each city
+  const [selectedHotelIndexByCity, setSelectedHotelIndexByCity] = useState<Record<number, number | null>>({}); // Selected hotel index for each city
+  const [hotelIdsByCity, setHotelIdsByCity] = useState<Record<number, Record<number, number>>>({}); // Hotel IDs for each city
+  const [isFetchingHotelsByCity, setIsFetchingHotelsByCity] = useState<Record<number, boolean>>({});
   const [hotelIds, setHotelIds] = useState<Record<number, number>>({}); // Map index to hotel_id
   const [propertyDetails, setPropertyDetails] = useState<Record<number, any>>({});
   const [isFetchingPropertyDetails, setIsFetchingPropertyDetails] = useState<Record<number, boolean>>({});
@@ -1834,9 +1839,99 @@ const ChatWindow = ({
     }
   };
 
-  // Fetch hotels from SerpAPI
+  // Fetch hotels for a specific city
+  const fetchHotelsForCity = async (cityIndex: number, cityName: string, checkInDate: Date, checkOutDate: Date) => {
+    if (!tripId) return;
+
+    try {
+      setIsFetchingHotelsByCity(prev => ({ ...prev, [cityIndex]: true }));
+      const token = getAuthToken();
+      if (!token) return;
+
+      const params = new URLSearchParams({
+        location: cityName,
+        check_in_date: checkInDate.toISOString().split('T')[0],
+        check_out_date: checkOutDate.toISOString().split('T')[0],
+      });
+
+      console.log(`Fetching hotels for city ${cityIndex} (${cityName}) with params:`, {
+        location: cityName,
+        check_in_date: checkInDate.toISOString().split('T')[0],
+        check_out_date: checkOutDate.toISOString().split('T')[0],
+      });
+
+      const response = await fetch(getApiUrl(`api/hotels/search?${params.toString()}`), {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      });
+
+      const result = await response.json();
+      console.log(`Hotels API result for city ${cityIndex}:`, result);
+
+      if (response.ok && result.success && Array.isArray(result.properties)) {
+        const hotelsToSet = result.properties;
+        setHotelsByCity(prev => ({ ...prev, [cityIndex]: hotelsToSet }));
+
+        // Save hotels to database
+        try {
+          const saveResponse = await fetch(getApiUrl("api/hotels/save"), {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              trip_id: tripId,
+              properties: hotelsToSet,
+              search_params: {
+                location: cityName,
+                check_in_date: checkInDate.toISOString().split('T')[0],
+                check_out_date: checkOutDate.toISOString().split('T')[0],
+                currency: "USD",
+              },
+            }),
+          });
+
+          const saveResult = await saveResponse.json();
+          if (saveResult.success && saveResult.hotel_ids) {
+            const hotelIdMap: Record<number, number> = {};
+            saveResult.hotel_ids.forEach((hotelId: number, idx: number) => {
+              if (idx < hotelsToSet.length) {
+                hotelIdMap[idx] = hotelId;
+              }
+            });
+            setHotelIdsByCity(prev => ({ ...prev, [cityIndex]: hotelIdMap }));
+          }
+        } catch (saveError) {
+          console.error("Error saving hotels:", saveError);
+        }
+      } else {
+        const errorMessage: Message = {
+          role: "assistant",
+          content: result.message || `Failed to fetch hotel options for ${cityName}. Please try again.`,
+          timestamp: formatTime(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+      }
+    } catch (error) {
+      console.error("Error fetching hotels:", error);
+      const errorMessage: Message = {
+        role: "assistant",
+        content: `I encountered an error while fetching hotels for ${cityName}. Please try again.`,
+        timestamp: formatTime(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setIsFetchingHotelsByCity(prev => ({ ...prev, [cityIndex]: false }));
+    }
+  };
+
+  // Fetch hotels from SerpAPI (legacy function, kept for backward compatibility)
   const fetchHotels = async () => {
-    if (!tripId || !tripPreferences?.start_date || !tripPreferences?.end_date) {
+    if (!tripId || !tripPreferences?.end_date) {
       return;
     }
 
@@ -1852,6 +1947,20 @@ const ChatWindow = ({
       return;
     }
 
+    // Use flight arrival date as check-in date (same as multi-city planning)
+    const checkInDate = getFlightArrivalDate() || (tripPreferences?.start_date ? new Date(tripPreferences.start_date) : null);
+    if (!checkInDate) {
+      const errorMessage: Message = {
+        role: "assistant",
+        content: "Could not determine check-in date. Please ensure your flight is selected.",
+        timestamp: formatTime(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+      return;
+    }
+
+    const checkInDateStr = checkInDate.toISOString().split('T')[0];
+
     try {
       setIsFetchingHotels(true);
       const token = getAuthToken();
@@ -1859,13 +1968,13 @@ const ChatWindow = ({
 
       const params = new URLSearchParams({
         location: hotelLocation,
-        check_in_date: tripPreferences.start_date,
+        check_in_date: checkInDateStr,
         check_out_date: tripPreferences.end_date,
       });
 
       console.log("Fetching hotels with params:", {
         location: hotelLocation,
-        check_in_date: tripPreferences.start_date,
+        check_in_date: checkInDateStr,
         check_out_date: tripPreferences.end_date,
       });
 
@@ -5242,6 +5351,47 @@ const ChatWindow = ({
                                 }
                               }
 
+                              // For the return flight (last city to original destination), ensure arrival is within end_date
+                              if (currentSegment.isReturn && tripPreferences?.end_date) {
+                                const endDate = new Date(tripPreferences.end_date);
+                                // Set end date to end of day for comparison
+                                endDate.setHours(23, 59, 59, 999);
+                                
+                                // Calculate the start date of the last city (when user arrives there)
+                                const lastCityStartDate = getFlightArrivalDate();
+                                if (lastCityStartDate) {
+                                  for (let i = 0; i < orderedCities.length - 1; i++) {
+                                    const days = manualCityDaysAllocation[orderedCities[i]] || 0;
+                                    lastCityStartDate.setTime(lastCityStartDate.getTime() + days * 24 * 60 * 60 * 1000);
+                                  }
+                                }
+                                
+                                // Estimate maximum flight duration (use 15 hours as conservative max for long-haul flights)
+                                // This accounts for time zones and long international flights
+                                const maxFlightHours = 15;
+                                const maxFlightMs = maxFlightHours * 60 * 60 * 1000;
+                                
+                                // Calculate the latest departure date that would still arrive on or before end_date
+                                const latestDepartureDate = new Date(endDate.getTime() - maxFlightMs);
+                                
+                                // If our calculated departure date is after the latest allowed, adjust it
+                                if (departureDate > latestDepartureDate) {
+                                  departureDate = new Date(latestDepartureDate);
+                                  
+                                  // Ensure we don't depart before arriving at the last city
+                                  if (lastCityStartDate && departureDate < lastCityStartDate) {
+                                    // If we can't fit the flight, use the last city arrival date
+                                    // This means the user might have less time in the last city
+                                    departureDate = new Date(lastCityStartDate);
+                                  }
+                                }
+                                
+                                // Ensure departure date is not before the last city start date
+                                if (lastCityStartDate && departureDate < lastCityStartDate) {
+                                  departureDate = new Date(lastCityStartDate);
+                                }
+                              }
+
                               const params = new URLSearchParams({
                                 departure_id: interCityDepartureId[currentInterCitySegment]!,
                                 arrival_id: interCityArrivalId[currentInterCitySegment]!,
@@ -5389,56 +5539,123 @@ const ChatWindow = ({
               </div>
             );
           })()}
-          {hasStartedPlanning && hasConfirmedFlights && hasStartedHotels && activeTab === "hotels" && (
-            <div className="flex justify-center">
-              <div className="w-full max-w-4xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
-                <p className="text-xs font-semibold text-slate-600">
-                  Phase {orderedCities.length > 1 ? '4' : '3'}: Book your hotels
-                </p>
-
-                {/* Hotel Location and Dates Info */}
-                {(() => {
-                  const hotelLocation = getArrivalLocation();
-                  return (
-                    <div className="space-y-2">
-                      <div className="text-[11px] text-slate-500 space-y-1">
-                        <p>Location: <span className="text-slate-800">{hotelLocation || "Extracting from trip..."}</span></p>
-                        {tripPreferences?.start_date && tripPreferences?.end_date && (
-                          <>
-                            <p>Check-in: <span className="text-slate-800">{tripPreferences.start_date}</span></p>
-                            <p>Check-out: <span className="text-slate-800">{tripPreferences.end_date}</span></p>
-                          </>
-                        )}
-                      </div>
-                      <Button
-                        size="sm"
-                        className="w-full h-8 bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-xs font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400 disabled:opacity-60"
-                        disabled={isFetchingHotels || !hotelLocation}
-                        onClick={fetchHotels}
-                      >
-                        {isFetchingHotels ? "Searching for hotels..." : "Search for hotels"}
-                      </Button>
-                    </div>
-                  );
-                })()}
-
-                {/* Loading Indicator */}
-                {isFetchingHotels && (
-                  <div className="space-y-2 pt-2 border-t border-blue-200">
-                    <p className="text-xs text-slate-500">Searching for hotels...</p>
+          {hasStartedPlanning && hasConfirmedFlights && hasStartedHotels && activeTab === "hotels" && (() => {
+            // Calculate hotel booking segments: one for each city, plus return destination if needed
+            const hotelSegments: Array<{ city: string; cityIndex: number; isReturn: boolean }> = [];
+            
+            // Add segments for each city
+            orderedCities.forEach((city, index) => {
+              hotelSegments.push({ city, cityIndex: index, isReturn: false });
+            });
+            
+            // Check if we need a hotel for the return destination
+            const returnFlightDestination = getArrivalLocation();
+            const lastCity = orderedCities[orderedCities.length - 1];
+            if (returnFlightDestination && lastCity.toLowerCase() !== returnFlightDestination.toLowerCase()) {
+              hotelSegments.push({ city: returnFlightDestination, cityIndex: -1, isReturn: true });
+            }
+            
+            const currentSegment = hotelSegments[currentHotelCityIndex];
+            const totalSegments = hotelSegments.length;
+            const isLastSegment = currentHotelCityIndex === totalSegments - 1;
+            
+            // Calculate check-in and check-out dates for current city
+            const calculateCityDates = () => {
+              let checkInDate = getFlightArrivalDate();
+              if (!checkInDate && tripPreferences?.start_date) {
+                checkInDate = new Date(tripPreferences.start_date);
+              }
+              if (!checkInDate) return { checkIn: null, checkOut: null };
+              
+              // For return destination, use end_date as check-out
+              if (currentSegment.isReturn) {
+                const endDate = tripPreferences?.end_date ? new Date(tripPreferences.end_date) : null;
+                if (endDate) {
+                  // Check-in is the day before end_date (or same day if it's just one night)
+                  const checkIn = new Date(endDate);
+                  checkIn.setDate(checkIn.getDate() - 1);
+                  return { checkIn, checkOut: endDate };
+                }
+                return { checkIn: null, checkOut: null };
+              }
+              
+              // For regular cities, calculate based on days allocated
+              let cityCheckIn = new Date(checkInDate);
+              
+              // Add days from previous cities
+              for (let i = 0; i < currentSegment.cityIndex; i++) {
+                const days = manualCityDaysAllocation[orderedCities[i]] || 0;
+                cityCheckIn = new Date(cityCheckIn.getTime() + days * 24 * 60 * 60 * 1000);
+              }
+              
+              // Calculate check-out (check-in + days in this city)
+              const daysInCity = manualCityDaysAllocation[currentSegment.city] || 0;
+              const cityCheckOut = new Date(cityCheckIn);
+              cityCheckOut.setDate(cityCheckOut.getDate() + daysInCity);
+              
+              return { checkIn: cityCheckIn, checkOut: cityCheckOut };
+            };
+            
+            const { checkIn, checkOut } = calculateCityDates();
+            const currentCityHotels = hotelsByCity[currentHotelCityIndex] || [];
+            const currentCitySelectedIndex = selectedHotelIndexByCity[currentHotelCityIndex] ?? null;
+            const currentCityHotelIds = hotelIdsByCity[currentHotelCityIndex] || {};
+            
+            return (
+              <div className="flex justify-center">
+                <div className="w-full max-w-4xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-slate-600">
+                      Phase {orderedCities.length > 1 ? '4' : '3'}: Book your hotels
+                    </p>
+                    <p className="text-[10px] text-slate-500">
+                      City {currentHotelCityIndex + 1} of {totalSegments}
+                    </p>
                   </div>
-                )}
 
-                {/* Hotel Results */}
-                {hotels.length > 0 && (
-                  <div className="space-y-3 pt-2 border-t border-blue-200">
-                    <p className="text-xs font-semibold text-slate-600">Available hotels</p>
-                    <div className="space-y-3">
-                      {hotels.map((hotel, index) => {
-                        const isSelected = selectedHotelIndex === index;
-                        const hotelImage = hotel.images && hotel.images.length > 0
-                          ? hotel.images[0].original_image || hotel.images[0].thumbnail
-                          : null;
+                  {/* Hotel Location and Dates Info */}
+                  <div className="space-y-2">
+                    <div className="text-[11px] text-slate-500 space-y-1">
+                      <p>Location: <span className="text-slate-800">{currentSegment.city}</span></p>
+                      {checkIn && checkOut && (
+                        <>
+                          <p>Check-in: <span className="text-slate-800">{checkIn.toISOString().split('T')[0]}</span></p>
+                          <p>Check-out: <span className="text-slate-800">{checkOut.toISOString().split('T')[0]}</span></p>
+                        </>
+                      )}
+                    </div>
+                    <Button
+                      size="sm"
+                      className="w-full h-8 bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-xs font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400 disabled:opacity-60"
+                      disabled={isFetchingHotelsByCity[currentHotelCityIndex] || !checkIn || !checkOut}
+                      onClick={() => {
+                        if (checkIn && checkOut) {
+                          fetchHotelsForCity(currentHotelCityIndex, currentSegment.city, checkIn, checkOut);
+                        }
+                      }}
+                    >
+                      {isFetchingHotelsByCity[currentHotelCityIndex] ? "Searching for hotels..." : "Search for hotels"}
+                    </Button>
+                  </div>
+
+                  {/* Loading Indicator */}
+                  {isFetchingHotelsByCity[currentHotelCityIndex] && (
+                    <div className="space-y-2 pt-2 border-t border-blue-200">
+                      <p className="text-xs text-slate-500">Searching for hotels...</p>
+                    </div>
+                  )}
+
+                  {/* Hotel Results */}
+                  <>
+                    {currentCityHotels.length > 0 && (
+                      <div className="space-y-3 pt-2 border-t border-blue-200">
+                        <p className="text-xs font-semibold text-slate-600">Available hotels</p>
+                        <div className="space-y-3">
+                          {currentCityHotels.map((hotel, index) => {
+                            const isSelected = currentCitySelectedIndex === index;
+                            const hotelImage = hotel.images && hotel.images.length > 0
+                              ? hotel.images[0].original_image || hotel.images[0].thumbnail
+                              : null;
 
                         // Extract rate per night - prioritize rate_per_night over total_rate
                         // Use extracted_lowest (Float) first, then fall back to lowest (String with currency)
@@ -5459,18 +5676,18 @@ const ChatWindow = ({
                                 : "border-blue-200 bg-white/60 hover:border-blue-200"
                             }`}
                             onClick={async () => {
-                              setSelectedHotelIndex(index);
+                              setSelectedHotelIndexByCity(prev => ({ ...prev, [currentHotelCityIndex]: index }));
 
                               // Update selection in database
                               const token = getAuthToken();
                               if (!token || !tripId) return;
 
-                              let hotelId = hotelIds[index];
+                              let hotelId = currentCityHotelIds[index];
 
                               // If hotel_id not available yet, wait a moment and check again
                               if (!hotelId) {
                                 await new Promise(resolve => setTimeout(resolve, 500));
-                                hotelId = hotelIds[index];
+                                hotelId = currentCityHotelIds[index];
                               }
 
                               // Try to save selection - if hotel_id is available
@@ -5499,7 +5716,7 @@ const ChatWindow = ({
                               } else {
                                 // Retry after a delay if hotel_id becomes available
                                 setTimeout(async () => {
-                                  const retryHotelId = hotelIds[index];
+                                  const retryHotelId = currentCityHotelIds[index];
                                   if (retryHotelId) {
                                     try {
                                       await fetch(getApiUrl("api/hotels/select"), {
@@ -5659,90 +5876,109 @@ const ChatWindow = ({
                               </div>
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
-
-                    {/* Continue to Activities Button */}
-                    {selectedHotelIndex !== null && (
-                      <div className="pt-2 flex justify-end">
-                        <Button
-                          size="sm"
-                          className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                          onClick={async () => {
-                            setHasConfirmedHotels(true);
-                            
-                            // Generate activities when moving from hotels to activities
-                            if (!tripId) return;
-
-                            try {
-                              setIsGeneratingActivities(true);
-
-                              // Save preferences first so activities can reflect latest constraints
-                              if (tripPreferences) {
-                                await savePreferences();
-                              }
-
-                              const token = getAuthToken();
-                              if (!token) return;
-
-                              const response = await fetch(getApiUrl(`api/trips/${tripId}/generate-activities`), {
-                                method: "POST",
-                                headers: {
-                                  Authorization: `Bearer ${token}`,
-                                  "Content-Type": "application/json",
-                                },
-                                body: JSON.stringify({
-                                  testMode: useTestActivities,
-                                  selected_cities: tripPreferences?.selected_cities ?? [],
-                                }),
-                              });
-
-                              const result = await response.json();
-
-                              if (response.ok && result.success && Array.isArray(result.activities)) {
-                                setActivities(result.activities);
-
-                                if (result.activities.length > 0) {
-                                  const assistantMessage: Message = {
-                                    role: "assistant",
-                                    content:
-                                      "I pulled together a small set of activity ideas based on your preferences. Swipe through them below and tell me what you like.",
-                                    timestamp: formatTime(),
-                                  };
-                                  setMessages((prev) => [...prev, assistantMessage]);
-                                } else {
-                                  window.alert(
-                                    "I wasn't able to find good activity ideas just yet. You can adjust your preferences or try again."
-                                  );
-                                }
-                              } else {
-                                console.error("Failed to generate activities:", result.message);
-                              }
-                            } catch (error) {
-                              console.error("Error generating activities:", error);
-                            } finally {
-                              setIsGeneratingActivities(false);
-                            }
-                            
-                            // Navigate to activities tab
-                            setActiveTab("activities");
-                          }}
-                          disabled={isGeneratingActivities}
-                        >
-                          {isGeneratingActivities
-                            ? useTestActivities
-                              ? "Loading test activities..."
-                              : "Finding activities..."
-                            : "Continue to Activities"}
-                        </Button>
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
-                  </div>
-                )}
+
+                    {/* Navigation Buttons */}
+                    <div className="pt-3 border-t border-blue-200 flex items-center justify-between">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 px-3 border-blue-200 text-slate-900 hover:bg-blue-50 disabled:opacity-40"
+                      disabled={currentHotelCityIndex === 0}
+                      onClick={() => {
+                        setCurrentHotelCityIndex(prev => prev - 1);
+                      }}
+                    >
+                      ← Previous
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                      disabled={currentCitySelectedIndex === null}
+                      onClick={async () => {
+                        if (isLastSegment) {
+                          // All hotels booked, continue to activities
+                          setHasConfirmedHotels(true);
+                          
+                          // Generate activities when moving from hotels to activities
+                          if (!tripId) return;
+
+                          try {
+                            setIsGeneratingActivities(true);
+
+                            // Save preferences first so activities can reflect latest constraints
+                            if (tripPreferences) {
+                              await savePreferences();
+                            }
+
+                            const token = getAuthToken();
+                            if (!token) return;
+
+                            const response = await fetch(getApiUrl(`api/trips/${tripId}/generate-activities`), {
+                              method: "POST",
+                              headers: {
+                                Authorization: `Bearer ${token}`,
+                                "Content-Type": "application/json",
+                              },
+                              body: JSON.stringify({
+                                testMode: useTestActivities,
+                                selected_cities: tripPreferences?.selected_cities ?? [],
+                              }),
+                            });
+
+                            const result = await response.json();
+
+                            if (response.ok && result.success && Array.isArray(result.activities)) {
+                              setActivities(result.activities);
+
+                              if (result.activities.length > 0) {
+                                const assistantMessage: Message = {
+                                  role: "assistant",
+                                  content:
+                                    "I pulled together a small set of activity ideas based on your preferences. Swipe through them below and tell me what you like.",
+                                  timestamp: formatTime(),
+                                };
+                                setMessages((prev) => [...prev, assistantMessage]);
+                              } else {
+                                window.alert(
+                                  "I wasn't able to find good activity ideas just yet. You can adjust your preferences or try again."
+                                );
+                              }
+                            } else {
+                              console.error("Failed to generate activities:", result.message);
+                            }
+                          } catch (error) {
+                            console.error("Error generating activities:", error);
+                          } finally {
+                            setIsGeneratingActivities(false);
+                          }
+                          
+                          // Navigate to activities tab
+                          setActiveTab("activities");
+                        } else {
+                          // Move to next city
+                          setCurrentHotelCityIndex(prev => prev + 1);
+                        }
+                        }}
+                      >
+                        {isGeneratingActivities
+                          ? useTestActivities
+                            ? "Loading test activities..."
+                            : "Finding activities..."
+                          : isLastSegment
+                            ? "Continue to Activities"
+                            : "Next City →"}
+                      </Button>
+                    </div>
+                  </>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
           {hasStartedPlanning && hasConfirmedHotels && activeTab === "summary" && (
             <div className="flex justify-center">
               <div className="w-full max-w-4xl bg-white border border-blue-100 text-slate-900 rounded-lg px-6 py-5 shadow-lg space-y-4">
