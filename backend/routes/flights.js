@@ -9,13 +9,22 @@ const router = express.Router();
 // Search for flights using SerpAPI Google Flights
 router.get('/search', authenticateToken, async (req, res) => {
   try {
-    const { departure_id, arrival_id, outbound_date, return_date } = req.query;
+    const { departure_id, arrival_id, outbound_date, return_date, type } = req.query;
+    const flightType = type || '1'; // Default to round trip if not specified
 
     // Validate required parameters
-    if (!departure_id || !arrival_id || !outbound_date || !return_date) {
+    if (!departure_id || !arrival_id || !outbound_date) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required parameters: departure_id, arrival_id, outbound_date, return_date'
+        message: 'Missing required parameters: departure_id, arrival_id, outbound_date'
+      });
+    }
+
+    // Only require return_date for round trip flights
+    if (flightType === '1' && !return_date) {
+      return res.status(400).json({
+        success: false,
+        message: 'return_date is required for round trip flights'
       });
     }
 
@@ -35,10 +44,18 @@ router.get('/search', authenticateToken, async (req, res) => {
       departure_id: departure_id,
       arrival_id: arrival_id,
       outbound_date: outbound_date,
-      return_date: return_date,
-      type: '1', // Round trip
       currency: 'USD'
     });
+
+    // Set type: 2 for one-way, 1 for round trip
+    if (flightType === '0') {
+      params.append('type', '2'); // One-way flight
+    } else {
+      params.append('type', '1'); // Round trip
+      if (return_date) {
+        params.append('return_date', return_date);
+      }
+    }
 
     const serpApiUrl = `https://serpapi.com/search?${params.toString()}`;
     console.log('Calling SerpAPI:', serpApiUrl.replace(SERPAPI_KEY, '***'));
