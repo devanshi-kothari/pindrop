@@ -386,7 +386,7 @@ router.post('/chat', authenticateToken, async (req, res) => {
           supabase
             .from('trip_preference')
             .select(
-              'start_date, end_date, num_days, min_budget, max_budget, pace, accommodation_type, activity_categories, avoid_activity_categories, group_type, safety_notes, accessibility_notes, custom_requests'
+              'start_date, end_date, num_days, min_budget, max_budget, pace, accommodation_type, activity_categories, avoid_activity_categories, selected_cities, group_type, safety_notes, accessibility_notes, custom_requests'
             )
             .eq('trip_id', parsedTripId)
             .maybeSingle(),
@@ -420,6 +420,9 @@ router.post('/chat', authenticateToken, async (req, res) => {
           }
           if (tripPrefs.accommodation_type) {
             lines.push(`Preferred accommodation: ${tripPrefs.accommodation_type}.`);
+          }
+          if (Array.isArray(tripPrefs.selected_cities) && tripPrefs.selected_cities.length) {
+            lines.push(`Selected cities: ${tripPrefs.selected_cities.join(', ')}.`);
           }
           if (Array.isArray(tripPrefs.activity_categories) && tripPrefs.activity_categories.length) {
             lines.push(

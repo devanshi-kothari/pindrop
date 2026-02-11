@@ -113,6 +113,8 @@ CREATE TABLE IF NOT EXISTS trip_preference (
     activity_categories TEXT[] DEFAULT '{}',
     -- Things to avoid on this trip
     avoid_activity_categories TEXT[] DEFAULT '{}',
+    -- Optional: if the destination is a country/region, the user can pick one or more cities to focus planning on
+    selected_cities TEXT[] DEFAULT '{}',
     -- Who is travelling: 'solo', 'couple', 'family', 'friends', 'girls_trip', etc.
     group_type VARCHAR(50),
     -- Safety and access notes (ex. \"safe for a group of girls\")
