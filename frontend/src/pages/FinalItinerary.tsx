@@ -1916,6 +1916,32 @@ const FinalItinerary = () => {
                                     className="h-8 text-xs"
                                   />
                                 </div>
+                                <div>
+                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                                    Link (optional)
+                                  </label>
+                                  <Input
+                                    type="url"
+                                    value={formData[day.day_number]?.source_url || ""}
+                                    onChange={(e) =>
+                                      setFormData((prev) => ({
+                                        ...prev,
+                                        [day.day_number]: {
+                                          ...(prev[day.day_number] || {
+                                            name: "",
+                                            description: "",
+                                            source_url: "",
+                                            location: "",
+                                            cost_estimate: "",
+                                          }),
+                                          source_url: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    placeholder="https://..."
+                                    className="h-8 text-xs"
+                                  />
+                                </div>
                                 <Button
                                   onClick={() => handleAddActivity(day.day_number)}
                                   disabled={addingActivity[day.day_number]}
