@@ -476,22 +476,39 @@ router.put('/select', authenticateToken, async (req, res) => {
       }
     }
 
-    // Update the selected hotel in trip_hotel table
-    const { error: updateError } = await supabase
+    // Upsert the selected hotel in trip_hotel table
+    // Use upsert to handle cases where the trip_hotel row doesn't exist yet
+    console.log(`[hotel-select] Upserting hotel selection: trip_id=${trip_id}, hotel_id=${hotel_id}, is_selected=${is_selected}`);
+    
+    const { data: upsertData, error: updateError } = await supabase
       .from('trip_hotel')
-      .update({
+      .upsert({
+        trip_id: trip_id,
+        hotel_id: hotel_id,
         is_selected: is_selected,
         updated_at: new Date().toISOString()
+      }, {
+        onConflict: 'trip_id,hotel_id'
       })
-      .eq('trip_id', trip_id)
-      .eq('hotel_id', hotel_id);
+      .select();
 
     if (updateError) {
-      console.error('Error updating hotel selection in trip_hotel:', updateError);
+      console.error('[hotel-select] Error upserting hotel selection in trip_hotel:', updateError);
       throw updateError;
     }
 
-    console.log(`Successfully ${is_selected ? 'selected' : 'unselected'} hotel ${hotel_id} for trip ${trip_id}`);
+    console.log(`[hotel-select] Upsert result:`, upsertData);
+    
+    // Verify the selection was saved
+    const { data: verifyData, error: verifyError } = await supabase
+      .from('trip_hotel')
+      .select('*')
+      .eq('trip_id', trip_id)
+      .eq('is_selected', true);
+    
+    console.log(`[hotel-select] Verification - selected hotels for trip ${trip_id}:`, verifyData, verifyError?.message);
+    
+    console.log(`[hotel-select] Successfully ${is_selected ? 'selected' : 'unselected'} hotel ${hotel_id} for trip ${trip_id}`);
 
     res.status(200).json({
       success: true,

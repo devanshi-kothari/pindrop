@@ -603,18 +603,21 @@ router.put('/select', authenticateToken, async (req, res) => {
       }
     }
 
-    // Update the selected flight in trip_flight table
+    // Upsert the selected flight in trip_flight table
+    // Use upsert to handle cases where the trip_flight row doesn't exist yet
     const { error: updateError } = await supabase
       .from('trip_flight')
-      .update({
+      .upsert({
+        trip_id: trip_id,
+        flight_id: flight_id,
         is_selected: is_selected,
         updated_at: new Date().toISOString()
-      })
-      .eq('trip_id', trip_id)
-      .eq('flight_id', flight_id);
+      }, {
+        onConflict: 'trip_id,flight_id'
+      });
 
     if (updateError) {
-      console.error('Error updating flight selection in trip_flight:', updateError);
+      console.error('Error upserting flight selection in trip_flight:', updateError);
       throw updateError;
     }
 

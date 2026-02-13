@@ -1555,6 +1555,7 @@ router.put('/:tripId/meals', authenticateToken, async (req, res) => {
       .eq('trip_id', tripId);
     if (deleteError) throw deleteError;
 
+    let savedMeals = [];
     if (meals.length > 0) {
       const rows = meals.map((meal) => ({
         trip_id: tripId,
@@ -1567,11 +1568,15 @@ router.put('/:tripId/meals', authenticateToken, async (req, res) => {
         finalized: typeof meal.finalized === 'boolean' ? meal.finalized : false,
         updated_at: new Date().toISOString(),
       }));
-      const { error: insertError } = await supabase.from('trip_meal').insert(rows);
+      const { data: insertedMeals, error: insertError } = await supabase
+        .from('trip_meal')
+        .insert(rows)
+        .select('trip_meal_id, day_number, slot, name, location, link, cost, finalized');
       if (insertError) throw insertError;
+      savedMeals = insertedMeals || [];
     }
 
-    res.status(200).json({ success: true });
+    res.status(200).json({ success: true, meals: savedMeals });
   } catch (error) {
     console.error('Error saving trip meals:', error);
     res.status(500).json({ success: false, message: 'Failed to save meals', error: error.message });
@@ -3691,7 +3696,13 @@ router.get('/:tripId/final-itinerary', authenticateToken, async (req, res) => {
       (tf) => tf.flight?.flight_type === 'return'
     )?.flight || null;
 
-    const { data: tripHotels } = await supabase
+    console.log('[final-itinerary] Selected flights:', {
+      outbound: selectedOutboundFlight ? { id: selectedOutboundFlight.flight_id, price: selectedOutboundFlight.price } : null,
+      return: selectedReturnFlight ? { id: selectedReturnFlight.flight_id, price: selectedReturnFlight.price } : null,
+      totalFound: tripFlights?.length || 0,
+    });
+
+    const { data: tripHotels, error: tripHotelsError } = await supabase
       .from('trip_hotel')
       .select(
         `
@@ -3702,6 +3713,19 @@ router.get('/:tripId/final-itinerary', authenticateToken, async (req, res) => {
       )
       .eq('trip_id', tripId)
       .eq('is_selected', true);
+
+    console.log('[final-itinerary] tripHotels query result:', { 
+      count: tripHotels?.length || 0, 
+      error: tripHotelsError?.message,
+      rawData: tripHotels 
+    });
+
+    // Also check all hotels for this trip (regardless of selection)
+    const { data: allTripHotels } = await supabase
+      .from('trip_hotel')
+      .select('hotel_id, is_selected')
+      .eq('trip_id', tripId);
+    console.log('[final-itinerary] All trip_hotel rows for trip:', allTripHotels);
 
     // For multi-city trips, we may have multiple selected hotels (one per city)
     const selectedHotels = (tripHotels || []).map(th => th.hotel).filter(Boolean);
@@ -5955,6 +5979,371 @@ router.put('/:tripId/flights/:flightId/confirm-replacement', authenticateToken, 
     res.status(500).json({
       success: false,
       message: 'Failed to replace flight',
+      error: error.message,
+    });
+  }
+});
+
+// GET /api/trips/:tripId/meals/:mealId/alternatives
+// Fetch 3 alternative restaurants for a meal slot
+router.get('/:tripId/meals/:mealId/alternatives', authenticateToken, async (req, res) => {
+  try {
+    const { tripId, mealId } = req.params;
+    const userId = req.user?.userId;
+
+    console.log('[meal-alternatives] tripId:', tripId, '| mealId:', mealId, '| userId:', userId);
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authenticated',
+      });
+    }
+
+    // Fetch the current meal
+    const { data: currentMeal, error: fetchError } = await supabase
+      .from('trip_meal')
+      .select('*')
+      .eq('trip_meal_id', mealId)
+      .eq('trip_id', tripId)
+      .single();
+
+    console.log('[meal-alternatives] currentMeal:', currentMeal, '| fetchError:', fetchError?.message);
+
+    if (fetchError || !currentMeal) {
+      return res.status(404).json({
+        success: false,
+        message: 'Meal not found',
+      });
+    }
+
+    // Fetch trip to get destination and preferences
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select(`
+        destination,
+        trip_preference (
+          start_date,
+          end_date,
+          max_budget,
+          num_days,
+          restaurant_preferences
+        )
+      `)
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      console.log('[meal-alternatives] Trip query failed. tripError:', tripError?.message);
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found',
+      });
+    }
+
+    // Extract preferences
+    const tripPreference = Array.isArray(trip.trip_preference) ? trip.trip_preference[0] : trip.trip_preference;
+    const restaurantPrefs = tripPreference?.restaurant_preferences || {};
+    const cuisineTypes = restaurantPrefs.cuisine_types || [];
+    const dietaryRestrictions = restaurantPrefs.dietary_restrictions || [];
+    const minPrice = restaurantPrefs.min_price_range ?? null;
+    const maxPrice = restaurantPrefs.max_price_range ?? null;
+    const numDays = tripPreference?.num_days || 1;
+    const budgetPerDay = tripPreference?.max_budget ? Math.round(tripPreference.max_budget / numDays) : null;
+
+    // Determine meal type context
+    const mealSlot = currentMeal.slot || 'lunch';
+    const mealTypeLabel = mealSlot.charAt(0).toUpperCase() + mealSlot.slice(1);
+
+    // Use OpenAI to generate 3 alternatives with similar characteristics
+    const prompt = `You are a restaurant recommendation expert. Based on the following restaurant/meal, suggest 3 similar but different restaurants that a traveler might enjoy as alternatives.
+
+Current Restaurant:
+- Name: ${currentMeal.name || 'Not specified'}
+- Location: ${currentMeal.location || trip.destination}
+- Meal Type: ${mealTypeLabel}
+- Cost: $${currentMeal.cost || 'Not specified'}
+
+Trip Context:
+- Destination: ${trip.destination}
+- Budget per day: ${budgetPerDay ? '$' + budgetPerDay : 'Not specified'}
+- Cuisine preferences: ${cuisineTypes.length > 0 ? cuisineTypes.join(', ') : 'Any'}
+- Dietary restrictions: ${dietaryRestrictions.length > 0 ? dietaryRestrictions.join(', ') : 'None'}
+- Price range preference: ${minPrice || maxPrice ? `$${minPrice || 0} - $${maxPrice || 100}` : 'Not specified'}
+
+Please suggest 3 DIFFERENT but similar restaurants that:
+1. Serve ${mealTypeLabel.toLowerCase()} in ${trip.destination}
+2. Have a similar price point (within 30% of current, or within budget)
+3. Respect dietary restrictions: ${dietaryRestrictions.length > 0 ? dietaryRestrictions.join(', ') : 'None'}
+4. Match or complement cuisine preferences: ${cuisineTypes.length > 0 ? cuisineTypes.join(', ') : 'Any cuisine'}
+
+Return your response as a JSON array with exactly 3 objects, each with this structure:
+{
+  "name": "Restaurant Name",
+  "location": "Address or neighborhood in ${trip.destination}",
+  "cuisine_type": "Cuisine Type",
+  "price_range": "$" or "$$" or "$$$" or "$$$$",
+  "cost_estimate": 25,
+  "description": "Brief description of the restaurant and why it's a good alternative",
+  "meal_types": ["Breakfast", "Lunch", "Dinner"],
+  "link": "https://example.com/restaurant-name"
+}
+
+IMPORTANT: Return ONLY valid JSON array, no markdown, no additional text.`;
+
+    console.log('[meal-alternatives] Starting OpenAI API call for meal alternatives...');
+    console.log('Trip ID:', tripId, '| Meal ID:', mealId);
+    console.log('Current meal:', currentMeal.name);
+
+    let completion;
+    try {
+      completion = await openaiClient.chat.completions.create({
+        model: DEFAULT_MODEL,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        temperature: 0.7,
+        max_tokens: 1500,
+      });
+    } catch (apiError) {
+      console.error('[meal-alternatives] OpenAI API Error:', apiError.message);
+      
+      return res.status(500).json({
+        success: false,
+        message: `OpenAI API error: ${apiError.message}`,
+        error: apiError.message,
+      });
+    }
+
+    const responseText = completion.choices[0]?.message?.content || '';
+    
+    console.log('[meal-alternatives] LLM Response length:', responseText.length);
+    
+    // Parse the LLM response
+    let alternatives = [];
+    const normalizeJsonString = (value) =>
+      value
+        .replace(/[""]/g, '"')
+        .replace(/['']/g, "'")
+        .replace(/,\s*([}\]])/g, '$1');
+
+    const tryParseJson = (value) => {
+      try {
+        return JSON.parse(value);
+      } catch (error) {
+        return null;
+      }
+    };
+
+    try {
+      let jsonStr = responseText.trim();
+      jsonStr = jsonStr.replace(/```json/gi, '```').replace(/```/g, '').trim();
+
+      // Method 1: Extract JSON array if present
+      const arrayStart = jsonStr.indexOf('[');
+      const arrayEnd = jsonStr.lastIndexOf(']');
+      if (arrayStart !== -1 && arrayEnd > arrayStart) {
+        jsonStr = jsonStr.slice(arrayStart, arrayEnd + 1);
+        console.log('[meal-alternatives] Method 1 (brackets): Found JSON array');
+      }
+
+      let parsed = tryParseJson(normalizeJsonString(jsonStr));
+
+      // Method 2: Extract object blocks and build an array
+      if (!Array.isArray(parsed)) {
+        const objectMatches = jsonStr.match(/\{[\s\S]*?\}/g);
+        if (objectMatches && objectMatches.length > 0) {
+          console.log('[meal-alternatives] Method 2 (objects): Found JSON objects');
+          parsed = objectMatches
+            .map((objStr) => {
+              const normalized = normalizeJsonString(objStr);
+              let parsedObject = tryParseJson(normalized);
+              if (!parsedObject) {
+                const loose = normalized.replace(/'([^']*)'/g, '"$1"');
+                parsedObject = tryParseJson(loose);
+              }
+              return parsedObject;
+            })
+            .filter(Boolean);
+        }
+      }
+
+      if (Array.isArray(parsed)) {
+        alternatives = parsed.filter((item) => item && item.name).slice(0, 3);
+        console.log(`[meal-alternatives] Successfully parsed ${alternatives.length} alternatives`);
+      } else {
+        console.error('[meal-alternatives] Response did not parse into an array.');
+        alternatives = [];
+      }
+    } catch (parseError) {
+      console.error('[meal-alternatives] JSON Parse Error:', parseError.message);
+      alternatives = [];
+    }
+
+    // Fallback: pull similar restaurants from DB if LLM response is empty
+    if (alternatives.length === 0) {
+      console.warn('[meal-alternatives] No LLM alternatives returned. Falling back to DB suggestions.');
+      const destination = trip.destination ? String(trip.destination).trim() : null;
+
+      let fallbackQuery = supabase
+        .from('restaurant')
+        .select(
+          'restaurant_id, name, location, address, cuisine_type, meal_types, dietary_options, price_range, cost_estimate, rating, source_url, reservation_url, description'
+        );
+
+      if (destination) {
+        fallbackQuery = fallbackQuery.or(
+          `location.ilike.%${destination}%,name.ilike.%${destination}%,address.ilike.%${destination}%`
+        );
+      }
+
+      let { data: fallbackData, error: fallbackError } = await fallbackQuery.limit(3);
+
+      if (fallbackError) {
+        console.error('[meal-alternatives] Fallback restaurant query failed:', fallbackError);
+      }
+
+      if ((!fallbackData || fallbackData.length === 0)) {
+        // Final safety net: return any restaurants
+        const { data: anyRestaurants, error: anyError } = await supabase
+          .from('restaurant')
+          .select(
+            'restaurant_id, name, location, address, cuisine_type, meal_types, dietary_options, price_range, cost_estimate, rating, source_url, reservation_url, description'
+          )
+          .limit(3);
+
+        if (anyError) {
+          console.error('[meal-alternatives] Fallback any-restaurant query failed:', anyError);
+        } else {
+          fallbackData = anyRestaurants;
+        }
+      }
+
+      if (fallbackData && fallbackData.length > 0) {
+        alternatives = fallbackData.map((item) => ({
+          ...item,
+          link: item.reservation_url || item.source_url,
+          is_new: false,
+        }));
+      }
+    } else {
+      // Mark LLM-generated alternatives as new
+      alternatives = alternatives.map((item) => ({
+        ...item,
+        is_new: true,
+      }));
+    }
+
+    console.log('[meal-alternatives] Final alternatives count:', alternatives.length);
+    
+    res.status(200).json({
+      success: true,
+      alternatives: alternatives,
+      currentMeal: currentMeal,
+    });
+  } catch (error) {
+    console.error('Error fetching meal alternatives:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch alternatives',
+      error: error.message,
+    });
+  }
+});
+
+// PUT /api/trips/:tripId/meals/:mealId/confirm-replacement
+// Replace a meal with a selected alternative restaurant
+router.put('/:tripId/meals/:mealId/confirm-replacement', authenticateToken, async (req, res) => {
+  try {
+    const { tripId, mealId } = req.params;
+    const { selectedRestaurant } = req.body;
+    const userId = req.user?.userId;
+
+    console.log('[meal-confirm] tripId:', tripId, '| mealId:', mealId, '| userId:', userId);
+    console.log('[meal-confirm] selectedRestaurant:', selectedRestaurant);
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authenticated',
+      });
+    }
+
+    if (!selectedRestaurant || !selectedRestaurant.name) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid replacement restaurant',
+      });
+    }
+
+    // Verify trip ownership
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(403).json({
+        success: false,
+        message: 'Trip not found or not owned by user',
+      });
+    }
+
+    // Get the current meal to preserve its day and slot assignment
+    const { data: currentMeal, error: fetchError } = await supabase
+      .from('trip_meal')
+      .select('*')
+      .eq('trip_meal_id', mealId)
+      .eq('trip_id', tripId)
+      .single();
+
+    if (fetchError || !currentMeal) {
+      return res.status(404).json({
+        success: false,
+        message: 'Current meal not found',
+      });
+    }
+
+    // Update the meal with replacement data
+    console.log('[meal-confirm] Updating meal', mealId, 'with:', selectedRestaurant);
+    const { error: updateError } = await supabase
+      .from('trip_meal')
+      .update({
+        name: selectedRestaurant.name,
+        location: selectedRestaurant.location || selectedRestaurant.address || null,
+        link: selectedRestaurant.link || selectedRestaurant.reservation_url || selectedRestaurant.source_url || null,
+        cost: selectedRestaurant.cost_estimate !== undefined ? parseFloat(selectedRestaurant.cost_estimate) : null,
+        finalized: false,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('trip_meal_id', mealId);
+
+    if (updateError) {
+      console.error('[meal-confirm] Error updating meal:', updateError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update meal',
+        error: updateError.message,
+      });
+    }
+    console.log('[meal-confirm] Meal updated successfully');
+
+    res.status(200).json({
+      success: true,
+      message: 'Meal replaced successfully',
+      meal_id: mealId,
+    });
+  } catch (error) {
+    console.error('Error confirming meal replacement:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to replace meal',
       error: error.message,
     });
   }

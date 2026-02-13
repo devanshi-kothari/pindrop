@@ -2750,71 +2750,13 @@ const ChatWindow = ({
         <div className="px-4 pt-4">
           <Card className="border-blue-100 bg-white/90 backdrop-blur text-slate-900">
             <CardHeader className="pb-3">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <CardTitle className="text-base font-semibold">
-                    Phase 1: Trip preferences for this itinerary
-                  </CardTitle>
-                  <p className="text-xs text-slate-500 mt-1">
-                    These answers help tailor a day-by-day plan. They start from your profile
-                    defaults, but you can tweak them for this specific trip.
-                  </p>
-                </div>
-                <div className="flex flex-col gap-2 items-end">
-                  <div className="flex items-center gap-2">
-                    <Label className="text-[11px] text-slate-600" title="Uses Greece activities (Athens, Mykonos, Santorini) instead of Google Search API">
-                      Use test activities (Greece)
-                    </Label>
-                    <Switch
-                      checked={useTestActivities}
-                      onCheckedChange={(val) => setUseTestActivities(val)}
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="border-blue-200 bg-white text-slate-900 hover:bg-blue-50"
-                      onClick={savePreferences}
-                      disabled={isSavingPreferences || !tripPreferences}
-                    >
-                      {isSavingPreferences ? "Saving..." : "Save preferences"}
-                    </Button>
-                    <Button
-                      size="sm"
-                    className="bg-yellow-400 text-slate-900 font-semibold hover:bg-yellow-300 disabled:opacity-60"
-                    onClick={async () => {
-                      if (!tripId) return;
-
-                      try {
-                        setIsSavingPreferences(true);
-
-                        // Save preferences first so they're available for later steps
-                        if (tripPreferences) {
-                          await savePreferences();
-                        }
-
-                        // Set hasStartedPlanning to show tabs
-                        setHasStartedPlanning(true);
-                        // Set hasConfirmedTripSketch to allow flights section to show
-                        setHasConfirmedTripSketch(true);
-                        // Navigate to flights tab - activities will be generated when moving from hotels to activities
-                        setActiveTab("flights");
-                      } catch (error) {
-                        console.error("Error starting planning:", error);
-                      } finally {
-                        setIsSavingPreferences(false);
-                      }
-                    }}
-                    disabled={isSavingPreferences || !tripPreferences}
-                  >
-                    {isSavingPreferences
-                      ? "Saving..."
-                      : "Start planning"}
-                    </Button>
-                  </div>
-                </div>
-              </div>
+              <CardTitle className="text-base font-semibold">
+                Phase 1: Trip preferences for this itinerary
+              </CardTitle>
+              <p className="text-xs text-slate-500 mt-1">
+                These answers help tailor a day-by-day plan. They start from your profile
+                defaults, but you can tweak them for this specific trip.
+              </p>
             </CardHeader>
             <CardContent className="space-y-4 text-xs sm:text-sm">
               <div className="grid gap-4 md:grid-cols-3">
@@ -3176,6 +3118,60 @@ const ChatWindow = ({
                     Selected: <span className="text-slate-800">{tripPreferences.selected_cities.join(", ")}</span>
                   </p>
                 ) : null}
+              </div>
+
+              {/* Action buttons at the bottom */}
+              <div className="pt-4 border-t border-blue-100 flex flex-col sm:flex-row items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Label className="text-[11px] text-slate-600" title="Uses Greece activities (Athens, Mykonos, Santorini) instead of Google Search API">
+                    Use test activities (Greece)
+                  </Label>
+                  <Switch
+                    checked={useTestActivities}
+                    onCheckedChange={(val) => setUseTestActivities(val)}
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-blue-200 bg-white text-slate-900 hover:bg-blue-50"
+                    onClick={savePreferences}
+                    disabled={isSavingPreferences || !tripPreferences}
+                  >
+                    {isSavingPreferences ? "Saving..." : "Save preferences"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="bg-yellow-400 text-slate-900 font-semibold hover:bg-yellow-300 disabled:opacity-60"
+                    onClick={async () => {
+                      if (!tripId) return;
+
+                      try {
+                        setIsSavingPreferences(true);
+
+                        // Save preferences first so they're available for later steps
+                        if (tripPreferences) {
+                          await savePreferences();
+                        }
+
+                        // Set hasStartedPlanning to show tabs
+                        setHasStartedPlanning(true);
+                        // Set hasConfirmedTripSketch to allow flights section to show
+                        setHasConfirmedTripSketch(true);
+                        // Navigate to flights tab - activities will be generated when moving from hotels to activities
+                        setActiveTab("flights");
+                      } catch (error) {
+                        console.error("Error starting planning:", error);
+                      } finally {
+                        setIsSavingPreferences(false);
+                      }
+                    }}
+                    disabled={isSavingPreferences || !tripPreferences}
+                  >
+                    {isSavingPreferences ? "Saving..." : "Start planning"}
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>

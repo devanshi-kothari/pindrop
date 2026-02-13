@@ -24,6 +24,7 @@ import { Switch } from "@/components/ui/switch";
 import ReplaceActivityModal from "@/components/ReplaceActivityModal";
 import ReplaceHotelModal from "@/components/ReplaceHotelModal";
 import ReplaceFlightModal from "@/components/ReplaceFlightModal";
+import ReplaceRestaurantModal from "@/components/ReplaceRestaurantModal";
 
 type FlightLeg = {
   departure_airport?: {
@@ -98,6 +99,7 @@ type FinalItineraryDay = {
 type MealSlot = "breakfast" | "lunch" | "dinner";
 
 type MealInfo = {
+  trip_meal_id?: number;
   name: string;
   location: string;
   link?: string;
@@ -246,6 +248,14 @@ const FinalItinerary = () => {
     flight: any;
     tripFlightId: number;
     flightType: "outbound" | "return";
+  } | null>(null);
+
+  // Replace restaurant modal state
+  const [replaceRestaurantModalOpen, setReplaceRestaurantModalOpen] = useState(false);
+  const [selectedMealToReplace, setSelectedMealToReplace] = useState<{
+    meal: MealInfo;
+    dayNumber: number;
+    slot: MealSlot;
   } | null>(null);
 
   useEffect(() => {
@@ -857,6 +867,46 @@ const FinalItinerary = () => {
     }
   };
 
+  const handleConfirmRestaurantReplacement = async (selectedRestaurant: any) => {
+    if (!tripId || !selectedMealToReplace || !selectedMealToReplace.meal.trip_meal_id) return;
+
+    try {
+      const token = localStorage.getItem("token");
+      if (!token) {
+        navigate("/login");
+        return;
+      }
+
+      const response = await fetch(
+        getApiUrl(
+          `api/trips/${tripId}/meals/${selectedMealToReplace.meal.trip_meal_id}/confirm-replacement`
+        ),
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            selectedRestaurant: selectedRestaurant,
+          }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (response.ok && result.success) {
+        // Reload meals to show replacement
+        await loadPersistedMeals();
+      } else {
+        throw new Error(result.message || "Failed to replace restaurant");
+      }
+    } catch (error) {
+      console.error("Error confirming restaurant replacement:", error);
+      throw error;
+    }
+  };
+
   const toggleAddForm = (dayNumber: number) => {
     setShowAddForm((prev) => ({
       ...prev,
@@ -1018,6 +1068,7 @@ const FinalItinerary = () => {
           if (!m.day_number || !m.slot) return;
           if (!next[m.day_number]) next[m.day_number] = {};
           next[m.day_number][m.slot as MealSlot] = {
+            trip_meal_id: m.trip_meal_id,
             name: m.name || "",
             location: m.location || "",
             link: m.link || undefined,
@@ -1103,7 +1154,7 @@ const FinalItinerary = () => {
     });
 
     try {
-      await fetch(getApiUrl(`api/trips/${tripId}/meals`), {
+      const response = await fetch(getApiUrl(`api/trips/${tripId}/meals`), {
         method: "PUT",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -1111,6 +1162,28 @@ const FinalItinerary = () => {
         },
         body: JSON.stringify({ meals: mealsPayload }),
       });
+      const result = await response.json();
+      // Update local state with the returned trip_meal_id values
+      if (response.ok && result.success && Array.isArray(result.meals)) {
+        setMealsByDay((prev) => {
+          const updated = { ...prev };
+          result.meals.forEach((m: any) => {
+            if (!m.day_number || !m.slot) return;
+            if (!updated[m.day_number]) updated[m.day_number] = {};
+            const existing = updated[m.day_number][m.slot as MealSlot];
+            if (existing) {
+              updated[m.day_number] = {
+                ...updated[m.day_number],
+                [m.slot]: {
+                  ...existing,
+                  trip_meal_id: m.trip_meal_id,
+                },
+              };
+            }
+          });
+          return updated;
+        });
+      }
     } catch (err) {
       console.error("Error persisting meals:", err);
     }
@@ -1482,7 +1555,7 @@ const FinalItinerary = () => {
                   <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="mt-4">
                     <TabsList className="grid w-full grid-cols-3 sm:grid-cols-4 mb-4">
                       <TabsTrigger value="overview" className="text-xs">
-                        Overview
+                        Editable Overview
                       </TabsTrigger>
                       <TabsTrigger value="map" className="text-xs">
                         Map
@@ -1717,7 +1790,142 @@ const FinalItinerary = () => {
                           <div className="mt-3 space-y-2">
                             <div className="flex items-center justify-between">
                               <p className="text-xs font-semibold text-slate-600">Activities</p>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => toggleAddForm(day.day_number)}
+                                className="h-6 px-2 text-[10px]"
+                              >
+                                {showAddForm[day.day_number] ? (
+                                  <>
+                                    <X className="h-3 w-3 mr-1" />
+                                    Cancel
+                                  </>
+                                ) : (
+                                  <>
+                                    <Plus className="h-3 w-3 mr-1" />
+                                    Add
+                                  </>
+                                )}
+                              </Button>
                             </div>
+
+                            {/* Add Activity Form */}
+                            {showAddForm[day.day_number] && (
+                              <div className="rounded-md border border-blue-200 bg-blue-50 p-3 space-y-2">
+                                <div>
+                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                                    Activity Name <span className="text-red-500">*</span>
+                                  </label>
+                                  <Input
+                                    value={formData[day.day_number]?.name || ""}
+                                    onChange={(e) =>
+                                      setFormData((prev) => ({
+                                        ...prev,
+                                        [day.day_number]: {
+                                          ...(prev[day.day_number] || {
+                                            name: "",
+                                            description: "",
+                                            source_url: "",
+                                            location: "",
+                                            cost_estimate: "",
+                                          }),
+                                          name: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    placeholder="e.g., Visit the Eiffel Tower"
+                                    className="h-8 text-xs"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                                    Location (optional)
+                                  </label>
+                                  <Input
+                                    value={formData[day.day_number]?.location || ""}
+                                    onChange={(e) =>
+                                      setFormData((prev) => ({
+                                        ...prev,
+                                        [day.day_number]: {
+                                          ...(prev[day.day_number] || {
+                                            name: "",
+                                            description: "",
+                                            source_url: "",
+                                            location: "",
+                                            cost_estimate: "",
+                                          }),
+                                          location: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    placeholder={itinerary?.destination || "e.g., Paris, France"}
+                                    className="h-8 text-xs"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                                    Description (optional)
+                                  </label>
+                                  <Textarea
+                                    value={formData[day.day_number]?.description || ""}
+                                    onChange={(e) =>
+                                      setFormData((prev) => ({
+                                        ...prev,
+                                        [day.day_number]: {
+                                          ...(prev[day.day_number] || {
+                                            name: "",
+                                            description: "",
+                                            source_url: "",
+                                            location: "",
+                                            cost_estimate: "",
+                                          }),
+                                          description: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    placeholder="Additional details..."
+                                    className="min-h-[50px] text-xs"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                                    Cost estimate <span className="text-red-500">*</span>
+                                  </label>
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    step="0.01"
+                                    value={formData[day.day_number]?.cost_estimate || ""}
+                                    onChange={(e) =>
+                                      setFormData((prev) => ({
+                                        ...prev,
+                                        [day.day_number]: {
+                                          ...(prev[day.day_number] || {
+                                            name: "",
+                                            description: "",
+                                            source_url: "",
+                                            location: "",
+                                            cost_estimate: "",
+                                          }),
+                                          cost_estimate: e.target.value,
+                                        },
+                                      }))
+                                    }
+                                    placeholder="$"
+                                    className="h-8 text-xs"
+                                  />
+                                </div>
+                                <Button
+                                  onClick={() => handleAddActivity(day.day_number)}
+                                  disabled={addingActivity[day.day_number]}
+                                  className="w-full h-7 text-xs"
+                                  size="sm"
+                                >
+                                  {addingActivity[day.day_number] ? "Adding..." : "Add Activity"}
+                                </Button>
+                              </div>
+                            )}
 
                             {day.activities && day.activities.length > 0 && (
                               <div className="space-y-2">
@@ -1726,7 +1934,11 @@ const FinalItinerary = () => {
                                   return (
                                     <div
                                       key={activityKey}
-                                      className="group rounded-md border border-blue-100 bg-white px-3 py-2 text-xs text-slate-700 hover:border-blue-300 transition-colors"
+                                      onClick={() => {
+                                        setSelectedActivityDetail({ dayNumber: day.day_number, activity });
+                                        setActivityLocationDraft(activity.address || activity.location || "");
+                                      }}
+                                      className="group rounded-md border border-blue-100 bg-white px-3 py-2 text-xs text-slate-700 hover:border-blue-300 transition-colors cursor-pointer"
                                     >
                                       <div className="flex items-start justify-between gap-2">
                                         <div className="flex-1">
@@ -1760,7 +1972,8 @@ const FinalItinerary = () => {
                                             <Button
                                               variant="ghost"
                                               size="sm"
-                                              onClick={() => {
+                                              onClick={(e) => {
+                                                e.stopPropagation();
                                                 setSelectedActivityToReplace({
                                                   activity,
                                                   dayNumber: day.day_number,
@@ -1773,6 +1986,21 @@ const FinalItinerary = () => {
                                               <RotateCcw className="h-3 w-3" />
                                             </Button>
                                           )}
+                                          {activity.activity_id && (
+                                            <Button
+                                              variant="ghost"
+                                              size="sm"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleDeleteActivity(day.day_number, activity.activity_id!);
+                                              }}
+                                              disabled={deletingActivity[activityKey]}
+                                              className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-red-500 hover:text-red-700 hover:bg-red-50"
+                                              title="Delete this activity"
+                                            >
+                                              <Trash2 className="h-3 w-3" />
+                                            </Button>
+                                          )}
                                         </div>
                                       </div>
                                     </div>
@@ -1780,6 +2008,101 @@ const FinalItinerary = () => {
                                 })}
                               </div>
                             )}
+                          </div>
+
+                          {/* Meals / Restaurants Section */}
+                          <div className="mt-3 space-y-2">
+                            <p className="text-xs font-semibold text-slate-600">Meals</p>
+                            {(["breakfast", "lunch", "dinner"] as MealSlot[]).map((slot) => {
+                              const dayMeals = mealsByDay[day.day_number] || {};
+                              const meal = dayMeals[slot];
+                              const slotLabel = slot.charAt(0).toUpperCase() + slot.slice(1);
+                              
+                              if (!meal || !meal.name) {
+                                return (
+                                  <div
+                                    key={slot}
+                                    onClick={() => {
+                                      setEditingMeal({ dayNumber: day.day_number, slot });
+                                      setMealForm({
+                                        name: "",
+                                        location: itinerary.destination || "",
+                                        link: "",
+                                        cost: "30",
+                                      });
+                                    }}
+                                    className="rounded-md border border-dashed border-amber-200 bg-amber-50/40 px-3 py-2 text-xs text-slate-500 cursor-pointer hover:border-amber-300 hover:bg-amber-50/60 transition-colors"
+                                  >
+                                    <span className="text-amber-600 font-semibold">🍽️ {slotLabel}</span>{" "}
+                                    <span className="italic">Click to add restaurant</span>
+                                  </div>
+                                );
+                              }
+
+                              return (
+                                <div
+                                  key={slot}
+                                  onClick={() => {
+                                    setEditingMeal({ dayNumber: day.day_number, slot });
+                                    setMealForm({
+                                      name: meal.name || "",
+                                      location: meal.location || itinerary.destination || "",
+                                      link: meal.link || "",
+                                      cost: typeof meal.cost === "number" ? String(meal.cost) : "30",
+                                    });
+                                  }}
+                                  className="group rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-slate-700 cursor-pointer hover:border-amber-300 transition-colors"
+                                >
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="flex-1">
+                                      <p className="font-semibold text-slate-900">
+                                        <span className="text-amber-600">🍽️ {slotLabel}:</span> {meal.name}
+                                      </p>
+                                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                                        {meal.location && <span>📍 {meal.location}</span>}
+                                        {meal.cost && (
+                                          <span className="text-emerald-500">
+                                            ${meal.cost.toLocaleString()}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                      {meal.link && (
+                                        <a
+                                          href={meal.link}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-[11px] text-blue-600 hover:text-blue-700 underline whitespace-nowrap"
+                                          onClick={(e) => e.stopPropagation()}
+                                        >
+                                          View →
+                                        </a>
+                                      )}
+                                      {meal.trip_meal_id && (
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setSelectedMealToReplace({
+                                              meal,
+                                              dayNumber: day.day_number,
+                                              slot,
+                                            });
+                                            setReplaceRestaurantModalOpen(true);
+                                          }}
+                                          className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-amber-500 hover:text-amber-700 hover:bg-amber-50"
+                                          title="Replace this restaurant"
+                                        >
+                                          <RotateCcw className="h-3 w-3" />
+                                        </Button>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
 
                           {day.return_flight && (
@@ -2850,72 +3173,45 @@ const FinalItinerary = () => {
                     </TabsContent>
 
                     <TabsContent value="calendar" className="mt-0">
+                      <div className="mb-3 p-2 bg-slate-50 rounded-md border border-slate-200">
+                        <p className="text-xs text-slate-600">
+                          <span className="font-semibold">Read-only view</span> — This calendar shows your itinerary in chronological order. 
+                          To make changes, use the <span className="font-semibold">Editable Overview</span> tab.
+                        </p>
+                      </div>
                       <div className="grid gap-4 lg:grid-cols-[repeat(auto-fit,minmax(260px,1fr))]">
                         {itinerary.days.map((day) => (
                           <div
                             key={day.day_number}
-                            className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 space-y-2"
+                            className="rounded-lg border border-slate-200 bg-slate-50/60 p-3 space-y-2"
                           >
-                            <div className="flex items-center justify-between border-b border-blue-100 pb-1.5">
+                            <div className="flex items-center justify-between border-b border-slate-200 pb-1.5">
                               <div>
-                                <p className="text-[11px] uppercase tracking-wide text-blue-500">
+                                <p className="text-[11px] uppercase tracking-wide text-slate-500">
                                   Day {day.day_number}
                                 </p>
                                 <p className="text-xs font-semibold text-slate-900">
                                   {formatDate(day.date) || `Day ${day.day_number}`}
                                 </p>
                               </div>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => toggleAddForm(day.day_number)}
-                                className="h-6 px-2 text-[10px]"
-                              >
-                                {showAddForm[day.day_number] ? (
-                                  <>
-                                    <X className="h-3 w-3 mr-1" />
-                                    Cancel
-                                  </>
-                                ) : (
-                                  <>
-                                    <Plus className="h-3 w-3 mr-1" />
-                                    Add activity
-                                  </>
-                                )}
-                              </Button>
+                              <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] text-slate-500">
+                                View Only
+                              </span>
                             </div>
                             <div className="space-y-1.5 mt-1">
                               {(() => {
                                 const activities = day.activities || [];
-                                const morningActs = activities.slice(0, 1).map((act, i) => ({
-                                  act,
-                                  index: i,
-                                }));
-                                const afternoonActs = activities.slice(1, 2).map((act, i) => ({
-                                  act,
-                                  index: 1 + i,
-                                }));
-                                const eveningActs = activities.slice(2, 3).map((act, i) => ({
-                                  act,
-                                  index: 2 + i,
-                                }));
-                                const anytimeActs = activities.slice(3).map((act, i) => ({
-                                  act,
-                                  index: 3 + i,
-                                }));
+                                const morningActs = activities.slice(0, 1);
+                                const afternoonActs = activities.slice(1, 2);
+                                const eveningActs = activities.slice(2, 3);
+                                const anytimeActs = activities.slice(3);
 
                                 const dayMeals = mealsByDay[day.day_number] || {};
                                 const travelSegments = travelInfoByDay[day.day_number]?.segments || [];
 
                                 type Row =
                                   | { kind: "meal"; slot: MealSlot; label: string; location?: string }
-                                  | {
-                                      kind: "activity";
-                                      slotLabel: string;
-                                      label: string;
-                                      location?: string;
-                                      activityIndex: number;
-                                    };
+                                  | { kind: "activity"; slotLabel: string; label: string; location?: string };
 
                                 const rows: Row[] = [];
 
@@ -2930,17 +3226,13 @@ const FinalItinerary = () => {
                                   });
                                 };
 
-                                const pushActs = (
-                                  acts: { act: FinalItineraryDay["activities"][number]; index: number }[],
-                                  slotLabel: string
-                                ) => {
-                                  acts.forEach(({ act, index }) => {
+                                const pushActs = (acts: typeof activities, slotLabel: string) => {
+                                  acts.forEach((act) => {
                                     rows.push({
                                       kind: "activity",
                                       slotLabel,
                                       label: act?.name || "Activity",
                                       location: act?.location,
-                                      activityIndex: index,
                                     });
                                   });
                                 };
@@ -2960,101 +3252,37 @@ const FinalItinerary = () => {
                                     const label = slot.charAt(0).toUpperCase() + slot.slice(1);
                                     const meal = dayMeals[slot];
                                     return (
-                                      <button
+                                      <div
                                         key={`row-${idx}`}
-                                        type="button"
-                                        className="flex w-full items-start gap-2 rounded-md border border-dashed border-amber-200 bg-amber-50/60 px-2 py-1.5 text-[11px] text-left hover:border-amber-300 hover:bg-amber-50"
-                                        onClick={() => {
-                                          setEditingMeal({ dayNumber: day.day_number, slot });
-                                          setMealForm({
-                                            name: meal?.name || "",
-                                            location: meal?.location || (itinerary.destination || ""),
-                                            link: meal?.link || "",
-                                            cost: typeof meal?.cost === "number" ? String(meal.cost) : "30",
-                                          });
-                                        }}
+                                        className="flex w-full items-start gap-2 rounded-md border border-dashed border-amber-200 bg-amber-50/60 px-2 py-1.5 text-[11px]"
                                       >
                                         <span className="mt-[1px] inline-flex rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">
                                           {label}
                                         </span>
                                         <div className="flex-1">
-                                          {meal ? (
+                                          {meal && meal.name ? (
                                             <>
                                               <p className="font-semibold text-slate-900">
-                                                {meal.name || `${label} spot`}
+                                                {meal.name}
                                               </p>
                                               {meal.location && (
                                                 <p className="text-[10px] text-slate-500">📍 {meal.location}</p>
                                               )}
                                             </>
                                           ) : (
-                                            <p className="text-[10px] text-slate-500">
-                                              Add a {label.toLowerCase()} restaurant (name & location)
+                                            <p className="text-[10px] text-slate-400 italic">
+                                              No {label.toLowerCase()} set
                                             </p>
                                           )}
                                         </div>
-                                      </button>
+                                      </div>
                                     );
                                   }
 
                                   return (
                                     <div
                                       key={`row-${idx}`}
-                                      draggable
-                                      onDragStart={() =>
-                                        setDragActivity(
-                                          row.activityIndex != null
-                                            ? { dayNumber: day.day_number, index: row.activityIndex }
-                                            : null
-                                        )
-                                      }
-                                      onDragOver={(e) => {
-                                        if (dragActivity && dragActivity.dayNumber === day.day_number) {
-                                          e.preventDefault();
-                                        }
-                                      }}
-                                      onDrop={() => {
-                                        if (
-                                          !dragActivity ||
-                                          dragActivity.dayNumber !== day.day_number ||
-                                          row.activityIndex == null ||
-                                          dragActivity.index === row.activityIndex
-                                        ) {
-                                          return;
-                                        }
-                                        setItinerary((prev) => {
-                                          if (!prev) return prev;
-                                          const days = prev.days.map((d) => {
-                                            if (d.day_number !== day.day_number) return d;
-                                            const acts = d.activities ? [...d.activities] : [];
-                                            if (
-                                              dragActivity.index < 0 ||
-                                              dragActivity.index >= acts.length ||
-                                              row.activityIndex == null ||
-                                              row.activityIndex < 0 ||
-                                              row.activityIndex >= acts.length
-                                            ) {
-                                              return d;
-                                            }
-                                            const [moved] = acts.splice(dragActivity.index, 1);
-                                            acts.splice(row.activityIndex, 0, moved);
-                                            return { ...d, activities: acts };
-                                          });
-                                          return { ...prev, days };
-                                        });
-                                        setDragActivity(null);
-                                      }}
-                                      onClick={() => {
-                                        const activity =
-                                          row.activityIndex != null ? day.activities?.[row.activityIndex] : null;
-                                        if (activity) {
-                                          setSelectedActivityDetail({ dayNumber: day.day_number, activity });
-                                          setActivityLocationDraft(
-                                            activity.address || activity.location || ""
-                                          );
-                                        }
-                                      }}
-                                      className="flex items-start gap-2 rounded-md border border-blue-100 bg-white px-2 py-1.5 text-[11px] cursor-move hover:border-blue-200 hover:bg-blue-50/40"
+                                      className="flex items-start gap-2 rounded-md border border-blue-100 bg-white px-2 py-1.5 text-[11px]"
                                     >
                                       <span className="mt-[1px] inline-flex rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
                                         {row.slotLabel}
@@ -3096,7 +3324,8 @@ const FinalItinerary = () => {
                                   elements.push(renderRow(row, idx));
                                   if (idx < rows.length - 1) {
                                     const next = rows[idx + 1];
-                                    elements.push(renderTransit(row.label, next.label, idx) as any);
+                                    const transit = renderTransit(row.label, next.label, idx);
+                                    if (transit) elements.push(transit);
                                   }
                                 });
 
@@ -3104,194 +3333,82 @@ const FinalItinerary = () => {
                               })()}
                             </div>
 
-                            {showAddForm[day.day_number] && (
-                              <div className="rounded-md border border-blue-200 bg-blue-50 p-3 space-y-2">
-                                <div>
-                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
-                                    Activity Name <span className="text-red-500">*</span>
-                                  </label>
-                                  <Input
-                                    value={formData[day.day_number]?.name || ""}
-                                    onChange={(e) =>
-                                      setFormData((prev) => ({
-                                        ...prev,
-                                        [day.day_number]: {
-                                          ...(prev[day.day_number] || {
-                                            name: "",
-                                            description: "",
-                                            source_url: "",
-                                            location: "",
-                                            cost_estimate: "",
-                                          }),
-                                          name: e.target.value,
-                                        },
-                                      }))
-                                    }
-                                    placeholder="e.g., Visit the Eiffel Tower"
-                                    className="h-8 text-xs"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
-                                    Location (optional)
-                                  </label>
-                                  <Input
-                                    value={formData[day.day_number]?.location || ""}
-                                    onChange={(e) =>
-                                      setFormData((prev) => ({
-                                        ...prev,
-                                        [day.day_number]: {
-                                          ...(prev[day.day_number] || {
-                                            name: "",
-                                            description: "",
-                                            source_url: "",
-                                            location: "",
-                                            cost_estimate: "",
-                                          }),
-                                          location: e.target.value,
-                                        },
-                                      }))
-                                    }
-                                    placeholder={itinerary?.destination || "e.g., Paris, France"}
-                                    className="h-8 text-xs"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
-                                    Longer Description (optional)
-                                  </label>
-                                  <Textarea
-                                    value={formData[day.day_number]?.description || ""}
-                                    onChange={(e) =>
-                                      setFormData((prev) => ({
-                                        ...prev,
-                                        [day.day_number]: {
-                                          ...(prev[day.day_number] || {
-                                            name: "",
-                                            description: "",
-                                            source_url: "",
-                                            location: "",
-                                            cost_estimate: "",
-                                          }),
-                                          description: e.target.value,
-                                        },
-                                      }))
-                                    }
-                                    placeholder="Additional details about this activity..."
-                                    className="min-h-[60px] text-xs"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
-                                    Link (optional)
-                                  </label>
-                                  <Input
-                                    type="url"
-                                    value={formData[day.day_number]?.source_url || ""}
-                                    onChange={(e) =>
-                                      setFormData((prev) => ({
-                                        ...prev,
-                                        [day.day_number]: {
-                                          ...(prev[day.day_number] || {
-                                            name: "",
-                                            description: "",
-                                            source_url: "",
-                                            location: "",
-                                            cost_estimate: "",
-                                          }),
-                                          source_url: e.target.value,
-                                        },
-                                      }))
-                                    }
-                                    placeholder="https://..."
-                                    className="h-8 text-xs"
-                                  />
-                                </div>
-                                <div>
-                                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">
-                                    Cost estimate <span className="text-red-500">*</span>
-                                  </label>
-                                  <Input
-                                    type="number"
-                                    min={0}
-                                    step="0.01"
-                                    value={formData[day.day_number]?.cost_estimate || ""}
-                                    onChange={(e) =>
-                                      setFormData((prev) => ({
-                                        ...prev,
-                                        [day.day_number]: {
-                                          ...(prev[day.day_number] || {
-                                            name: "",
-                                            description: "",
-                                            source_url: "",
-                                            location: "",
-                                            cost_estimate: "",
-                                          }),
-                                          cost_estimate: e.target.value,
-                                        },
-                                      }))
-                                    }
-                                    placeholder="$"
-                                    className="h-8 text-xs"
-                                  />
-                                </div>
-                                <Button
-                                  onClick={() => handleAddActivity(day.day_number)}
-                                  disabled={addingActivity[day.day_number]}
-                                  className="w-full h-7 text-xs"
-                                  size="sm"
-                                >
-                                  {addingActivity[day.day_number] ? "Adding..." : "Add Activity"}
-                                </Button>
+                            {/* Show flight info in calendar view */}
+                            {day.outbound_flight && (
+                              <div className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1.5 text-[11px] text-slate-600">
+                                <span className="text-blue-600 font-semibold">✈️ Outbound</span>{" "}
+                                {day.outbound_flight.departure_id} → {day.outbound_flight.arrival_id}
+                                {day.outbound_flight.price && (
+                                  <span className="ml-2 text-emerald-600">${day.outbound_flight.price}</span>
+                                )}
+                              </div>
+                            )}
+                            {day.return_flight && (
+                              <div className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1.5 text-[11px] text-slate-600">
+                                <span className="text-blue-600 font-semibold">✈️ Return</span>{" "}
+                                {day.return_flight.departure_id} → {day.return_flight.arrival_id}
+                                {day.return_flight.price && (
+                                  <span className="ml-2 text-emerald-600">${day.return_flight.price}</span>
+                                )}
+                              </div>
+                            )}
+                            {day.hotel && (
+                              <div className="rounded-md border border-yellow-200 bg-yellow-50 px-2 py-1.5 text-[11px] text-slate-600">
+                                <span className="text-yellow-700 font-semibold">🏨 Hotel</span>{" "}
+                                {day.hotel.name}
+                                {day.hotel.rate_per_night && (
+                                  <span className="ml-2 text-emerald-600">${day.hotel.rate_per_night}/night</span>
+                                )}
                               </div>
                             )}
                           </div>
                         ))}
                       </div>
+                    </TabsContent>
 
-                      {/* Meal edit dialog (shared across days) */}
-                      <Dialog
-                        open={!!editingMeal}
-                        onOpenChange={(open) => {
-                          if (!open) setEditingMeal(null);
-                        }}
-                      >
-                        <DialogContent className="max-w-sm">
-                          <DialogHeader>
-                            <DialogTitle>
-                              {editingMeal
-                                ? `Edit ${
-                                    editingMeal.slot.charAt(0).toUpperCase() + editingMeal.slot.slice(1)
-                                  } spot for Day ${editingMeal.dayNumber}`
-                                : "Edit meal"}
-                            </DialogTitle>
-                            <DialogDescription>
-                              Add a restaurant name, location, and optional link. This will appear in your calendar and
-                              on the map.
-                            </DialogDescription>
-                          </DialogHeader>
-                          <div className="space-y-3 mt-2">
-                            <div>
-                              <label className="text-[11px] font-semibold text-slate-700 block mb-1">
-                                Restaurant name
-                              </label>
-                              <Input
-                                value={mealForm.name}
-                                onChange={(e) => setMealForm((prev) => ({ ...prev, name: e.target.value }))}
-                                placeholder="e.g., Joe's Diner"
-                                className="h-8 text-xs"
-                              />
-                            </div>
-                            <div>
-                              <label className="text-[11px] font-semibold text-slate-700 block mb-1">
-                                Location (street address or place)
-                              </label>
-                              <Input
-                                value={mealForm.location}
-                                onChange={(e) => setMealForm((prev) => ({ ...prev, location: e.target.value }))}
-                                placeholder={itinerary.destination || "e.g., 123 Main St, City"}
-                                className="h-8 text-xs"
-                              />
+                    {/* Meal edit dialog - used by Overview tab for editing/adding meals */}
+                    <Dialog
+                      open={!!editingMeal}
+                      onOpenChange={(open) => {
+                        if (!open) setEditingMeal(null);
+                      }}
+                    >
+                      <DialogContent className="max-w-sm">
+                        <DialogHeader>
+                          <DialogTitle>
+                            {editingMeal
+                              ? `Edit ${
+                                  editingMeal.slot.charAt(0).toUpperCase() + editingMeal.slot.slice(1)
+                                } spot for Day ${editingMeal.dayNumber}`
+                              : "Edit meal"}
+                          </DialogTitle>
+                          <DialogDescription>
+                            Add a restaurant name, location, and optional link. This will appear in your calendar and
+                            on the map.
+                          </DialogDescription>
+                        </DialogHeader>
+                        <div className="space-y-3 mt-2">
+                          <div>
+                            <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                              Restaurant name
+                            </label>
+                            <Input
+                              value={mealForm.name}
+                              onChange={(e) => setMealForm((prev) => ({ ...prev, name: e.target.value }))}
+                              placeholder="e.g., Joe's Diner"
+                              className="h-8 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                              Location (street address or place)
+                            </label>
+                            <Input
+                              value={mealForm.location}
+                              onChange={(e) => setMealForm((prev) => ({ ...prev, location: e.target.value }))}
+                              placeholder={itinerary.destination || "e.g., 123 Main St, City"}
+                              className="h-8 text-xs"
+                            />
                             </div>
                             <div>
                               <label className="text-[11px] font-semibold text-slate-700 block mb-1">
@@ -3479,7 +3596,6 @@ const FinalItinerary = () => {
                           </div>
                         </DialogContent>
                       </Dialog>
-                    </TabsContent>
                   </Tabs>
                 </div>
               </div>
@@ -3620,6 +3736,29 @@ const FinalItinerary = () => {
           tripId={parseInt(tripId || "0")}
           flightId={selectedFlightToReplace.tripFlightId}
           onConfirm={handleConfirmFlightReplacement}
+        />
+      )}
+
+      {/* Replace Restaurant Modal */}
+      {selectedMealToReplace && (
+        <ReplaceRestaurantModal
+          isOpen={replaceRestaurantModalOpen}
+          onClose={() => {
+            setReplaceRestaurantModalOpen(false);
+            setSelectedMealToReplace(null);
+          }}
+          currentMeal={{
+            trip_meal_id: selectedMealToReplace.meal.trip_meal_id!,
+            day_number: selectedMealToReplace.dayNumber,
+            slot: selectedMealToReplace.slot,
+            name: selectedMealToReplace.meal.name,
+            location: selectedMealToReplace.meal.location,
+            link: selectedMealToReplace.meal.link,
+            cost: selectedMealToReplace.meal.cost,
+            finalized: selectedMealToReplace.meal.finalized,
+          }}
+          tripId={parseInt(tripId || "0")}
+          onConfirm={handleConfirmRestaurantReplacement}
         />
       )}
     </div>
