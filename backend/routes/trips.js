@@ -1800,6 +1800,9 @@ router.put('/:tripId/preferences', authenticateToken, async (req, res) => {
     if (activity_categories !== undefined) preferenceData.activity_categories = activity_categories;
     if (avoid_activity_categories !== undefined)
       preferenceData.avoid_activity_categories = avoid_activity_categories;
+    // NOTE: selected_cities is defined in schema.sql but may not exist in the database yet.
+    // If the column doesn't exist, we skip it to avoid failing the entire save operation.
+    // To enable this feature, run: ALTER TABLE trip_preference ADD COLUMN selected_cities TEXT[] DEFAULT '{}';
     if (selected_cities !== undefined) preferenceData.selected_cities = selected_cities;
     if (group_type !== undefined) preferenceData.group_type = group_type;
     if (safety_notes !== undefined) preferenceData.safety_notes = safety_notes;
@@ -1808,16 +1811,28 @@ router.put('/:tripId/preferences', authenticateToken, async (req, res) => {
 
     let result;
 
-    if (existingPreference) {
-      result = await supabase
-        .from('trip_preference')
-        .update(preferenceData)
-        .eq('trip_id', tripId)
-        .select()
-        .single();
-    } else {
-      preferenceData.created_at = new Date().toISOString();
-      result = await supabase.from('trip_preference').insert([preferenceData]).select().single();
+    // Helper function to save preferences with optional retry without selected_cities
+    const savePreferences = async (prefData, isRetry = false) => {
+      if (existingPreference) {
+        return await supabase
+          .from('trip_preference')
+          .update(prefData)
+          .eq('trip_id', tripId)
+          .select()
+          .single();
+      } else {
+        prefData.created_at = new Date().toISOString();
+        return await supabase.from('trip_preference').insert([prefData]).select().single();
+      }
+    };
+
+    result = await savePreferences(preferenceData);
+
+    // If the save failed due to missing selected_cities column, retry without it
+    if (result.error && result.error.code === 'PGRST204' && result.error.message?.includes('selected_cities')) {
+      console.warn('selected_cities column not found in database, retrying without it. Run migration to add this column.');
+      const { selected_cities: _removed, ...prefDataWithoutCities } = preferenceData;
+      result = await savePreferences(prefDataWithoutCities, true);
     }
 
     const { data, error } = result;
@@ -3688,9 +3703,11 @@ router.get('/:tripId/final-itinerary', authenticateToken, async (req, res) => {
       .eq('trip_id', tripId)
       .eq('is_selected', true);
 
-    console.log('[final-itinerary] Selected hotels:', tripHotels?.length, tripHotels?.map(h => ({ id: h.hotel_id, name: h.hotel?.name })));
+    // For multi-city trips, we may have multiple selected hotels (one per city)
+    const selectedHotels = (tripHotels || []).map(th => th.hotel).filter(Boolean);
+    console.log('[final-itinerary] Selected hotels:', selectedHotels.length, selectedHotels.map(h => ({ id: h.hotel_id, name: h.name, location: h.search_location })));
 
-    const selectedHotel = tripHotels?.[0]?.hotel || null;
+    const selectedHotel = selectedHotels[0] || null;
 
     if (days.length > 0) {
       const lastDayIndex = days.length - 1;
@@ -4344,7 +4361,7 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
     const selectedOutboundFlight = tripFlights?.find(tf => tf.flight?.flight_type === 'outbound')?.flight || null;
     const selectedReturnFlight = tripFlights?.find(tf => tf.flight?.flight_type === 'return')?.flight || null;
 
-    // Get selected hotel
+    // Get selected hotels (may be multiple for multi-city trips)
     const { data: tripHotels } = await supabase
       .from('trip_hotel')
       .select(`
@@ -4355,7 +4372,10 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
       .eq('trip_id', tripId)
       .eq('is_selected', true);
 
-    const selectedHotel = tripHotels?.[0]?.hotel || null;
+    // For multi-city trips, we may have multiple selected hotels (one per city)
+    // For single-city trips, we'll have just one
+    const selectedHotels = (tripHotels || []).map(th => th.hotel).filter(Boolean);
+    const selectedHotel = selectedHotels[0] || null;
 
     // Get liked activities
     const { data: likedActivityPrefs } = await supabase

@@ -394,6 +394,8 @@ router.post('/save', authenticateToken, async (req, res) => {
 });
 
 // Update hotel selection status
+// For multi-city trips, multiple hotels can be selected (one per city)
+// Only unselect other hotels with the same search_location (same city)
 router.put('/select', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -421,24 +423,56 @@ router.put('/select', authenticateToken, async (req, res) => {
       });
     }
 
-    // If selecting this hotel, unselect other hotels for this trip
+    // If selecting this hotel, unselect other hotels for the SAME CITY only
+    // This allows multi-city trips to have one selected hotel per city
     if (is_selected) {
       console.log(`Selecting hotel ${hotel_id} for trip ${trip_id}`);
       
-      // Unselect all other hotels for this trip
-      const { error: unselectError } = await supabase
-        .from('trip_hotel')
-        .update({ 
-          is_selected: false, 
-          updated_at: new Date().toISOString() 
-        })
-        .eq('trip_id', trip_id)
-        .neq('hotel_id', hotel_id);
+      // First, get the search_location of the hotel being selected
+      const { data: selectedHotel, error: hotelError } = await supabase
+        .from('hotel')
+        .select('search_location')
+        .eq('hotel_id', hotel_id)
+        .single();
+      
+      if (hotelError) {
+        console.error('Error fetching hotel search_location:', hotelError);
+      } else if (selectedHotel?.search_location) {
+        // Unselect other hotels for this trip that are in the SAME city
+        // Get all trip_hotel entries for this trip
+        const { data: tripHotels, error: tripHotelsError } = await supabase
+          .from('trip_hotel')
+          .select(`
+            hotel_id,
+            hotel:hotel(search_location)
+          `)
+          .eq('trip_id', trip_id)
+          .eq('is_selected', true)
+          .neq('hotel_id', hotel_id);
+        
+        if (!tripHotelsError && tripHotels) {
+          // Find hotels in the same city that need to be unselected
+          const sameLocationHotelIds = tripHotels
+            .filter(th => th.hotel?.search_location?.toLowerCase() === selectedHotel.search_location.toLowerCase())
+            .map(th => th.hotel_id);
+          
+          if (sameLocationHotelIds.length > 0) {
+            const { error: unselectError } = await supabase
+              .from('trip_hotel')
+              .update({ 
+                is_selected: false, 
+                updated_at: new Date().toISOString() 
+              })
+              .eq('trip_id', trip_id)
+              .in('hotel_id', sameLocationHotelIds);
 
-      if (unselectError) {
-        console.error('Error unselecting other hotels:', unselectError);
-      } else {
-        console.log('Successfully unselected other hotels for this trip');
+            if (unselectError) {
+              console.error('Error unselecting other hotels in same city:', unselectError);
+            } else {
+              console.log(`Unselected ${sameLocationHotelIds.length} other hotels in ${selectedHotel.search_location}`);
+            }
+          }
+        }
       }
     }
 
@@ -523,6 +557,8 @@ router.get('/trip/:tripId', authenticateToken, async (req, res) => {
     const hotelIdMap = {}; // Map index to hotel_id
     let selectedHotelIndex = null;
     let selectedHotelId = null;
+    const selectedHotelIndices = []; // For multi-city trips
+    const selectedHotelIds = []; // For multi-city trips
 
     tripHotels?.forEach((th, index) => {
       if (th.hotel) {
@@ -565,24 +601,37 @@ router.get('/trip/:tripId', authenticateToken, async (req, res) => {
           health_and_safety: th.hotel.health_and_safety,
           property_token: th.hotel.property_token,
           serpapi_property_details_link: th.hotel.serpapi_property_details_link,
+          search_location: th.hotel.search_location, // Include search_location for multi-city identification
           ...(th.hotel.additional_data || {})
         };
 
         hotels.push(hotelProperty);
         hotelIdMap[index] = th.hotel_id;
         if (th.is_selected) {
-          selectedHotelId = th.hotel_id;
-          selectedHotelIndex = index;
+          // Keep track of all selected hotels for multi-city support
+          selectedHotelIndices.push(index);
+          selectedHotelIds.push(th.hotel_id);
+          // Keep first selected for backwards compatibility
+          if (selectedHotelIndex === null) {
+            selectedHotelId = th.hotel_id;
+            selectedHotelIndex = index;
+          }
         }
       }
     });
+
+    // For multi-city trips, return true if any hotel is selected
+    const hasSelectedHotels = selectedHotelIndices.length > 0;
 
     res.status(200).json({
       success: true,
       hotels: hotels,
       hotel_ids: hotelIdMap,
-      selected_hotel_index: selectedHotelIndex,
-      selected_hotel_id: selectedHotelId
+      selected_hotel_index: selectedHotelIndex, // Backwards compatible
+      selected_hotel_id: selectedHotelId, // Backwards compatible
+      selected_hotel_indices: selectedHotelIndices, // For multi-city
+      selected_hotel_ids: selectedHotelIds, // For multi-city
+      has_selected_hotels: hasSelectedHotels // Quick check for multi-city
     });
   } catch (error) {
     console.error('Error loading hotels for trip:', error);

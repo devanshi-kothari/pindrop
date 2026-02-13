@@ -2487,7 +2487,12 @@ const ChatWindow = ({
             setHasStartedHotels(true);
 
             // If hotel is selected, user has confirmed hotels
-            if (hotelsResult.selected_hotel_index !== null) {
+            // For multi-city trips, check has_selected_hotels or selected_hotel_indices
+            const hasSelectedHotels = hotelsResult.has_selected_hotels || 
+              hotelsResult.selected_hotel_index !== null ||
+              (hotelsResult.selected_hotel_indices && hotelsResult.selected_hotel_indices.length > 0);
+            
+            if (hasSelectedHotels) {
               setHasConfirmedHotels(true);
               const hasFinalItinerary = await loadFinalItinerary(tripId);
               if (!hasFinalItinerary) {
@@ -2777,74 +2782,35 @@ const ChatWindow = ({
                     </Button>
                     <Button
                       size="sm"
-                      className="bg-yellow-400 text-slate-900 font-semibold hover:bg-yellow-300 disabled:opacity-60"
-                      onClick={async () => {
-                        if (!tripId) return;
+                    className="bg-yellow-400 text-slate-900 font-semibold hover:bg-yellow-300 disabled:opacity-60"
+                    onClick={async () => {
+                      if (!tripId) return;
 
-                        try {
-                          setIsGeneratingActivities(true);
+                      try {
+                        setIsSavingPreferences(true);
 
-                          // Save preferences first so activities can reflect latest constraints
-                          if (tripPreferences) {
-                            await savePreferences();
-                          }
-
-                          const token = getAuthToken();
-                          if (!token) return;
-
-                          const response = await fetch(getApiUrl(`api/trips/${tripId}/generate-activities`), {
-                            method: "POST",
-                            headers: {
-                              Authorization: `Bearer ${token}`,
-                              "Content-Type": "application/json",
-                            },
-                            body: JSON.stringify({
-                              testMode: useTestActivities,
-                              selected_cities: tripPreferences?.selected_cities ?? [],
-                            }),
-                          });
-
-                          const result = await response.json();
-
-                          if (response.ok && result.success && Array.isArray(result.activities)) {
-                            setActivities(result.activities);
-
-                            if (result.activities.length > 0) {
-                              const assistantMessage: Message = {
-                                role: "assistant",
-                                content:
-                                  "I pulled together a small set of activity ideas based on your preferences. Swipe through them below and tell me what you like.",
-                                timestamp: formatTime(),
-                              };
-                              setMessages((prev) => [...prev, assistantMessage]);
-                            } else {
-                              window.alert(
-                                "I wasn't able to find good activity ideas just yet. You can adjust your preferences or try again."
-                              );
-                            }
-                          } else {
-                            console.error("Failed to generate activities:", result.message);
-                          }
-
-                          // Set hasStartedPlanning to show tabs
-                          setHasStartedPlanning(true);
-                          // Set hasConfirmedTripSketch to allow flights section to show
-                          setHasConfirmedTripSketch(true);
-                          // Navigate to flights tab instead of activities
-                          setActiveTab("flights");
-                        } catch (error) {
-                          console.error("Error generating activities:", error);
-                        } finally {
-                          setIsGeneratingActivities(false);
+                        // Save preferences first so they're available for later steps
+                        if (tripPreferences) {
+                          await savePreferences();
                         }
-                      }}
-                      disabled={isSavingPreferences || isGeneratingActivities || !tripPreferences}
-                    >
-                      {isSavingPreferences || isGeneratingActivities
-                        ? useTestActivities
-                          ? "Loading test activities..."
-                          : "Finding activities..."
-                        : "Start planning"}
+
+                        // Set hasStartedPlanning to show tabs
+                        setHasStartedPlanning(true);
+                        // Set hasConfirmedTripSketch to allow flights section to show
+                        setHasConfirmedTripSketch(true);
+                        // Navigate to flights tab - activities will be generated when moving from hotels to activities
+                        setActiveTab("flights");
+                      } catch (error) {
+                        console.error("Error starting planning:", error);
+                      } finally {
+                        setIsSavingPreferences(false);
+                      }
+                    }}
+                    disabled={isSavingPreferences || !tripPreferences}
+                  >
+                    {isSavingPreferences
+                      ? "Saving..."
+                      : "Start planning"}
                     </Button>
                   </div>
                 </div>
