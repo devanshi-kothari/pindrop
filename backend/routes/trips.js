@@ -3176,7 +3176,7 @@ router.post('/:tripId/itinerary/:dayNumber/activities', authenticateToken, async
       });
     }
 
-    const { name, location, description, source_url, cost_estimate } = req.body || {};
+    const { name, location, description, source_url, cost_estimate, city } = req.body || {};
 
     if (!name || typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({
@@ -3261,6 +3261,7 @@ router.post('/:tripId/itinerary/:dayNumber/activities', authenticateToken, async
         name: name.trim(),
         // Keep location as the trip destination for high-level grouping
         location: trip.destination || null,
+        city: typeof city === 'string' && city.trim() ? city.trim() : null,
         // Store the user-entered place/address separately
         address: location && location.trim() ? location.trim() : null,
         category: null,
@@ -4257,12 +4258,13 @@ If dates or number of days are missing, infer a reasonable number of days (3-5) 
 
         // If not found or no activity_id, create/insert new activity
         if (!activityRow) {
-          const { data: newActivity, error: activityError } = await supabase
+      const { data: newActivity, error: activityError } = await supabase
             .from('activity')
             .insert([
               {
                 name: act.name || 'Activity',
-                location: act.location || trip.destination || null,
+            location: trip.destination || null,
+            city: act.city || act.location || null,
                 category: act.category || 'other',
                 duration: act.duration || null,
                 cost_estimate:
@@ -5274,13 +5276,14 @@ router.put('/:tripId/activities/:activityId/confirm-replacement', authenticateTo
     // Update the activity with replacement data
     // Note: activity table doesn't have updated_at column per schema
     console.log('[confirm-replacement] Updating activity', activityId, 'with:', selectedActivity);
-    const { error: updateError } = await supabase
+      const { error: updateError } = await supabase
       .from('activity')
       .update({
         name: selectedActivity.name,
         category: selectedActivity.category || null,
         description: selectedActivity.description || null,
-        location: selectedActivity.location || null,
+          location: trip.destination || null,
+          city: selectedActivity.city || selectedActivity.location || null,
         cost_estimate: selectedActivity.cost_estimate !== undefined ? selectedActivity.cost_estimate : null,
         duration: selectedActivity.duration || null,
         source_url: selectedActivity.source_url || null,
