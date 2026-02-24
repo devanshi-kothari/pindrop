@@ -2660,11 +2660,7 @@ const ChatWindow = ({
             
             if (hasSelectedHotels) {
               setHasConfirmedHotels(true);
-              const hasFinalItinerary = await loadFinalItinerary(tripId);
-              if (!hasFinalItinerary) {
-                // Automatically generate final itinerary when hotels are confirmed
-                generateFinalItinerary();
-              }
+              await loadFinalItinerary(tripId);
             }
           }
         }
