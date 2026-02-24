@@ -1102,8 +1102,20 @@ const ChatWindow = ({
     }
   };
 
-  // Extract arrival location from day 1 of the itinerary, or from trip destination/activities
+  // Extract arrival location from ordered cities or day 1 of itinerary
   const getArrivalLocation = (): string | null => {
+    const withCountry = (value: string | null): string | null => {
+      if (!value) return value;
+      if (!tripDestination) return value;
+      const lowerValue = value.toLowerCase();
+      const lowerDestination = tripDestination.toLowerCase();
+      if (lowerValue.includes(lowerDestination)) return value;
+      return `${value}, ${tripDestination}`;
+    };
+
+    if (orderedCities.length > 0) {
+      return withCountry(orderedCities[0]);
+    }
     // First, try to get from itinerary days (if they exist)
     if (itineraryDays.length > 0) {
     // Find day 1 (could be day_number === 1 or the first day in the array)
@@ -1114,7 +1126,7 @@ const ChatWindow = ({
     if (Array.isArray(day1.activities) && day1.activities.length > 0) {
       const firstActivity = day1.activities[0];
       if (firstActivity.location) {
-        return firstActivity.location;
+        return withCountry(firstActivity.location);
       }
     }
 
@@ -1123,7 +1135,7 @@ const ChatWindow = ({
       // Look for common location patterns in the summary
       const locationMatch = day1.summary.match(/(?:in|at|to|from)\s+([A-Z][a-zA-Z\s]+(?:,\s*[A-Z][a-zA-Z\s]+)?)/);
       if (locationMatch) {
-        return locationMatch[1].trim();
+        return withCountry(locationMatch[1].trim());
           }
         }
       }
@@ -1133,7 +1145,7 @@ const ChatWindow = ({
     if (activities.length > 0) {
       const firstActivity = activities.find(a => a.location) || activities[0];
       if (firstActivity?.location) {
-        return firstActivity.location;
+        return withCountry(firstActivity.location);
       }
     }
 
