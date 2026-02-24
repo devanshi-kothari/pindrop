@@ -2219,7 +2219,7 @@ const ChatWindow = ({
     location: string,
     isDeparture: boolean,
     scope: "regional" | "city" = "regional",
-    target: "outbound" | "return" = "outbound"
+    target: "outbound" | "return-departure" | "return-arrival" = "outbound"
   ): Promise<string | null> => {
     try {
       const token = getAuthToken();
@@ -2242,12 +2242,15 @@ const ChatWindow = ({
       if (response.ok && result.success) {
         // Store all airport codes and details
         if (result.airport_codes && Array.isArray(result.airport_codes)) {
-          if (isDeparture) {
-            setDepartureAirportCodes(result.airport_codes);
-            setSelectedDepartureAirportCodes(result.airport_codes); // default: all selected
-          } else if (target === "return") {
+          if (target === "return-departure") {
             setReturnDepartureAirportCodes(result.airport_codes);
             setSelectedReturnDepartureAirportCodes(result.airport_codes);
+          } else if (target === "return-arrival") {
+            setReturnArrivalAirportCodes(result.airport_codes);
+            setSelectedReturnArrivalAirportCodes(result.airport_codes);
+          } else if (isDeparture) {
+            setDepartureAirportCodes(result.airport_codes);
+            setSelectedDepartureAirportCodes(result.airport_codes); // default: all selected
           } else {
             setArrivalAirportCodes(result.airport_codes);
             setSelectedArrivalAirportCodes(result.airport_codes); // default: all selected
@@ -2256,10 +2259,12 @@ const ChatWindow = ({
 
         // Store full airport details if available
         if (result.airports && Array.isArray(result.airports)) {
-          if (isDeparture) {
-            setDepartureAirports(result.airports);
-          } else if (target === "return") {
+          if (target === "return-departure") {
             setReturnDepartureAirports(result.airports);
+          } else if (target === "return-arrival") {
+            setReturnArrivalAirports(result.airports);
+          } else if (isDeparture) {
+            setDepartureAirports(result.airports);
           } else {
             setArrivalAirports(result.airports);
           }
@@ -2269,10 +2274,12 @@ const ChatWindow = ({
             name: "",
             distance_miles: null,
           }));
-          if (isDeparture) {
-            setDepartureAirports(fallbackAirports);
-          } else if (target === "return") {
+          if (target === "return-departure") {
             setReturnDepartureAirports(fallbackAirports);
+          } else if (target === "return-arrival") {
+            setReturnArrivalAirports(fallbackAirports);
+          } else if (isDeparture) {
+            setDepartureAirports(fallbackAirports);
           } else {
             setArrivalAirports(fallbackAirports);
           }
@@ -4289,103 +4296,104 @@ const ChatWindow = ({
                   )}
                 </div>
 
-                {/* Departure Location */}
-                <div className="space-y-2">
-                  <Label className="text-slate-800 text-xs">Departure location (your home town)</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      type="text"
-                      value={departureLocation}
-                      onChange={(e) => setDepartureLocation(e.target.value)}
-                      placeholder="e.g., New York, NY or Austin, TX"
-                      className="h-8 bg-white border-blue-200 text-xs text-slate-900"
-                      disabled={isFetchingDepartureCode || !!departureId}
-                    />
-                    <Button
-                      size="sm"
-                      className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                      disabled={!departureLocation.trim() || isFetchingDepartureCode || !!departureId}
-                      onClick={async () => {
-                        setIsFetchingDepartureCode(true);
-                        const code = await getAirportCode(departureLocation.trim(), true, "regional", "outbound");
-                        if (code) {
-                          setDepartureId(code);
-                        } else {
-                          // Show error message
-                          const errorMessage: Message = {
-                            role: "assistant",
-                            content: "I couldn't find an airport code for that location. Please try a more specific location (e.g., 'New York, NY' or 'Austin, TX').",
-                            timestamp: formatTime(),
-                          };
-                          setMessages((prev) => [...prev, errorMessage]);
-                        }
-                        setIsFetchingDepartureCode(false);
-                      }}
-                    >
-                      {isFetchingDepartureCode ? "Finding..." : departureId ? departureId : "Find airport code"}
-                    </Button>
-                  </div>
-                  {departureId && (
-                    <div className="space-y-1">
-                      <p className="text-[11px] text-emerald-400">
-                        Primary departure airport: <span className="font-semibold">{departureId}</span>
-                      </p>
-                      {departureAirportCodes.length > 0 && (
-                        <div className="space-y-1 pt-1 border-t border-blue-200">
-                          <p className="text-[11px] text-slate-600 font-semibold">
-                            Select departure airports ({departureAirportCodes.length} found):
-                          </p>
-                          <div className="mt-1 grid grid-cols-2 gap-1 pl-1">
-                            {(departureAirports.length > 0 ? departureAirports : departureAirportCodes.map((code: string) => ({
-                              code,
-                              name: "",
-                              distance_miles: null,
-                            }))).map((airport, idx) => {
-                              const code = airport.code;
-                              const isSelected = selectedDepartureAirportCodes.includes(code);
-                              return (
-                                <button
-                                  key={code}
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedDepartureAirportCodes((prev) =>
-                                      prev.includes(code)
-                                        ? prev.filter((c) => c !== code)
-                                        : [...prev, code]
-                                    );
-                                  }}
-                                  className={`flex items-center justify-between rounded border px-2 py-1 text-[10px] ${
-                                    isSelected
-                                      ? "border-emerald-400 bg-emerald-50 text-slate-900"
-                                      : "border-blue-200 bg-white text-slate-600"
-                                  }`}
-                                >
-                                  <span className="font-semibold">{code}</span>
-                                  {airport.name && (
-                                    <span className="ml-1 truncate max-w-[80px] text-[9px] text-slate-500">
-                                      {airport.name}
-                                  </span>
-                            )}
-                                </button>
-                              );
-                            })}
-                          </div>
-                          <p className="text-[10px] text-slate-500 italic pt-1">
-                            Flights will be searched from{" "}
-                            {selectedDepartureAirportCodes.length > 0
-                              ? selectedDepartureAirportCodes.length
-                              : departureAirportCodes.length}{" "}
-                            selected departure airport(s).
-                          </p>
-                        </div>
-                      )}
+                <div className="space-y-3 rounded border border-blue-100 bg-blue-50/40 p-2">
+                  <Label className="text-slate-800 text-[11px]">Outbound flight</Label>
+                  <div className="space-y-2">
+                    <Label className="text-slate-800 text-[11px]">Outbound departure location (home)</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        type="text"
+                        value={departureLocation}
+                        onChange={(e) => setDepartureLocation(e.target.value)}
+                        placeholder="e.g., New York, NY or Austin, TX"
+                        className="h-8 bg-white border-blue-200 text-xs text-slate-900"
+                        disabled={isFetchingDepartureCode || !!departureId}
+                      />
+                      <Button
+                        size="sm"
+                        className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                        disabled={!departureLocation.trim() || isFetchingDepartureCode || !!departureId}
+                        onClick={async () => {
+                          setIsFetchingDepartureCode(true);
+                          const code = await getAirportCode(departureLocation.trim(), true, "regional", "outbound");
+                          if (code) {
+                            setDepartureId(code);
+                          } else {
+                            const errorMessage: Message = {
+                              role: "assistant",
+                              content:
+                                "I couldn't find an airport code for that location. Please try a more specific location (e.g., 'New York, NY' or 'Austin, TX').",
+                              timestamp: formatTime(),
+                            };
+                            setMessages((prev) => [...prev, errorMessage]);
+                          }
+                          setIsFetchingDepartureCode(false);
+                        }}
+                      >
+                        {isFetchingDepartureCode ? "Finding..." : departureId ? departureId : "Find airport code"}
+                      </Button>
                     </div>
-                  )}
-                </div>
-
-                {/* Arrival Location */}
-                <div className="space-y-2">
-                  <Label className="text-slate-800 text-xs">Arrival location</Label>
+                    {departureId && (
+                      <div className="space-y-1">
+                        <p className="text-[11px] text-emerald-400">
+                          Primary departure airport: <span className="font-semibold">{departureId}</span>
+                        </p>
+                        {departureAirportCodes.length > 0 && (
+                          <div className="space-y-1 pt-1 border-t border-blue-200">
+                            <p className="text-[11px] text-slate-600 font-semibold">
+                              Select departure airports ({departureAirportCodes.length} found):
+                            </p>
+                            <div className="mt-1 grid grid-cols-2 gap-1 pl-1">
+                              {(departureAirports.length > 0
+                                ? departureAirports
+                                : departureAirportCodes.map((code: string) => ({
+                                    code,
+                                    name: "",
+                                    distance_miles: null,
+                                  }))).map((airport) => {
+                                const code = airport.code;
+                                const isSelected = selectedDepartureAirportCodes.includes(code);
+                                return (
+                                  <button
+                                    key={code}
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedDepartureAirportCodes((prev) =>
+                                        prev.includes(code)
+                                          ? prev.filter((c) => c !== code)
+                                          : [...prev, code]
+                                      );
+                                    }}
+                                    className={`flex items-center justify-between rounded border px-2 py-1 text-[10px] ${
+                                      isSelected
+                                        ? "border-emerald-400 bg-emerald-50 text-slate-900"
+                                        : "border-blue-200 bg-white text-slate-600"
+                                    }`}
+                                  >
+                                    <span className="font-semibold">{code}</span>
+                                    {airport.name && (
+                                      <span className="ml-1 truncate max-w-[80px] text-[9px] text-slate-500">
+                                        {airport.name}
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <p className="text-[10px] text-slate-500 italic pt-1">
+                              Flights will be searched from{" "}
+                              {selectedDepartureAirportCodes.length > 0
+                                ? selectedDepartureAirportCodes.length
+                                : departureAirportCodes.length}{" "}
+                              selected departure airport(s).
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-slate-800 text-[11px]">Outbound arrival location</Label>
                   {(() => {
                     const arrivalLocation = getArrivalLocation();
                     return (
@@ -4437,247 +4445,6 @@ const ChatWindow = ({
                                 {isFetchingArrivalCode ? "Finding..." : arrivalId ? arrivalId : "Find airport code"}
                               </Button>
                             </div>
-                            {/* Return departure location (multi-city) */}
-                            {orderedCities.length > 1 && (
-                              <div className="mt-2 space-y-2 rounded border border-blue-100 bg-blue-50/40 p-2">
-                                <Label className="text-slate-800 text-[11px]">
-                                  Return departure location (final city)
-                                </Label>
-                                <div className="flex items-center justify-between rounded border border-blue-100 bg-blue-50/60 px-2 py-1">
-                                  <span className="text-[11px] text-slate-600">
-                                    Include nearby airports
-                                  </span>
-                                  <Switch
-                                    checked={includeNearbyReturnDepartureAirports}
-                                    onCheckedChange={(val) => setIncludeNearbyReturnDepartureAirports(val)}
-                                  />
-                                </div>
-                                <div className="flex gap-2">
-                                  <Input
-                                    type="text"
-                                    value={getReturnDepartureLocation() || ""}
-                                    disabled
-                                    className="h-8 bg-white border-blue-200 text-xs text-slate-500"
-                                  />
-                                  <Button
-                                    size="sm"
-                                    className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                                    disabled={isFetchingReturnDepartureCode || !!returnDepartureId}
-                                    onClick={async () => {
-                                      const returnLocation = getReturnDepartureLocation();
-                                      if (!returnLocation) return;
-                                      setIsFetchingReturnDepartureCode(true);
-                                      const code = await getAirportCode(
-                                        returnLocation,
-                                        false,
-                                        includeNearbyReturnDepartureAirports ? "regional" : "city",
-                                        "return"
-                                      );
-                                  if (code) {
-                                    setReturnDepartureId(code);
-                                    setReturnDepartureAirportCodes((prev) =>
-                                      prev.length > 0 ? prev : [code]
-                                    );
-                                    setSelectedReturnDepartureAirportCodes((prev) =>
-                                      prev.length > 0 ? prev : [code]
-                                    );
-                                  } else {
-                                        const errorMessage: Message = {
-                                          role: "assistant",
-                                          content:
-                                            "I couldn't find an airport code for the final city. Please check your city list.",
-                                          timestamp: formatTime(),
-                                        };
-                                        setMessages((prev) => [...prev, errorMessage]);
-                                      }
-                                      setIsFetchingReturnDepartureCode(false);
-                                    }}
-                                  >
-                                    {isFetchingReturnDepartureCode
-                                      ? "Finding..."
-                                      : returnDepartureId
-                                      ? returnDepartureId
-                                      : "Find airport code"}
-                                  </Button>
-                                </div>
-                                {returnDepartureId && (
-                                  <div className="space-y-1">
-                                    <p className="text-[11px] text-emerald-400">
-                                      Primary return departure airport:{" "}
-                                      <span className="font-semibold">{returnDepartureId}</span>
-                                    </p>
-                                    {returnDepartureAirportCodes.length > 0 && (
-                                      <div className="space-y-1 pt-1 border-t border-blue-200">
-                                        <p className="text-[11px] text-slate-600 font-semibold">
-                                          Select return departure airports ({returnDepartureAirportCodes.length} found):
-                                        </p>
-                                        <div className="mt-1 grid grid-cols-2 gap-1 pl-1">
-                                          {(returnDepartureAirports.length > 0
-                                            ? returnDepartureAirports
-                                            : returnDepartureAirportCodes.map((code: string) => ({
-                                                code,
-                                                name: "",
-                                                distance_miles: null,
-                                              }))).map((airport) => {
-                                            const code = airport.code;
-                                            const isSelected =
-                                              selectedReturnDepartureAirportCodes.includes(code);
-                                            return (
-                                              <button
-                                                key={code}
-                                                type="button"
-                                                onClick={() => {
-                                                  setSelectedReturnDepartureAirportCodes((prev) =>
-                                                    prev.includes(code)
-                                                      ? prev.filter((c) => c !== code)
-                                                      : [...prev, code]
-                                                  );
-                                                }}
-                                                className={`flex items-center justify-between rounded border px-2 py-1 text-[10px] ${
-                                                  isSelected
-                                                    ? "border-emerald-400 bg-emerald-50 text-slate-900"
-                                                    : "border-blue-200 bg-white text-slate-600"
-                                                }`}
-                                              >
-                                                <span className="font-semibold">{code}</span>
-                                                {airport.name && (
-                                                  <span className="ml-1 truncate max-w-[80px] text-[9px] text-slate-500">
-                                                    {airport.name}
-                                                  </span>
-                                                )}
-                                              </button>
-                                            );
-                                          })}
-                                        </div>
-                                        <p className="text-[10px] text-slate-500 italic pt-1">
-                                          Return flights will depart from{" "}
-                                          {selectedReturnDepartureAirportCodes.length > 0
-                                            ? selectedReturnDepartureAirportCodes.length
-                                            : returnDepartureAirportCodes.length}{" "}
-                                          selected airport(s).
-                                        </p>
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-                                <div className="mt-2 space-y-2 rounded border border-blue-100 bg-blue-50/30 p-2">
-                                  <Label className="text-slate-800 text-[11px]">
-                                    Return arrival location (home)
-                                  </Label>
-                                  <div className="flex gap-2">
-                                    <Input
-                                      type="text"
-                                      value={returnArrivalLocation}
-                                      onChange={(e) => {
-                                        setReturnArrivalLocation(e.target.value);
-                                        setHasEditedReturnArrival(true);
-                                        setReturnArrivalId(null);
-                                        setReturnArrivalAirportCodes([]);
-                                        setSelectedReturnArrivalAirportCodes([]);
-                                      }}
-                                      placeholder="e.g., New York, NY"
-                                      className="h-8 bg-white border-blue-200 text-xs text-slate-900"
-                                    />
-                                    <Button
-                                      size="sm"
-                                      className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                                      disabled={
-                                        isFetchingReturnArrivalCode ||
-                                        !returnArrivalLocation.trim() ||
-                                        !!returnArrivalId
-                                      }
-                                      onClick={async () => {
-                                        setIsFetchingReturnArrivalCode(true);
-                                        const code = await getAirportCode(
-                                          returnArrivalLocation.trim(),
-                                          true,
-                                          "regional",
-                                          "return"
-                                        );
-                                        if (code) {
-                                          setReturnArrivalId(code);
-                                        } else {
-                                          const errorMessage: Message = {
-                                            role: "assistant",
-                                            content:
-                                              "I couldn't find an airport code for that return arrival location.",
-                                            timestamp: formatTime(),
-                                          };
-                                          setMessages((prev) => [...prev, errorMessage]);
-                                        }
-                                        setIsFetchingReturnArrivalCode(false);
-                                      }}
-                                    >
-                                      {isFetchingReturnArrivalCode
-                                        ? "Finding..."
-                                        : returnArrivalId
-                                        ? returnArrivalId
-                                        : "Find airport code"}
-                                    </Button>
-                                  </div>
-                                  {returnArrivalId && (
-                                    <div className="space-y-1">
-                                      <p className="text-[11px] text-emerald-400">
-                                        Primary return arrival airport:{" "}
-                                        <span className="font-semibold">{returnArrivalId}</span>
-                                      </p>
-                                      {returnArrivalAirportCodes.length > 0 && (
-                                        <div className="space-y-1 pt-1 border-t border-blue-200">
-                                          <p className="text-[11px] text-slate-600 font-semibold">
-                                            Select return arrival airports ({returnArrivalAirportCodes.length} found):
-                                          </p>
-                                          <div className="mt-1 grid grid-cols-2 gap-1 pl-1">
-                                            {(returnArrivalAirports.length > 0
-                                              ? returnArrivalAirports
-                                              : returnArrivalAirportCodes.map((code: string) => ({
-                                                  code,
-                                                  name: "",
-                                                  distance_miles: null,
-                                                }))).map((airport) => {
-                                              const code = airport.code;
-                                              const isSelected =
-                                                selectedReturnArrivalAirportCodes.includes(code);
-                                              return (
-                                                <button
-                                                  key={code}
-                                                  type="button"
-                                                  onClick={() => {
-                                                    setSelectedReturnArrivalAirportCodes((prev) =>
-                                                      prev.includes(code)
-                                                        ? prev.filter((c) => c !== code)
-                                                        : [...prev, code]
-                                                    );
-                                                  }}
-                                                  className={`flex items-center justify-between rounded border px-2 py-1 text-[10px] ${
-                                                    isSelected
-                                                      ? "border-emerald-400 bg-emerald-50 text-slate-900"
-                                                      : "border-blue-200 bg-white text-slate-600"
-                                                  }`}
-                                                >
-                                                  <span className="font-semibold">{code}</span>
-                                                  {airport.name && (
-                                                    <span className="ml-1 truncate max-w-[80px] text-[9px] text-slate-500">
-                                                      {airport.name}
-                                                    </span>
-                                                  )}
-                                                </button>
-                                              );
-                                            })}
-                                          </div>
-                                          <p className="text-[10px] text-slate-500 italic pt-1">
-                                            Return flights will arrive to{" "}
-                                            {selectedReturnArrivalAirportCodes.length > 0
-                                              ? selectedReturnArrivalAirportCodes.length
-                                              : returnArrivalAirportCodes.length}{" "}
-                                            selected airport(s).
-                                          </p>
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            )}
                             {arrivalId && (
                               <div className="space-y-1">
                               <p className="text-[11px] text-emerald-400">
@@ -4743,7 +4510,240 @@ const ChatWindow = ({
                       </>
                     );
                   })()}
+                  </div>
                 </div>
+
+                {orderedCities.length > 1 && (
+                  <div className="space-y-3 rounded border border-blue-100 bg-blue-50/40 p-2">
+                    <Label className="text-slate-800 text-[11px]">Return flight</Label>
+                    <div className="space-y-2">
+                      <Label className="text-slate-800 text-[11px]">Return departure location (final city)</Label>
+                      <div className="flex items-center justify-between rounded border border-blue-100 bg-blue-50/60 px-2 py-1">
+                        <span className="text-[11px] text-slate-600">Include nearby airports</span>
+                        <Switch
+                          checked={includeNearbyReturnDepartureAirports}
+                          onCheckedChange={(val) => setIncludeNearbyReturnDepartureAirports(val)}
+                        />
+                      </div>
+                      <div className="flex gap-2">
+                        <Input
+                          type="text"
+                          value={getReturnDepartureLocation() || ""}
+                          disabled
+                          className="h-8 bg-white border-blue-200 text-xs text-slate-500"
+                        />
+                        <Button
+                          size="sm"
+                          className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                          disabled={isFetchingReturnDepartureCode || !!returnDepartureId}
+                          onClick={async () => {
+                            const returnLocation = getReturnDepartureLocation();
+                            if (!returnLocation) return;
+                            setIsFetchingReturnDepartureCode(true);
+                            const code = await getAirportCode(
+                              returnLocation,
+                              false,
+                              includeNearbyReturnDepartureAirports ? "regional" : "city",
+                              "return-departure"
+                            );
+                            if (code) {
+                              setReturnDepartureId(code);
+                              setReturnDepartureAirportCodes((prev) => (prev.length > 0 ? prev : [code]));
+                              setSelectedReturnDepartureAirportCodes((prev) => (prev.length > 0 ? prev : [code]));
+                            } else {
+                              const errorMessage: Message = {
+                                role: "assistant",
+                                content:
+                                  "I couldn't find an airport code for the final city. Please check your city list.",
+                                timestamp: formatTime(),
+                              };
+                              setMessages((prev) => [...prev, errorMessage]);
+                            }
+                            setIsFetchingReturnDepartureCode(false);
+                          }}
+                        >
+                          {isFetchingReturnDepartureCode
+                            ? "Finding..."
+                            : returnDepartureId
+                            ? returnDepartureId
+                            : "Find airport code"}
+                        </Button>
+                      </div>
+                      {returnDepartureId && (
+                        <div className="space-y-1">
+                          <p className="text-[11px] text-emerald-400">
+                            Primary return departure airport:{" "}
+                            <span className="font-semibold">{returnDepartureId}</span>
+                          </p>
+                          {returnDepartureAirportCodes.length > 0 && (
+                            <div className="space-y-1 pt-1 border-t border-blue-200">
+                              <p className="text-[11px] text-slate-600 font-semibold">
+                                Select return departure airports ({returnDepartureAirportCodes.length} found):
+                              </p>
+                              <div className="mt-1 grid grid-cols-2 gap-1 pl-1">
+                                {(returnDepartureAirports.length > 0
+                                  ? returnDepartureAirports
+                                  : returnDepartureAirportCodes.map((code: string) => ({
+                                      code,
+                                      name: "",
+                                      distance_miles: null,
+                                    }))).map((airport) => {
+                                  const code = airport.code;
+                                  const isSelected = selectedReturnDepartureAirportCodes.includes(code);
+                                  return (
+                                    <button
+                                      key={code}
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedReturnDepartureAirportCodes((prev) =>
+                                          prev.includes(code)
+                                            ? prev.filter((c) => c !== code)
+                                            : [...prev, code]
+                                        );
+                                      }}
+                                      className={`flex items-center justify-between rounded border px-2 py-1 text-[10px] ${
+                                        isSelected
+                                          ? "border-emerald-400 bg-emerald-50 text-slate-900"
+                                          : "border-blue-200 bg-white text-slate-600"
+                                      }`}
+                                    >
+                                      <span className="font-semibold">{code}</span>
+                                      {airport.name && (
+                                        <span className="ml-1 truncate max-w-[80px] text-[9px] text-slate-500">
+                                          {airport.name}
+                                        </span>
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              <p className="text-[10px] text-slate-500 italic pt-1">
+                                Return flights will depart from{" "}
+                                {selectedReturnDepartureAirportCodes.length > 0
+                                  ? selectedReturnDepartureAirportCodes.length
+                                  : returnDepartureAirportCodes.length}{" "}
+                                selected airport(s).
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-slate-800 text-[11px]">Return arrival location (home)</Label>
+                      <div className="flex gap-2">
+                        <Input
+                          type="text"
+                          value={returnArrivalLocation}
+                          onChange={(e) => {
+                            setReturnArrivalLocation(e.target.value);
+                            setHasEditedReturnArrival(true);
+                            setReturnArrivalId(null);
+                            setReturnArrivalAirportCodes([]);
+                            setSelectedReturnArrivalAirportCodes([]);
+                          }}
+                          placeholder="e.g., New York, NY"
+                          className="h-8 bg-white border-blue-200 text-xs text-slate-900"
+                        />
+                        <Button
+                          size="sm"
+                          className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
+                          disabled={
+                            isFetchingReturnArrivalCode ||
+                            !returnArrivalLocation.trim() ||
+                            !!returnArrivalId
+                          }
+                          onClick={async () => {
+                            setIsFetchingReturnArrivalCode(true);
+                            const code = await getAirportCode(
+                              returnArrivalLocation.trim(),
+                              true,
+                              "regional",
+                              "return-arrival"
+                            );
+                            if (code) {
+                              setReturnArrivalId(code);
+                            } else {
+                              const errorMessage: Message = {
+                                role: "assistant",
+                                content: "I couldn't find an airport code for that return arrival location.",
+                                timestamp: formatTime(),
+                              };
+                              setMessages((prev) => [...prev, errorMessage]);
+                            }
+                            setIsFetchingReturnArrivalCode(false);
+                          }}
+                        >
+                          {isFetchingReturnArrivalCode
+                            ? "Finding..."
+                            : returnArrivalId
+                            ? returnArrivalId
+                            : "Find airport code"}
+                        </Button>
+                      </div>
+                      {returnArrivalId && (
+                        <div className="space-y-1">
+                          <p className="text-[11px] text-emerald-400">
+                            Primary return arrival airport:{" "}
+                            <span className="font-semibold">{returnArrivalId}</span>
+                          </p>
+                          {returnArrivalAirportCodes.length > 0 && (
+                            <div className="space-y-1 pt-1 border-t border-blue-200">
+                              <p className="text-[11px] text-slate-600 font-semibold">
+                                Select return arrival airports ({returnArrivalAirportCodes.length} found):
+                              </p>
+                              <div className="mt-1 grid grid-cols-2 gap-1 pl-1">
+                                {(returnArrivalAirports.length > 0
+                                  ? returnArrivalAirports
+                                  : returnArrivalAirportCodes.map((code: string) => ({
+                                      code,
+                                      name: "",
+                                      distance_miles: null,
+                                    }))).map((airport) => {
+                                  const code = airport.code;
+                                  const isSelected = selectedReturnArrivalAirportCodes.includes(code);
+                                  return (
+                                    <button
+                                      key={code}
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedReturnArrivalAirportCodes((prev) =>
+                                          prev.includes(code)
+                                            ? prev.filter((c) => c !== code)
+                                            : [...prev, code]
+                                        );
+                                      }}
+                                      className={`flex items-center justify-between rounded border px-2 py-1 text-[10px] ${
+                                        isSelected
+                                          ? "border-emerald-400 bg-emerald-50 text-slate-900"
+                                          : "border-blue-200 bg-white text-slate-600"
+                                      }`}
+                                    >
+                                      <span className="font-semibold">{code}</span>
+                                      {airport.name && (
+                                        <span className="ml-1 truncate max-w-[80px] text-[9px] text-slate-500">
+                                          {airport.name}
+                                        </span>
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              <p className="text-[10px] text-slate-500 italic pt-1">
+                                Return flights will arrive to{" "}
+                                {selectedReturnArrivalAirportCodes.length > 0
+                                  ? selectedReturnArrivalAirportCodes.length
+                                  : returnArrivalAirportCodes.length}{" "}
+                                selected airport(s).
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* Flight Dates Summary */}
                 {tripPreferences?.start_date && tripPreferences?.end_date && (
