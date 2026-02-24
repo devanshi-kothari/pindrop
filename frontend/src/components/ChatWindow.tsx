@@ -719,6 +719,14 @@ const ChatWindow = ({
     loadActivities(tripId);
   }, [tripId, loadActivities]);
 
+  useEffect(() => {
+    if (activities.length === 0) return;
+    const pending = activities.filter((a) => a.preference === "pending").length;
+    if (pending === 0 && !hasConfirmedActivities) {
+      setHasConfirmedActivities(true);
+    }
+  }, [activities, hasConfirmedActivities]);
+
 
   const loadRestaurants = useCallback(
     async (id: number) => {
@@ -750,6 +758,17 @@ const ChatWindow = ({
     if (!tripId) return;
     loadRestaurants(tripId);
   }, [tripId, loadRestaurants]);
+
+  useEffect(() => {
+    if (restaurants.length === 0) return;
+    if (!hasStartedRestaurants) {
+      setHasStartedRestaurants(true);
+    }
+    const pending = restaurants.filter((r) => r.preference === "pending").length;
+    if (pending === 0 && !hasConfirmedRestaurants) {
+      setHasConfirmedRestaurants(true);
+    }
+  }, [restaurants, hasStartedRestaurants, hasConfirmedRestaurants]);
 
   const loadRestaurantPreferences = useCallback(async (id: number) => {
     try {
@@ -981,6 +1000,7 @@ const ChatWindow = ({
 
   const [useTestActivities, setUseTestActivities] = useState(true); // Default to true for Greece test activities
   const [useTestRestaurants, setUseTestRestaurants] = useState(false);
+  const [didAutoResume, setDidAutoResume] = useState(false);
 
   const generateActivities = async () => {
     if (!tripId) return;
@@ -2660,7 +2680,7 @@ const ChatWindow = ({
             
             if (hasSelectedHotels) {
               setHasConfirmedHotels(true);
-              await loadFinalItinerary(tripId);
+              setActiveTab("activities");
             }
           }
         }
@@ -2691,6 +2711,42 @@ const ChatWindow = ({
     // its identity changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planningMode, tripId, initialMessage, hasSentInitialExploreMessage, isLoadingHistory]);
+
+  useEffect(() => {
+    if (didAutoResume || !hasStartedPlanning) return;
+    const isMultiCity = orderedCities.length > 1;
+    if (isMultiCity && hasConfirmedHotels && !hasConfirmedMultiCityPlanning) {
+      setHasConfirmedMultiCityPlanning(true);
+    }
+    let nextTab: typeof activeTab = "flights";
+
+    if (hasConfirmedRestaurants) {
+      nextTab = "summary";
+    } else if (hasConfirmedActivities) {
+      nextTab = "restaurants";
+    } else if (hasConfirmedHotels) {
+      nextTab = "activities";
+    } else if (hasConfirmedFlights) {
+      if (isMultiCity && !hasConfirmedMultiCityPlanning) {
+        nextTab = "multi-city";
+      } else {
+        nextTab = "hotels";
+      }
+    }
+
+    setActiveTab(nextTab);
+    setDidAutoResume(true);
+  }, [
+    didAutoResume,
+    hasStartedPlanning,
+    hasConfirmedFlights,
+    hasConfirmedHotels,
+    hasConfirmedActivities,
+    hasConfirmedRestaurants,
+    hasConfirmedMultiCityPlanning,
+    orderedCities.length,
+    activeTab,
+  ]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
