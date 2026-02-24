@@ -1866,16 +1866,34 @@ const ChatWindow = ({
       return;
     }
 
-    // Return flights should use the selected return departure airport(s)
-    const actualDepartureId =
-      selectedReturnDepartureAirportCodes[0] ||
-      returnDepartureId ||
-      null;
+    const departureCandidates =
+      selectedReturnDepartureAirportCodes.length > 0
+        ? selectedReturnDepartureAirportCodes
+        : returnDepartureId
+        ? [returnDepartureId]
+        : [];
+    const arrivalCandidates =
+      selectedReturnArrivalAirportCodes.length > 0
+        ? selectedReturnArrivalAirportCodes
+        : returnArrivalId
+        ? [returnArrivalId]
+        : [];
 
-    if (!actualDepartureId) {
+    if (departureCandidates.length === 0) {
       const errorMessage: Message = {
         role: "assistant",
-        content: "Could not determine departure airport for return flight search. Please try selecting the outbound flight again.",
+        content:
+          "Could not determine departure airport for return flight search. Please select return departure airports.",
+        timestamp: formatTime(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+      return;
+    }
+    if (arrivalCandidates.length === 0) {
+      const errorMessage: Message = {
+        role: "assistant",
+        content:
+          "Could not determine arrival airport for return flight search. Please select return arrival airports.",
         timestamp: formatTime(),
       };
       setMessages((prev) => [...prev, errorMessage]);
@@ -1887,59 +1905,71 @@ const ChatWindow = ({
       const token = getAuthToken();
       if (!token) return;
 
-      // For return flights, use the actual departure_id from the selected outbound flight
-      // The departure_token tells SerpAPI which outbound flight was selected and returns matching return flights
-    const finalArrivalId =
-      selectedReturnArrivalAirportCodes[0] ||
-      returnArrivalId ||
-      null;
-    const params = new URLSearchParams({
-        departure_id: actualDepartureId,
-        arrival_id: finalArrivalId || "",
-        outbound_date: tripPreferences.start_date,
-        return_date: tripPreferences.end_date,
-      });
+      const requestCombos = departureCandidates.flatMap((departureCode) =>
+        arrivalCandidates.map((arrivalCode) => ({
+          departureCode,
+          arrivalCode,
+        }))
+      );
 
-      console.log("Fetching return flights with params:", {
-        departure_id: actualDepartureId,
-        arrival_id: finalArrivalId,
-      });
+      const responses = await Promise.all(
+        requestCombos.map(async ({ departureCode, arrivalCode }) => {
+          const params = new URLSearchParams({
+            departure_id: departureCode,
+            arrival_id: arrivalCode,
+            outbound_date: tripPreferences.start_date,
+            return_date: tripPreferences.end_date,
+          });
 
-      const response = await fetch(getApiUrl(`api/flights/return?${params.toString()}`), {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-      });
+          console.log("Fetching return flights with params:", {
+            departure_id: departureCode,
+            arrival_id: arrivalCode,
+          });
 
-      const result = await response.json();
-      console.log("Return flights API result:", result);
-      console.log("Return flights API result keys:", Object.keys(result));
-      console.log("best_flights:", result.best_flights);
-      console.log("other_flights:", result.other_flights);
-      console.log("Response status:", response.status);
+          const response = await fetch(getApiUrl(`api/flights/return?${params.toString()}`), {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+          });
 
-      if (response.ok && result.success) {
-        let flightsToSet: any[] = [];
-        if (Array.isArray(result.best_flights) && result.best_flights.length > 0) {
-          flightsToSet = result.best_flights;
-        } else if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
-          flightsToSet = result.other_flights;
+          const result = await response.json();
+          return { response, result, departureCode, arrivalCode };
+        })
+      );
+
+      let flightsToSet: any[] = [];
+      const hasCachedReturnFlights = responses.some(({ result }) => result?.source === "cache");
+      responses.forEach(({ response, result, departureCode, arrivalCode }) => {
+        console.log("Return flights API result:", result);
+        console.log("Return flights API result keys:", Object.keys(result));
+        console.log("best_flights:", result.best_flights);
+        console.log("other_flights:", result.other_flights);
+        console.log("Response status:", response.status);
+        if (response.ok && result.success) {
+          if (Array.isArray(result.best_flights) && result.best_flights.length > 0) {
+            flightsToSet.push(...result.best_flights);
+          } else if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
+            flightsToSet.push(...result.other_flights);
+          }
+        } else {
+          console.error(`Return flight API error for route ${departureCode} → ${arrivalCode}:`, result);
         }
+      });
 
-        console.log(`Found ${flightsToSet.length} return flights to display`);
+      console.log(`Found ${flightsToSet.length} return flights to display`);
 
-        if (flightsToSet.length > 0) {
-          // Cache the return flights by departure_token
-          setReturnFlightsCache(prev => ({
-            ...prev,
-            [departureToken]: flightsToSet
-          }));
-          setReturnFlights(flightsToSet);
+      if (flightsToSet.length > 0) {
+        // Cache the return flights by departure_token
+        setReturnFlightsCache((prev) => ({
+          ...prev,
+          [departureToken]: flightsToSet,
+        }));
+        setReturnFlights(flightsToSet);
 
           // Save return flights to database
-          if (selectedOutboundIndex !== null && bestFlights[selectedOutboundIndex]) {
+        if (!hasCachedReturnFlights && selectedOutboundIndex !== null && bestFlights[selectedOutboundIndex]) {
             try {
               const selectedOutbound = bestFlights[selectedOutboundIndex];
               const saveResponse = await fetch(getApiUrl("api/flights/save-return"), {
@@ -1954,8 +1984,8 @@ const ChatWindow = ({
                   departure_token: selectedOutbound.departure_token || null,
                   flights: flightsToSet,
                   search_params: {
-                    departure_id: actualDepartureId,
-                    arrival_id: finalArrivalId || arrivalId,
+                    departure_id: departureCandidates[0] || null,
+                    arrival_id: arrivalCandidates[0] || null,
                     outbound_date: tripPreferences.start_date,
                     return_date: tripPreferences.end_date,
                     currency: "USD",
@@ -1982,25 +2012,10 @@ const ChatWindow = ({
               // Don't show error to user, just log it
             }
           }
-        } else {
-          console.warn("No return flights found in API response:", {
-            has_best_flights: !!result.best_flights,
-            best_flights_length: result.best_flights?.length || 0,
-            has_other_flights: !!result.other_flights,
-            other_flights_length: result.other_flights?.length || 0,
-            raw_result: result
-          });
-          const errorMessage: Message = {
-            role: "assistant",
-            content: `No return flight options found for this outbound flight. SerpAPI returned ${result.best_flights?.length || 0} best flights and ${result.other_flights?.length || 0} other flights. Please try selecting a different outbound flight.`,
-            timestamp: formatTime(),
-          };
-          setMessages((prev) => [...prev, errorMessage]);
-        }
       } else {
         const errorMessage: Message = {
           role: "assistant",
-          content: result.message || "Failed to fetch return flight options. Please try again.",
+          content: "No return flight options found for the selected return airports.",
           timestamp: formatTime(),
         };
         setMessages((prev) => [...prev, errorMessage]);
