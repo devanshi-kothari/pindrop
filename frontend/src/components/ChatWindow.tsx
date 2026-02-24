@@ -5946,47 +5946,112 @@ const ChatWindow = ({
                                 }
                               }
 
-                              const params = new URLSearchParams({
-                                departure_id: interCityDepartureId[currentInterCitySegment]!,
-                                arrival_id: interCityArrivalId[currentInterCitySegment]!,
-                                outbound_date: departureDate ? departureDate.toISOString().split('T')[0] : tripPreferences?.start_date || '',
-                                currency: 'USD',
-                                type: '0', // One-way flight for inter-city
-                              });
+                              const departureCandidates =
+                                interCityDepartureCodes[currentInterCitySegment]?.length > 0
+                                  ? interCityDepartureCodes[currentInterCitySegment]
+                                  : interCityDepartureId[currentInterCitySegment]
+                                  ? [interCityDepartureId[currentInterCitySegment]!]
+                                  : [];
+                              const arrivalCandidates =
+                                interCityArrivalCodes[currentInterCitySegment]?.length > 0
+                                  ? interCityArrivalCodes[currentInterCitySegment]
+                                  : interCityArrivalId[currentInterCitySegment]
+                                  ? [interCityArrivalId[currentInterCitySegment]!]
+                                  : [];
 
-                              const response = await fetch(getApiUrl(`api/flights/search?${params.toString()}`), {
-                                method: "GET",
-                                headers: {
-                                  Authorization: `Bearer ${token}`,
-                                  "Content-Type": "application/json",
-                                },
-                              });
+                              const requestCombos = departureCandidates.flatMap((departureCode) =>
+                                arrivalCandidates.map((arrivalCode) => ({
+                                  departureCode,
+                                  arrivalCode,
+                                }))
+                              );
 
-                              const result = await response.json();
+                              const responses = await Promise.all(
+                                requestCombos.map(async ({ departureCode, arrivalCode }) => {
+                                  const params = new URLSearchParams({
+                                    departure_id: departureCode,
+                                    arrival_id: arrivalCode,
+                                    outbound_date: departureDate
+                                      ? departureDate.toISOString().split('T')[0]
+                                      : tripPreferences?.start_date || '',
+                                    currency: 'USD',
+                                    type: '0', // One-way flight for inter-city
+                                  });
 
-                              if (response.ok && result.success) {
-                                let flights: any[] = [];
-                                if (Array.isArray(result.best_flights) && result.best_flights.length > 0) {
-                                  flights = result.best_flights;
-                                } else if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
-                                  flights = result.other_flights;
+                                  const response = await fetch(getApiUrl(`api/flights/search?${params.toString()}`), {
+                                    method: "GET",
+                                    headers: {
+                                      Authorization: `Bearer ${token}`,
+                                      "Content-Type": "application/json",
+                                    },
+                                  });
+
+                                  const result = await response.json();
+                                  return { response, result, departureCode, arrivalCode };
+                                })
+                              );
+
+                              let flights: any[] = [];
+                              let flightsFromApi: any[] = [];
+                              responses.forEach(({ response, result, departureCode, arrivalCode }) => {
+                                if (response.ok && result.success) {
+                                  let segmentFlights: any[] = [];
+                                  if (Array.isArray(result.best_flights) && result.best_flights.length > 0) {
+                                    segmentFlights = result.best_flights;
+                                  } else if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
+                                    segmentFlights = result.other_flights;
+                                  }
+                                  if (segmentFlights.length > 0) {
+                                    const normalizedSegment = segmentFlights.map((flight: any) => ({
+                                      ...flight,
+                                      departure_airport_code: departureCode,
+                                      arrival_airport_code: arrivalCode,
+                                    }));
+                                    flights.push(...normalizedSegment);
+                                    if (result.source !== "cache") {
+                                      flightsFromApi.push(...normalizedSegment);
+                                    }
+                                  }
                                 }
-                                
-                                if (flights.length > 0) {
-                                  setInterCityFlights(prev => ({ ...prev, [currentInterCitySegment]: flights }));
-                                } else {
-                                  // No flights found, default to driving
-                                  setInterCityTransportation(prev => ({ ...prev, [currentInterCitySegment]: "driving" }));
-                                  const errorMessage: Message = {
-                                    role: "assistant",
-                                    content: `No flights found between ${currentSegment.from} and ${currentSegment.to}. Defaulting to driving.`,
-                                    timestamp: formatTime(),
-                                  };
-                                  setMessages((prev) => [...prev, errorMessage]);
+                              });
+
+                              if (flights.length > 0) {
+                                setInterCityFlights(prev => ({ ...prev, [currentInterCitySegment]: flights }));
+
+                                if (flightsFromApi.length > 0) {
+                                  try {
+                                    await fetch(getApiUrl("api/flights/save-intercity"), {
+                                      method: "POST",
+                                      headers: {
+                                        Authorization: `Bearer ${token}`,
+                                        "Content-Type": "application/json",
+                                      },
+                                      body: JSON.stringify({
+                                        trip_id: tripId,
+                                        flights: flightsFromApi,
+                                        search_params: {
+                                          departure_id: departureCandidates[0] || null,
+                                          arrival_id: arrivalCandidates[0] || null,
+                                          outbound_date: departureDate
+                                            ? departureDate.toISOString().split('T')[0]
+                                            : tripPreferences?.start_date || null,
+                                          currency: 'USD',
+                                        },
+                                      }),
+                                    });
+                                  } catch (saveError) {
+                                    console.error("Error saving inter-city flights:", saveError);
+                                  }
                                 }
                               } else {
                                 // No flights found, default to driving
                                 setInterCityTransportation(prev => ({ ...prev, [currentInterCitySegment]: "driving" }));
+                                const errorMessage: Message = {
+                                  role: "assistant",
+                                  content: `No flights found between ${currentSegment.from} and ${currentSegment.to}. Defaulting to driving.`,
+                                  timestamp: formatTime(),
+                                };
+                                setMessages((prev) => [...prev, errorMessage]);
                               }
                             } catch (error) {
                               console.error("Error fetching inter-city flights:", error);

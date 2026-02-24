@@ -187,7 +187,7 @@ CREATE TABLE IF NOT EXISTS chat_message (
 -- Each row represents one flight option (either outbound or return)
 CREATE TABLE IF NOT EXISTS flight (
     flight_id BIGSERIAL PRIMARY KEY,
-    flight_type VARCHAR(20) NOT NULL CHECK (flight_type IN ('outbound', 'return')),
+    flight_type VARCHAR(20) NOT NULL CHECK (flight_type IN ('outbound', 'return', 'intercity')),
     -- Extracted from flight_data JSONB
     price DECIMAL(10, 2),
     departure_token VARCHAR(255), -- Used to fetch return flights for this outbound flight

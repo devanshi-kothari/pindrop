@@ -29,10 +29,11 @@ router.get('/search', authenticateToken, async (req, res) => {
     }
 
     // Check cached flights in database first to avoid rate limits
+    const cachedFlightType = flightType === '0' ? 'intercity' : 'outbound';
     let cachedQuery = supabase
       .from('flight')
       .select('price, departure_token, total_duration, flights, layovers, additional_data, departure_id, arrival_id, outbound_date, return_date, currency')
-      .eq('flight_type', 'outbound')
+      .eq('flight_type', cachedFlightType)
       .eq('departure_id', departure_id)
       .eq('arrival_id', arrival_id)
       .eq('outbound_date', outbound_date);
@@ -437,6 +438,119 @@ router.post('/save-outbound', authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'An error occurred while saving outbound flights',
+      error: error.message
+    });
+  }
+});
+
+// Save inter-city one-way flights to database
+router.post('/save-intercity', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { trip_id, flights, search_params } = req.body;
+
+    if (!trip_id || !Array.isArray(flights) || flights.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required parameters: trip_id and flights array'
+      });
+    }
+
+    const savedFlightIds = [];
+    const searchParamsObj = search_params || {};
+    const clampText = (value, maxLen) => {
+      if (typeof value !== 'string') return value || null;
+      return value.length > maxLen ? value.slice(0, maxLen) : value;
+    };
+
+    console.log(`Starting to save ${flights.length} inter-city flight options to database for trip ${trip_id}`);
+
+    for (let i = 0; i < flights.length; i++) {
+      const flightOption = flights[i];
+
+      const knownFields = {
+        price: flightOption.price,
+        departure_token: flightOption.departure_token,
+        total_duration: flightOption.total_duration,
+        flights: flightOption.flights,
+        layovers: flightOption.layovers
+      };
+
+      const additionalData = { ...flightOption };
+      delete additionalData.price;
+      delete additionalData.departure_token;
+      delete additionalData.total_duration;
+      delete additionalData.flights;
+      delete additionalData.layovers;
+
+      const flightData = {
+        flight_type: 'intercity',
+        price: knownFields.price ? parseFloat(knownFields.price) : null,
+        departure_token: clampText(knownFields.departure_token, 255) || null,
+        total_duration: knownFields.total_duration || null,
+        flights: knownFields.flights || null,
+        layovers: knownFields.layovers || null,
+        additional_data: Object.keys(additionalData).length > 0 ? additionalData : {},
+        departure_id: clampText(
+          flightOption.departure_airport_code || searchParamsObj.departure_id,
+          100
+        ) || null,
+        arrival_id: clampText(
+          flightOption.arrival_airport_code || searchParamsObj.arrival_id,
+          100
+        ) || null,
+        outbound_date: searchParamsObj.outbound_date
+          ? new Date(searchParamsObj.outbound_date).toISOString().split('T')[0]
+          : null,
+        return_date: null,
+        currency: clampText(searchParamsObj.currency || 'USD', 10),
+        additional_search_params: searchParamsObj.additional_search_params || {}
+      };
+
+      const { data: flight, error: flightError } = await supabase
+        .from('flight')
+        .insert([flightData])
+        .select('flight_id')
+        .single();
+
+      if (flightError) {
+        console.error('Error inserting inter-city flight into flight table:', flightError);
+        console.error('Supabase error code/message:', flightError.code, flightError.message);
+        console.error('Flight data that failed:', JSON.stringify(flightData, null, 2));
+        continue;
+      }
+
+      if (flight?.flight_id) {
+        savedFlightIds.push(flight.flight_id);
+        const { error: tripFlightError } = await supabase
+          .from('trip_flight')
+          .upsert([{
+            trip_id: trip_id,
+            flight_id: flight.flight_id,
+            is_selected: false
+          }], {
+            onConflict: 'trip_id,flight_id'
+          });
+
+        if (tripFlightError) {
+          console.error('Error associating inter-city flight with trip:', tripFlightError);
+          console.error('Supabase error code/message:', tripFlightError.code, tripFlightError.message);
+        }
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Saved ${savedFlightIds.length} inter-city flights`,
+      flight_ids: savedFlightIds,
+      total_flights: flights.length,
+      saved_count: savedFlightIds.length
+    });
+  } catch (error) {
+    console.error('Error saving inter-city flights:', error);
+    res.status(500).json({
+      success: false,
+      message: 'An error occurred while saving inter-city flights',
       error: error.message
     });
   }
