@@ -1908,7 +1908,7 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
   try {
     const userId = req.user.userId;
     const tripId = parseInt(req.params.tripId);
-    const { testMode, selected_cities: bodySelectedCities } = req.body || {};
+    const { testMode, selected_cities: bodySelectedCities, city_days: bodyCityDays } = req.body || {};
 
     // Ensure the trip belongs to the user
     const { data: trip, error: tripError } = await supabase
@@ -2309,7 +2309,7 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       : [];
     console.log(`Processing for destination: ${trip.destination} | Preferred categories: ${preferredCategories.join(', ') || 'none'}`);
 
-    // Group by city for multi-city distribution; then select up to 8 with category diversity per city
+    // Group by city for multi-city distribution; then select based on days per city
     const byCity = new Map();
     for (const a of activityCandidates) {
       const c = a.city != null ? a.city : (a.location || null);
@@ -2331,7 +2331,56 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       ];
     }
     const numCities = cityKeys.length;
-    const perCity = Math.max(1, Math.ceil(8 / numCities));
+    const cityDays =
+      bodyCityDays && typeof bodyCityDays === 'object' && !Array.isArray(bodyCityDays)
+        ? bodyCityDays
+        : {};
+    const totalDaysFromCities = cityKeys.reduce((sum, key) => {
+      const value = Number(cityDays[key]);
+      return Number.isFinite(value) && value > 0 ? sum + value : sum;
+    }, 0);
+    const totalTripDays = (() => {
+      if (totalDaysFromCities > 0) return totalDaysFromCities;
+      if (tripPreferences?.start_date && tripPreferences?.end_date) {
+        const start = new Date(tripPreferences.start_date);
+        const end = new Date(tripPreferences.end_date);
+        if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && end >= start) {
+          const diffMs = end.getTime() - start.getTime();
+          return Math.round(diffMs / (1000 * 60 * 60 * 24)) + 1;
+        }
+      }
+      return tripPreferences?.num_days || null;
+    })();
+    const desiredTotal =
+      totalTripDays && totalTripDays > 0 ? Math.max(1, Math.round(totalTripDays * 1.7)) : 8;
+    const totalWeight = totalDaysFromCities > 0 ? totalDaysFromCities : numCities;
+    const targetByCity = new Map(
+      cityKeys.map((key) => {
+        const rawWeight = totalDaysFromCities > 0 ? Number(cityDays[key]) || 0 : 1;
+        const weight = rawWeight > 0 ? rawWeight : 1;
+        const target = Math.max(1, Math.round((desiredTotal * weight) / totalWeight));
+        return [key, target];
+      })
+    );
+    // Adjust rounding so total equals desiredTotal
+    const sumTargets = () => Array.from(targetByCity.values()).reduce((a, b) => a + b, 0);
+    while (sumTargets() < desiredTotal) {
+      const key = cityKeys
+        .slice()
+        .sort((a, b) => (byCity.get(b)?.length || 0) - (byCity.get(a)?.length || 0))[0];
+      targetByCity.set(key, (targetByCity.get(key) || 0) + 1);
+    }
+    while (sumTargets() > desiredTotal) {
+      const key = cityKeys
+        .slice()
+        .sort((a, b) => (targetByCity.get(b) || 0) - (targetByCity.get(a) || 0))[0];
+      const current = targetByCity.get(key) || 0;
+      if (current > 1) {
+        targetByCity.set(key, current - 1);
+      } else {
+        break;
+      }
+    }
     const suggestions = [];
     const categoryCounts = new Map();
     const categorySeen = new Set();
@@ -2350,16 +2399,17 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       });
     }
 
-    // Round-robin take from each city up to perCity each, cap 8 total
+    // Round-robin take from each city up to its target, cap desiredTotal
     const indices = new Map(cityKeys.map((k) => [k, 0]));
-    while (suggestions.length < 8) {
+    while (suggestions.length < desiredTotal) {
       let added = 0;
       for (const key of cityKeys) {
-        if (suggestions.length >= 8) break;
+        if (suggestions.length >= desiredTotal) break;
         const list = byCity.get(key);
         const idx = indices.get(key);
         const taken = list.filter((a) => suggestions.some((s) => s.activity_id === a.activity_id)).length;
-        if (taken >= perCity || idx >= list.length) continue;
+        const cityTarget = targetByCity.get(key) || 1;
+        if (taken >= cityTarget || idx >= list.length) continue;
         const activity = list[idx];
         try {
           const { data: existingPref, error: prefError } = await supabase

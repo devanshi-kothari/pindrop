@@ -1005,6 +1005,7 @@ const ChatWindow = ({
         body: JSON.stringify({
           testMode: useTestActivities,
           selected_cities: tripPreferences?.selected_cities ?? [],
+          city_days: manualCityDaysAllocation,
         }),
       });
 
@@ -6503,6 +6504,7 @@ const ChatWindow = ({
                               body: JSON.stringify({
                                 testMode: useTestActivities,
                                 selected_cities: tripPreferences?.selected_cities ?? [],
+                                city_days: manualCityDaysAllocation,
                               }),
                             });
 
