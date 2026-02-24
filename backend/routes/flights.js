@@ -225,6 +225,10 @@ router.post('/save-outbound', authenticateToken, async (req, res) => {
 
     const savedFlightIds = [];
     const searchParamsObj = search_params || {};
+    const clampText = (value, maxLen) => {
+      if (typeof value !== 'string') return value || null;
+      return value.length > maxLen ? value.slice(0, maxLen) : value;
+    };
 
     console.log(`Starting to save ${flights.length} outbound flight options to database for trip ${trip_id}`);
 
@@ -254,16 +258,16 @@ router.post('/save-outbound', authenticateToken, async (req, res) => {
       const flightData = {
         flight_type: 'outbound',
         price: knownFields.price ? parseFloat(knownFields.price) : null,
-        departure_token: knownFields.departure_token || null,
+        departure_token: clampText(knownFields.departure_token, 255) || null,
         total_duration: knownFields.total_duration || null,
         flights: knownFields.flights || null,
         layovers: knownFields.layovers || null,
         additional_data: Object.keys(additionalData).length > 0 ? additionalData : {},
-        departure_id: searchParamsObj.departure_id || null,
-        arrival_id: searchParamsObj.arrival_id || null,
+        departure_id: clampText(searchParamsObj.departure_id, 100) || null,
+        arrival_id: clampText(searchParamsObj.arrival_id, 100) || null,
         outbound_date: searchParamsObj.outbound_date ? new Date(searchParamsObj.outbound_date).toISOString().split('T')[0] : null,
         return_date: searchParamsObj.return_date ? new Date(searchParamsObj.return_date).toISOString().split('T')[0] : null,
-        currency: searchParamsObj.currency || 'USD',
+        currency: clampText(searchParamsObj.currency || 'USD', 10),
         additional_search_params: searchParamsObj.additional_search_params || {}
       };
 
@@ -278,6 +282,7 @@ router.post('/save-outbound', authenticateToken, async (req, res) => {
 
       if (flightError) {
         console.error('Error inserting flight into flight table:', flightError);
+        console.error('Supabase error code/message:', flightError.code, flightError.message);
         console.error('Flight data that failed:', JSON.stringify(flightData, null, 2));
         continue; // Skip this flight but continue with others
       }
@@ -300,6 +305,7 @@ router.post('/save-outbound', authenticateToken, async (req, res) => {
 
         if (tripFlightError) {
           console.error(`Error associating flight ${i + 1} with trip in trip_flight table:`, tripFlightError);
+          console.error('Supabase error code/message:', tripFlightError.code, tripFlightError.message);
           console.error('trip_id:', trip_id, 'flight_id:', flight.flight_id);
         } else {
           console.log(`Successfully associated flight ${i + 1} (flight_id: ${flight.flight_id}) with trip ${trip_id} in trip_flight table`);
@@ -414,6 +420,10 @@ router.post('/save-return', authenticateToken, async (req, res) => {
 
     const savedFlightIds = [];
     const searchParamsObj = search_params || {};
+    const clampText = (value, maxLen) => {
+      if (typeof value !== 'string') return value || null;
+      return value.length > maxLen ? value.slice(0, maxLen) : value;
+    };
 
     // Save each return flight option
     for (const flightOption of flights) {
@@ -425,11 +435,11 @@ router.post('/save-return', authenticateToken, async (req, res) => {
         flights: flightOption.flights || null,
         layovers: flightOption.layovers || null,
         additional_data: flightOption.additional_data || {},
-        departure_id: searchParamsObj.arrival_id || null, // Return flight departs from arrival location
-        arrival_id: searchParamsObj.departure_id || null, // Return flight arrives at departure location
+        departure_id: clampText(searchParamsObj.arrival_id, 100) || null, // Return flight departs from arrival location
+        arrival_id: clampText(searchParamsObj.departure_id, 100) || null, // Return flight arrives at departure location
         outbound_date: searchParamsObj.outbound_date ? new Date(searchParamsObj.outbound_date).toISOString().split('T')[0] : null,
         return_date: searchParamsObj.return_date ? new Date(searchParamsObj.return_date).toISOString().split('T')[0] : null,
-        currency: searchParamsObj.currency || 'USD',
+        currency: clampText(searchParamsObj.currency || 'USD', 10),
         additional_search_params: searchParamsObj.additional_search_params || {}
       };
 
@@ -442,6 +452,7 @@ router.post('/save-return', authenticateToken, async (req, res) => {
 
       if (flightError) {
         console.error('Error inserting return flight:', flightError);
+        console.error('Supabase error code/message:', flightError.code, flightError.message);
         continue;
       }
 
@@ -462,6 +473,7 @@ router.post('/save-return', authenticateToken, async (req, res) => {
 
         if (tripFlightError) {
           console.error('Error associating return flight with trip:', tripFlightError);
+          console.error('Supabase error code/message:', tripFlightError.code, tripFlightError.message);
         }
 
         // Create mapping between departing flight and return flight
@@ -478,6 +490,7 @@ router.post('/save-return', authenticateToken, async (req, res) => {
 
         if (mappingError) {
           console.error('Error creating flight return mapping:', mappingError);
+          console.error('Supabase error code/message:', mappingError.code, mappingError.message);
         }
       }
     }

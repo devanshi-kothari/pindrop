@@ -1682,7 +1682,7 @@ const ChatWindow = ({
               flights: allFlightsToSave,
               search_params: {
                 departure_id: departureId || airportsToSearch[0], // Use primary departure for search params
-                arrival_id: arrivalId,
+                arrival_id: arrivalId || targetArrivalCodes[0] || null,
                 outbound_date: tripPreferences.start_date,
                 return_date: tripPreferences.end_date,
                 currency: "USD",
@@ -1690,7 +1690,30 @@ const ChatWindow = ({
             }),
           });
 
-          const saveResult = await saveResponse.json();
+          let saveResult = await saveResponse.json();
+          if ((!saveResponse.ok || !saveResult.success) && allFlightsToSave.length > 0) {
+            console.warn("Initial save-outbound failed, retrying once...", saveResult);
+            const retryResponse = await fetch(getApiUrl("api/flights/save-outbound"), {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                trip_id: tripId,
+                flights: allFlightsToSave,
+                search_params: {
+                  departure_id: departureId || airportsToSearch[0],
+                  arrival_id: arrivalId || targetArrivalCodes[0] || null,
+                  outbound_date: tripPreferences.start_date,
+                  return_date: tripPreferences.end_date,
+                  currency: "USD",
+                },
+              }),
+            });
+            saveResult = await retryResponse.json();
+          }
+
           if (saveResult.success && saveResult.flight_ids) {
             console.log(`Saved ${saveResult.saved_count || saveResult.flight_ids.length} outbound flights to database:`, saveResult);
             // Map flight indices to flight_ids (using global index across all airports)
@@ -1707,6 +1730,13 @@ const ChatWindow = ({
             }
           } else {
             console.error("Failed to save outbound flights:", saveResult);
+            const errorMessage: Message = {
+              role: "assistant",
+              content:
+                "I found flights, but saving them failed. Please try searching again.",
+              timestamp: formatTime(),
+            };
+            setMessages((prev) => [...prev, errorMessage]);
           }
         } catch (saveError) {
           console.error("Error saving outbound flights:", saveError);
@@ -1732,6 +1762,68 @@ const ChatWindow = ({
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setIsFetchingFlights(false);
+    }
+  };
+
+  const retrySaveOutboundFlights = async () => {
+    if (!tripId || bestFlights.length === 0 || !tripPreferences?.start_date || !tripPreferences?.end_date) {
+      return;
+    }
+    const token = getAuthToken();
+    if (!token) return;
+
+    const targetArrivalCodes =
+      selectedArrivalAirportCodes.length > 0
+        ? selectedArrivalAirportCodes
+        : arrivalAirportCodes.length > 0
+        ? arrivalAirportCodes
+        : arrivalId
+        ? [arrivalId]
+        : [];
+    const airportsToSearch =
+      selectedDepartureAirportCodes.length > 0
+        ? selectedDepartureAirportCodes
+        : departureAirportCodes.length > 0
+        ? departureAirportCodes
+        : departureId
+        ? [departureId]
+        : [];
+
+    try {
+      console.log(`Retrying save for ${bestFlights.length} outbound flights...`);
+      const saveResponse = await fetch(getApiUrl("api/flights/save-outbound"), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          trip_id: tripId,
+          flights: bestFlights,
+          search_params: {
+            departure_id: departureId || airportsToSearch[0],
+            arrival_id: arrivalId || targetArrivalCodes[0] || null,
+            outbound_date: tripPreferences.start_date,
+            return_date: tripPreferences.end_date,
+            currency: "USD",
+          },
+        }),
+      });
+      const saveResult = await saveResponse.json();
+      if (saveResult.success && saveResult.flight_ids) {
+        console.log("Retried save for outbound flights:", saveResult);
+        const flightIdMap: Record<number, number> = {};
+        saveResult.flight_ids.forEach((flightId: number, idx: number) => {
+          if (idx < bestFlights.length) {
+            flightIdMap[idx] = flightId;
+          }
+        });
+        setOutboundFlightIds(flightIdMap);
+      } else {
+        console.error("Retry save for outbound flights failed:", saveResult);
+      }
+    } catch (saveError) {
+      console.error("Error retrying save for outbound flights:", saveError);
     }
   };
 
@@ -4765,14 +4857,26 @@ const ChatWindow = ({
                         Please set your trip dates in Phase 1 to search for flights.
                       </p>
                     ) : (
-                      <Button
-                        size="sm"
-                        className="w-full h-8 bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-xs font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400 disabled:opacity-60"
-                        disabled={isFetchingFlights}
-                        onClick={fetchFlights}
-                      >
-                        {isFetchingFlights ? "Searching for flights..." : "Search for flights"}
-                      </Button>
+                      <div className="space-y-2">
+                        <Button
+                          size="sm"
+                          className="w-full h-8 bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-xs font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400 disabled:opacity-60"
+                          disabled={isFetchingFlights}
+                          onClick={fetchFlights}
+                        >
+                          {isFetchingFlights ? "Searching for flights..." : "Search for flights"}
+                        </Button>
+                        {bestFlights.length > 0 && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="w-full h-8 text-xs border-blue-200 text-slate-700"
+                            onClick={retrySaveOutboundFlights}
+                          >
+                            Retry saving outbound flights
+                          </Button>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
