@@ -2179,7 +2179,10 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
     // Multi-city: always build explicit per-city queries so we split activities by city
     if (cities.length >= 2) {
       for (const city of cities) {
-        const q = city.includes(' ') ? `things to do in "${city}"` : `things to do in ${city}`;
+        const scopedCity = trip.destination ? `${city}, ${trip.destination}` : city;
+        const q = scopedCity.includes(' ')
+          ? `things to do in "${scopedCity}"`
+          : `things to do in ${scopedCity}`;
         queryEntries.push({ query: q, scope: city });
       }
       console.log(`[activities] Multi-city: ${cities.length} cities → ${queryEntries.length} per-city queries`);
@@ -2220,7 +2223,11 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
           .join(' ');
         const rawDestination = String(trip.destination).trim();
         const scope = cities[0] || rawDestination || 'travel activities';
-        const destQ = scope.includes(' ') ? `"${scope}"` : scope;
+        const scopedLocation =
+          scope && rawDestination && scope !== rawDestination
+            ? `${scope}, ${rawDestination}`
+            : scope;
+        const destQ = scopedLocation.includes(' ') ? `"${scopedLocation}"` : scopedLocation;
         let q = `things to do in ${destQ}`;
         if (interestPhrases) q += ` ${interestPhrases}`;
         if (tripPreferences?.group_type) q += ` for ${tripPreferences.group_type}`;
@@ -2822,12 +2829,31 @@ router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res)
     const startDate = tripPreferences?.start_date || null;
     const month = startDate ? new Date(startDate + 'T12:00:00').getMonth() : new Date().getMonth();
     const season = month >= 2 && month <= 4 ? 'spring' : month >= 5 && month <= 7 ? 'summer' : month >= 8 && month <= 10 ? 'autumn' : 'winter';
+    const selectedCities = Array.isArray(tripPreferences?.selected_cities)
+      ? tripPreferences.selected_cities.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())
+      : [];
+    const destinationName = (trip.destination || '').trim();
+    const destinationLabel =
+      selectedCities.length > 0 && destinationName
+        ? `${selectedCities[0]}, ${destinationName}`
+        : destinationName;
 
     if (testMode) {
-      const destinationName = (trip.destination || '').trim();
       let baseRestaurants = [];
 
-      if (destinationName) {
+      if (selectedCities.length > 0) {
+        for (const city of selectedCities) {
+          const { data: destRest, error: destErr } = await supabase
+            .from('restaurant')
+            .select('*')
+            .ilike('location', `%${city}%`);
+
+          if (!destErr && destRest && destRest.length > 0) {
+            baseRestaurants = [...baseRestaurants, ...destRest];
+          }
+        }
+      }
+      if (baseRestaurants.length === 0 && destinationName) {
         const { data: destRest, error: destErr } = await supabase
           .from('restaurant')
           .select('*')
@@ -2836,6 +2862,10 @@ router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res)
         if (!destErr && destRest && destRest.length > 0) {
           baseRestaurants = destRest;
         }
+      }
+      if (baseRestaurants.length > 0) {
+        const deduped = new Map(baseRestaurants.map((r) => [r.restaurant_id, r]));
+        baseRestaurants = Array.from(deduped.values());
       }
 
       if (baseRestaurants.length < 3) {
@@ -2892,7 +2922,7 @@ router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res)
       }
     }
 
-    const systemPrompt = `You are an expert local food and restaurant recommender. Given a trip destination, user preferences (cuisines, dietary restrictions, meal types, budget), and the travel season, suggest exactly 5 real or realistic restaurants.
+    const systemPrompt = `You are an expert local food and restaurant recommender. Given a trip destination (use city + country to avoid ambiguous city names), user preferences (cuisines, dietary restrictions, meal types, budget), and the travel season, suggest exactly 5 real or realistic restaurants.
 
 Rules:
 - Return ONLY valid JSON. No markdown, no explanation.
@@ -2903,7 +2933,9 @@ Rules:
 - Prefer well-known or plausible real places in the destination.`;
 
     const userContent = JSON.stringify({
-      destination: trip.destination,
+      destination: destinationLabel || trip.destination,
+      country: destinationName || null,
+      cities: selectedCities,
       cuisine_types: cuisineTypes,
       dietary_restrictions: dietaryRestrictions,
       meal_types: mealTypes.length ? mealTypes : ['Breakfast', 'Lunch', 'Dinner'],
@@ -2951,8 +2983,8 @@ Rules:
     const suggestions = [];
     for (const r of toInsert) {
       const name = r.name || 'Unknown Restaurant';
-      const address = r.address || r.location || trip.destination || '';
-      const location = r.location || trip.destination || '';
+      const address = r.address || r.location || destinationLabel || trip.destination || '';
+      const location = r.location || destinationLabel || trip.destination || '';
       const cuisine_type = r.cuisine_type || 'Various';
       const meal_types = Array.isArray(r.meal_types) ? r.meal_types : [];
       const dietary_options = Array.isArray(r.dietary_options) ? r.dietary_options : [];
