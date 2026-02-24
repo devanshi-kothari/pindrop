@@ -1963,8 +1963,8 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
 
         if (!cityError && cityActivities && cityActivities.length > 0) {
           // Ensure city field is set properly
-          const withCity = cityActivities.map((a) => ({ 
-            ...a, 
+          const withCity = cityActivities.map((a) => ({
+            ...a,
             city: a.city || city,
             location: a.location || city
           }));
@@ -2019,7 +2019,7 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
           const idx = indices.get(cityKey);
           const taken = list.filter((a) => suggestions.some((s) => s.activity_id === a.activity_id)).length;
           if (taken >= perCity || idx >= list.length) continue;
-          
+
           const activity = list[idx];
           try {
             const { data: existingPref, error: prefError } = await supabase
@@ -2339,48 +2339,15 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       const value = Number(cityDays[key]);
       return Number.isFinite(value) && value > 0 ? sum + value : sum;
     }, 0);
-    const totalTripDays = (() => {
-      if (totalDaysFromCities > 0) return totalDaysFromCities;
-      if (tripPreferences?.start_date && tripPreferences?.end_date) {
-        const start = new Date(tripPreferences.start_date);
-        const end = new Date(tripPreferences.end_date);
-        if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && end >= start) {
-          const diffMs = end.getTime() - start.getTime();
-          return Math.round(diffMs / (1000 * 60 * 60 * 24)) + 1;
-        }
-      }
-      return tripPreferences?.num_days || null;
-    })();
-    const desiredTotal =
-      totalTripDays && totalTripDays > 0 ? Math.max(1, Math.round(totalTripDays * 1.7)) : 8;
-    const totalWeight = totalDaysFromCities > 0 ? totalDaysFromCities : numCities;
     const targetByCity = new Map(
       cityKeys.map((key) => {
-        const rawWeight = totalDaysFromCities > 0 ? Number(cityDays[key]) || 0 : 1;
-        const weight = rawWeight > 0 ? rawWeight : 1;
-        const target = Math.max(1, Math.round((desiredTotal * weight) / totalWeight));
+        const daysForCity = Number(cityDays[key]);
+        const safeDays = Number.isFinite(daysForCity) && daysForCity > 0 ? daysForCity : 1;
+        const target = Math.max(1, Math.round(safeDays * 2.0));
         return [key, target];
       })
     );
-    // Adjust rounding so total equals desiredTotal
-    const sumTargets = () => Array.from(targetByCity.values()).reduce((a, b) => a + b, 0);
-    while (sumTargets() < desiredTotal) {
-      const key = cityKeys
-        .slice()
-        .sort((a, b) => (byCity.get(b)?.length || 0) - (byCity.get(a)?.length || 0))[0];
-      targetByCity.set(key, (targetByCity.get(key) || 0) + 1);
-    }
-    while (sumTargets() > desiredTotal) {
-      const key = cityKeys
-        .slice()
-        .sort((a, b) => (targetByCity.get(b) || 0) - (targetByCity.get(a) || 0))[0];
-      const current = targetByCity.get(key) || 0;
-      if (current > 1) {
-        targetByCity.set(key, current - 1);
-      } else {
-        break;
-      }
-    }
+    const desiredTotal = Array.from(targetByCity.values()).reduce((a, b) => a + b, 0);
     const suggestions = [];
     const categoryCounts = new Map();
     const categorySeen = new Set();
@@ -3819,10 +3786,10 @@ router.get('/:tripId/final-itinerary', authenticateToken, async (req, res) => {
       .eq('trip_id', tripId)
       .eq('is_selected', true);
 
-    console.log('[final-itinerary] tripHotels query result:', { 
-      count: tripHotels?.length || 0, 
+    console.log('[final-itinerary] tripHotels query result:', {
+      count: tripHotels?.length || 0,
       error: tripHotelsError?.message,
-      rawData: tripHotels 
+      rawData: tripHotels
     });
 
     // Also check all hotels for this trip (regardless of selection)
@@ -5158,7 +5125,7 @@ IMPORTANT: Return ONLY valid JSON array, no markdown, no additional text.`;
       console.error('Error code:', apiError.code);
       console.error('Error status:', apiError.status);
       console.error('Full error:', apiError);
-      
+
       return res.status(500).json({
         success: false,
         message: `OpenAI API error: ${apiError.message}`,
@@ -5167,11 +5134,11 @@ IMPORTANT: Return ONLY valid JSON array, no markdown, no additional text.`;
     }
 
     const responseText = completion.choices[0]?.message?.content || '';
-    
+
     console.log('=== LLM Response Debug ===');
     console.log('Raw response:', responseText);
     console.log('Response length:', responseText.length);
-    
+
     // Parse the LLM response
     let alternatives = [];
     const normalizeJsonString = (value) =>
@@ -5310,7 +5277,7 @@ IMPORTANT: Return ONLY valid JSON array, no markdown, no additional text.`;
     }
 
     console.log('Final alternatives count:', alternatives.length);
-    
+
     res.status(200).json({
       success: true,
       alternatives: alternatives,
@@ -6219,7 +6186,7 @@ IMPORTANT: Return ONLY valid JSON array, no markdown, no additional text.`;
       });
     } catch (apiError) {
       console.error('[meal-alternatives] OpenAI API Error:', apiError.message);
-      
+
       return res.status(500).json({
         success: false,
         message: `OpenAI API error: ${apiError.message}`,
@@ -6228,9 +6195,9 @@ IMPORTANT: Return ONLY valid JSON array, no markdown, no additional text.`;
     }
 
     const responseText = completion.choices[0]?.message?.content || '';
-    
+
     console.log('[meal-alternatives] LLM Response length:', responseText.length);
-    
+
     // Parse the LLM response
     let alternatives = [];
     const normalizeJsonString = (value) =>
@@ -6347,7 +6314,7 @@ IMPORTANT: Return ONLY valid JSON array, no markdown, no additional text.`;
     }
 
     console.log('[meal-alternatives] Final alternatives count:', alternatives.length);
-    
+
     res.status(200).json({
       success: true,
       alternatives: alternatives,
