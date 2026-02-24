@@ -894,7 +894,7 @@ function matchesAvoidCategory(activityName, activityCategory, snippet, avoidCate
 }
 
 async function upsertReusableActivityFromSearchItem(item, destination, preferences = null, userProfile = null, opts = {}) {
-  // Keep location as the broader trip destination or city (e.g. "Paris, France" or "Paris")
+  // Keep location as the broader trip destination (e.g. "Italy")
   // and store precise street address separately in the "address" column.
   // opts.city: when set (multi-city), which selected city this activity is for.
   const location = destination || null;
@@ -990,11 +990,12 @@ async function upsertReusableActivityFromSearchItem(item, destination, preferenc
   // Make address more specific so maps and distances work better:
   // Prefer an exact street address from Google Places; fall back to "Activity Name, Destination".
   if (destination && name) {
-    const preciseAddress = await fetchActivityAddress(name, destination);
+    const addressQuery = city ? `${name}, ${city}, ${destination}` : `${name}, ${destination}`;
+    const preciseAddress = await fetchActivityAddress(addressQuery, destination);
     if (preciseAddress) {
       address = preciseAddress;
     } else if (!address) {
-      address = `${name}, ${destination}`;
+      address = city ? `${name}, ${city}, ${destination}` : `${name}, ${destination}`;
     }
   }
 
@@ -1991,10 +1992,10 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
 
         if (!cityError && cityActivities && cityActivities.length > 0) {
           // Ensure city field is set properly
-          const withCity = cityActivities.map((a) => ({
+            const withCity = cityActivities.map((a) => ({
             ...a,
             city: a.city || city,
-            location: a.location || city
+            location: trip.destination || a.location || null,
           }));
           activitiesByCity.set(city, withCity);
           console.log(`[activities][testMode] Found ${cityActivities.length} activities for "${city}"`);
@@ -2082,7 +2083,7 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
               trip_activity_preference_id: prefRow.trip_activity_preference_id,
               activity_id: activity.activity_id,
               name: activity.name,
-              location: activity.location || activity.city || cityKey,
+              location: trip.destination || activity.location || null,
               city: activity.city || cityKey,
               category: activity.category,
               duration: activity.duration,
@@ -2252,7 +2253,7 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
           return !isLowQualityLink(link);
         });
 
-        const dest = entry.scope === 'travel activities' ? (trip.destination || null) : entry.scope;
+        const dest = trip.destination || null;
         const opts = entry.scope === 'travel activities' ? {} : { city: entry.scope };
 
         for (const item of filteredItems) {
@@ -2268,7 +2269,11 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
             if (processedActivityIds.has(activity.activity_id)) continue;
             processedActivityIds.add(activity.activity_id);
             const city = opts.city || null;
-            activityCandidates.push({ ...activity, city });
+            activityCandidates.push({
+              ...activity,
+              location: trip.destination || activity.location || null,
+              city: city || activity.city || null,
+            });
           } catch (innerError) {
             console.error('Error processing search item into activity:', innerError);
           }
