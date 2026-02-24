@@ -1893,21 +1893,17 @@ const ChatWindow = ({
       selectedReturnArrivalAirportCodes[0] ||
       returnArrivalId ||
       null;
-      const params = new URLSearchParams({
+    const params = new URLSearchParams({
         departure_id: actualDepartureId,
         arrival_id: finalArrivalId || "",
         outbound_date: tripPreferences.start_date,
         return_date: tripPreferences.end_date,
-        departure_token: departureToken,
       });
 
       console.log("Fetching return flights with params:", {
         departure_id: actualDepartureId,
         arrival_id: finalArrivalId,
-        departure_token: departureToken
       });
-
-      console.log("Fetching return flights with token:", departureToken);
 
       const response = await fetch(getApiUrl(`api/flights/return?${params.toString()}`), {
         method: "GET",

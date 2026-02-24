@@ -170,13 +170,19 @@ router.get('/return', authenticateToken, async (req, res) => {
       });
     }
 
-    // Cache lookup first (return flights are saved with departure_id = arrival_id and arrival_id = departure_id)
+    // Cache lookup first (return flights use the return departure/arrival IDs directly)
+    console.log('Return flights cache lookup params:', {
+      departure_id,
+      arrival_id,
+      outbound_date,
+      return_date
+    });
     const cachedQuery = supabase
       .from('flight')
       .select('price, departure_token, total_duration, flights, layovers, additional_data, departure_id, arrival_id, outbound_date, return_date, currency')
       .eq('flight_type', 'return')
-      .eq('departure_id', arrival_id)
-      .eq('arrival_id', departure_id)
+      .eq('departure_id', departure_id)
+      .eq('arrival_id', arrival_id)
       .eq('return_date', return_date);
 
     const { data: cachedFlights, error: cachedError } = await cachedQuery;
@@ -208,9 +214,11 @@ router.get('/return', authenticateToken, async (req, res) => {
     }
 
     if (!departure_token) {
-      return res.status(400).json({
+      return res.status(200).json({
         success: false,
-        message: 'Missing required parameter: departure_token'
+        message: 'No cached return flights found and no departure_token provided for live lookup.',
+        best_flights: [],
+        other_flights: []
       });
     }
 
