@@ -2076,6 +2076,9 @@ const ChatWindow = ({
 
         // Save hotels to database
         try {
+          if (result.source === "cache") {
+            return;
+          }
           const saveResponse = await fetch(getApiUrl("api/hotels/save"), {
             method: "POST",
             headers: {
@@ -2194,6 +2197,9 @@ const ChatWindow = ({
 
         // Save hotels to database - save ALL hotels returned from API
         try {
+          if (result.source === "cache") {
+            return;
+          }
           console.log(`Saving ${hotelsToSet.length} hotels to database...`);
           const saveResponse = await fetch(getApiUrl("api/hotels/save"), {
             method: "POST",

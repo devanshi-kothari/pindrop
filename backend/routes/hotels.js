@@ -19,6 +19,65 @@ router.get('/search', authenticateToken, async (req, res) => {
       });
     }
 
+    // Cache lookup first to avoid rate limits
+    const { data: cachedHotels, error: cachedError } = await supabase
+      .from('hotel')
+      .select('hotel_id, name, type, description, link, logo, sponsored, eco_certified, location, latitude, longitude, check_in_time, check_out_time, rate_per_night_lowest, rate_per_night_formatted, total_rate_lowest, total_rate_formatted, hotel_class, extracted_hotel_class, overall_rating, reviews, location_rating, prices, nearby_places, images, ratings, reviews_breakdown, amenities, excluded_amenities, health_and_safety, essential_info, property_token, serpapi_property_details_link, search_location, check_in_date, check_out_date, currency, additional_data')
+      .eq('search_location', location)
+      .eq('check_in_date', check_in_date)
+      .eq('check_out_date', check_out_date);
+
+    if (cachedError) {
+      console.error('Error fetching cached hotels from database:', cachedError);
+    }
+
+    if (cachedHotels && cachedHotels.length > 0) {
+      const normalizedHotels = cachedHotels.map((row) => ({
+        ...(row.additional_data || {}),
+        name: row.name,
+        type: row.type,
+        description: row.description,
+        link: row.link,
+        logo: row.logo,
+        sponsored: row.sponsored,
+        eco_certified: row.eco_certified,
+        gps_coordinates: row.latitude && row.longitude ? { latitude: row.latitude, longitude: row.longitude } : null,
+        check_in_time: row.check_in_time,
+        check_out_time: row.check_out_time,
+        rate_per_night: {
+          extracted_lowest: row.rate_per_night_lowest,
+          lowest: row.rate_per_night_formatted,
+        },
+        total_rate: {
+          extracted_lowest: row.total_rate_lowest,
+          lowest: row.total_rate_formatted,
+        },
+        hotel_class: row.hotel_class,
+        extracted_hotel_class: row.extracted_hotel_class,
+        overall_rating: row.overall_rating,
+        reviews: row.reviews,
+        location_rating: row.location_rating,
+        prices: row.prices,
+        nearby_places: row.nearby_places,
+        images: row.images,
+        ratings: row.ratings,
+        reviews_breakdown: row.reviews_breakdown,
+        amenities: row.amenities,
+        excluded_amenities: row.excluded_amenities,
+        health_and_safety: row.health_and_safety,
+        essential_info: row.essential_info,
+        property_token: row.property_token,
+        serpapi_property_details_link: row.serpapi_property_details_link
+      }));
+
+      console.log(`Returning ${normalizedHotels.length} cached hotels from database`);
+      return res.status(200).json({
+        success: true,
+        properties: normalizedHotels,
+        source: 'cache'
+      });
+    }
+
     // Get SerpAPI key from environment
     const SERPAPI_KEY = process.env.SERPAPI_KEY;
     if (!SERPAPI_KEY) {
