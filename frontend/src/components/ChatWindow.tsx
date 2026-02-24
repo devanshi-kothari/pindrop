@@ -138,6 +138,8 @@ const ChatWindow = ({
   const [includeNearbyArrivalAirports, setIncludeNearbyArrivalAirports] = useState(false);
   const [isFetchingDepartureCode, setIsFetchingDepartureCode] = useState(false);
   const [isFetchingArrivalCode, setIsFetchingArrivalCode] = useState(false);
+  const [hasFetchedDepartureCodes, setHasFetchedDepartureCodes] = useState(false);
+  const [hasFetchedArrivalCodes, setHasFetchedArrivalCodes] = useState(false);
   const [bestFlights, setBestFlights] = useState<any[]>([]);
   const [flightsByAirport, setFlightsByAirport] = useState<Record<string, any[]>>({}); // Flights grouped by departure airport code
   const [outboundFlightIds, setOutboundFlightIds] = useState<Record<number, number>>({}); // Map index to flight_id
@@ -160,6 +162,7 @@ const ChatWindow = ({
     Array<{ code: string; name: string; distance_miles: number | null }>
   >([]);
   const [isFetchingReturnArrivalCode, setIsFetchingReturnArrivalCode] = useState(false);
+  const [hasFetchedReturnArrivalCodes, setHasFetchedReturnArrivalCodes] = useState(false);
   const [hasEditedReturnArrival, setHasEditedReturnArrival] = useState(false);
   const [returnFlightIds, setReturnFlightIds] = useState<Record<number, number>>({}); // Map index to flight_id
   const [returnFlightsCache, setReturnFlightsCache] = useState<Record<string, any[]>>({}); // Cache return flights by departure_token
@@ -167,6 +170,7 @@ const ChatWindow = ({
   const [selectedReturnIndex, setSelectedReturnIndex] = useState<number | null>(null);
   const [expandedLayovers, setExpandedLayovers] = useState<Record<number, boolean>>({});
   const [hasConfirmedFlights, setHasConfirmedFlights] = useState(false);
+  const [hasSearchedFlights, setHasSearchedFlights] = useState(false);
   const [hasConfirmedMultiCityPlanning, setHasConfirmedMultiCityPlanning] = useState(false);
   const [manualCityDaysAllocation, setManualCityDaysAllocation] = useState<Record<string, number>>({}); // Manual days allocation per city
   const [interCityTransportStep, setInterCityTransportStep] = useState<"allocation" | "transportation">("allocation"); // Current step in multi-city tab
@@ -1192,11 +1196,6 @@ const ChatWindow = ({
     if (departureLocation) {
       setReturnArrivalLocation(departureLocation);
     }
-    if (departureId) {
-      setReturnArrivalId(departureId);
-      setReturnArrivalAirportCodes((prev) => (prev.length > 0 ? prev : [departureId]));
-      setSelectedReturnArrivalAirportCodes((prev) => (prev.length > 0 ? prev : [departureId]));
-    }
   }, [departureLocation, departureId, hasEditedReturnArrival]);
 
   // Calculate day allocation for each city based on activity counts and flight dates
@@ -1536,6 +1535,7 @@ const ChatWindow = ({
   // Fetch flights from SerpAPI for all departure airports
   const fetchFlights = async () => {
     console.log("fetchFlights called", { tripId, departureId, departureAirportCodes, arrivalId, tripPreferences });
+    setHasSearchedFlights(true);
 
     // Use selected departure airport codes if available, otherwise fall back to all, then single departureId
     const airportsToSearch =
@@ -1764,6 +1764,10 @@ const ChatWindow = ({
       setIsFetchingFlights(false);
     }
   };
+
+  useEffect(() => {
+    setHasSearchedFlights(false);
+  }, [tripId, departureId, arrivalId, tripPreferences?.start_date, tripPreferences?.end_date]);
 
   const retrySaveOutboundFlights = async () => {
     if (!tripId || bestFlights.length === 0 || !tripPreferences?.start_date || !tripPreferences?.end_date) {
@@ -2555,20 +2559,17 @@ const ChatWindow = ({
           if (flightsResult.departure_id) {
             console.log("Restoring departure airport code:", flightsResult.departure_id);
             setDepartureId(flightsResult.departure_id);
+            setHasFetchedDepartureCodes(false);
           }
           if (flightsResult.arrival_id) {
             console.log("Restoring arrival airport code:", flightsResult.arrival_id);
             setArrivalId(flightsResult.arrival_id);
+            setHasFetchedArrivalCodes(false);
           }
           if (flightsResult.return_arrival_id) {
             console.log("Restoring return arrival airport code:", flightsResult.return_arrival_id);
             setReturnArrivalId(flightsResult.return_arrival_id);
-            setReturnArrivalAirportCodes((prev) =>
-              prev.length > 0 ? prev : [flightsResult.return_arrival_id]
-            );
-            setSelectedReturnArrivalAirportCodes((prev) =>
-              prev.length > 0 ? prev : [flightsResult.return_arrival_id]
-            );
+            setHasFetchedReturnArrivalCodes(false);
           }
           if (flightsResult.return_departure_id) {
             console.log("Restoring return departure airport code:", flightsResult.return_departure_id);
@@ -4399,17 +4400,22 @@ const ChatWindow = ({
                         onChange={(e) => setDepartureLocation(e.target.value)}
                         placeholder="e.g., New York, NY or Austin, TX"
                         className="h-8 bg-white border-blue-200 text-xs text-slate-900"
-                        disabled={isFetchingDepartureCode || !!departureId}
+                        disabled={isFetchingDepartureCode}
                       />
                       <Button
                         size="sm"
                         className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                        disabled={!departureLocation.trim() || isFetchingDepartureCode || !!departureId}
+                        disabled={!departureLocation.trim() || isFetchingDepartureCode}
                         onClick={async () => {
+                          setDepartureId(null);
+                          setDepartureAirportCodes([]);
+                          setSelectedDepartureAirportCodes([]);
+                          setHasFetchedDepartureCodes(false);
                           setIsFetchingDepartureCode(true);
                           const code = await getAirportCode(departureLocation.trim(), true, "regional", "outbound");
                           if (code) {
                             setDepartureId(code);
+                            setHasFetchedDepartureCodes(true);
                           } else {
                             const errorMessage: Message = {
                               role: "assistant",
@@ -4422,10 +4428,10 @@ const ChatWindow = ({
                           setIsFetchingDepartureCode(false);
                         }}
                       >
-                        {isFetchingDepartureCode ? "Finding..." : departureId ? departureId : "Find airport code"}
+                        {isFetchingDepartureCode ? "Finding..." : "Find airport code"}
                       </Button>
                     </div>
-                    {departureId && (
+                    {hasFetchedDepartureCodes && departureId && (
                       <div className="space-y-1">
                         <p className="text-[11px] text-emerald-400">
                           Primary departure airport: <span className="font-semibold">{departureId}</span>
@@ -4511,8 +4517,12 @@ const ChatWindow = ({
                               <Button
                                 size="sm"
                                 className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                                disabled={isFetchingArrivalCode || !!arrivalId}
+                        disabled={isFetchingArrivalCode}
                                 onClick={async () => {
+                            setArrivalId(null);
+                            setArrivalAirportCodes([]);
+                            setSelectedArrivalAirportCodes([]);
+                                  setHasFetchedArrivalCodes(false);
                                   setIsFetchingArrivalCode(true);
                                   const code = await getAirportCode(
                                     arrivalLocation,
@@ -4522,6 +4532,7 @@ const ChatWindow = ({
                                   );
                                   if (code) {
                                     setArrivalId(code);
+                                    setHasFetchedArrivalCodes(true);
                                   } else {
                                     // Show error message
                                     const errorMessage: Message = {
@@ -4534,10 +4545,10 @@ const ChatWindow = ({
                                   setIsFetchingArrivalCode(false);
                                 }}
                               >
-                                {isFetchingArrivalCode ? "Finding..." : arrivalId ? arrivalId : "Find airport code"}
+                          {isFetchingArrivalCode ? "Finding..." : "Find airport code"}
                               </Button>
                             </div>
-                            {arrivalId && (
+                            {hasFetchedArrivalCodes && arrivalId && (
                               <div className="space-y-1">
                               <p className="text-[11px] text-emerald-400">
                                   Primary arrival airport: <span className="font-semibold">{arrivalId}</span>
@@ -4734,6 +4745,7 @@ const ChatWindow = ({
                             setReturnArrivalId(null);
                             setReturnArrivalAirportCodes([]);
                             setSelectedReturnArrivalAirportCodes([]);
+                            setHasFetchedReturnArrivalCodes(false);
                           }}
                           placeholder="e.g., New York, NY"
                           className="h-8 bg-white border-blue-200 text-xs text-slate-900"
@@ -4743,10 +4755,13 @@ const ChatWindow = ({
                           className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
                           disabled={
                             isFetchingReturnArrivalCode ||
-                            !returnArrivalLocation.trim() ||
-                            !!returnArrivalId
+                          !returnArrivalLocation.trim()
                           }
                           onClick={async () => {
+                          setReturnArrivalId(null);
+                          setReturnArrivalAirportCodes([]);
+                          setSelectedReturnArrivalAirportCodes([]);
+                            setHasFetchedReturnArrivalCodes(false);
                             setIsFetchingReturnArrivalCode(true);
                             const code = await getAirportCode(
                               returnArrivalLocation.trim(),
@@ -4756,6 +4771,7 @@ const ChatWindow = ({
                             );
                             if (code) {
                               setReturnArrivalId(code);
+                              setHasFetchedReturnArrivalCodes(true);
                             } else {
                               const errorMessage: Message = {
                                 role: "assistant",
@@ -4767,14 +4783,10 @@ const ChatWindow = ({
                             setIsFetchingReturnArrivalCode(false);
                           }}
                         >
-                          {isFetchingReturnArrivalCode
-                            ? "Finding..."
-                            : returnArrivalId
-                            ? returnArrivalId
-                            : "Find airport code"}
+                        {isFetchingReturnArrivalCode ? "Finding..." : "Find airport code"}
                         </Button>
                       </div>
-                      {returnArrivalId && (
+                      {hasFetchedReturnArrivalCodes && returnArrivalId && (
                         <div className="space-y-1">
                           <p className="text-[11px] text-emerald-400">
                             Primary return arrival airport:{" "}
@@ -4889,7 +4901,7 @@ const ChatWindow = ({
                 )}
 
                 {/* Flight Results - Step 1: Select Outbound */}
-                {bestFlights.length > 0 && returnFlights.length === 0 && (
+                {hasSearchedFlights && bestFlights.length > 0 && returnFlights.length === 0 && (
                   <div className="space-y-4 pt-2 border-t border-blue-200">
                     <p className="text-xs font-semibold text-slate-600">Step 1: Select your outbound flight</p>
 
@@ -5279,7 +5291,7 @@ const ChatWindow = ({
                 )}
 
                 {/* Step 2: Select Return Flight */}
-                {selectedOutboundIndex !== null && returnFlights.length > 0 && (
+                {hasSearchedFlights && selectedOutboundIndex !== null && returnFlights.length > 0 && (
                   <div className="space-y-3 pt-2 border-t border-blue-200">
                     <div className="flex items-center justify-between">
                     <p className="text-xs font-semibold text-slate-600">Step 2: Select your return flight</p>

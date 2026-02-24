@@ -28,6 +28,47 @@ router.get('/search', authenticateToken, async (req, res) => {
       });
     }
 
+    // Check cached flights in database first to avoid rate limits
+    let cachedQuery = supabase
+      .from('flight')
+      .select('price, departure_token, total_duration, flights, layovers, additional_data, departure_id, arrival_id, outbound_date, return_date, currency')
+      .eq('flight_type', 'outbound')
+      .eq('departure_id', departure_id)
+      .eq('arrival_id', arrival_id)
+      .eq('outbound_date', outbound_date);
+
+    if (flightType === '1' && return_date) {
+      cachedQuery = cachedQuery.eq('return_date', return_date);
+    }
+
+    const { data: cachedFlights, error: cachedError } = await cachedQuery;
+
+    if (cachedError) {
+      console.error('Error fetching cached flights from database:', cachedError);
+    }
+
+    if (cachedFlights && cachedFlights.length > 0) {
+      const normalizedFlights = cachedFlights.map((row) => ({
+        ...(row.additional_data || {}),
+        price: row.price,
+        departure_token: row.departure_token,
+        total_duration: row.total_duration,
+        flights: row.flights,
+        layovers: row.layovers,
+        departure_airport_code: row.departure_id,
+        arrival_airport_code: row.arrival_id
+      }));
+
+      console.log(`Returning ${normalizedFlights.length} cached flights from database`);
+      return res.status(200).json({
+        success: true,
+        best_flights: normalizedFlights,
+        other_flights: [],
+        raw_data: null,
+        source: 'cache'
+      });
+    }
+
     // Get SerpAPI key from environment
     const SERPAPI_KEY = process.env.SERPAPI_KEY;
     if (!SERPAPI_KEY) {
