@@ -998,7 +998,7 @@ const ChatWindow = ({
     }
   };
 
-  const [useTestActivities, setUseTestActivities] = useState(true); // Default to true for Greece test activities
+  const [useTestActivities, setUseTestActivities] = useState(false);
   const [useTestRestaurants, setUseTestRestaurants] = useState(false);
   const [didAutoResume, setDidAutoResume] = useState(false);
 
