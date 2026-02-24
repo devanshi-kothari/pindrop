@@ -163,10 +163,54 @@ router.get('/return', authenticateToken, async (req, res) => {
     const { departure_id, arrival_id, outbound_date, return_date, departure_token } = req.query;
 
     // Validate required parameters
-    if (!departure_id || !arrival_id || !outbound_date || !return_date || !departure_token) {
+    if (!departure_id || !arrival_id || !outbound_date || !return_date) {
       return res.status(400).json({
         success: false,
-        message: 'Missing required parameters: departure_id, arrival_id, outbound_date, return_date, departure_token'
+        message: 'Missing required parameters: departure_id, arrival_id, outbound_date, return_date'
+      });
+    }
+
+    // Cache lookup first (return flights are saved with departure_id = arrival_id and arrival_id = departure_id)
+    const cachedQuery = supabase
+      .from('flight')
+      .select('price, departure_token, total_duration, flights, layovers, additional_data, departure_id, arrival_id, outbound_date, return_date, currency')
+      .eq('flight_type', 'return')
+      .eq('departure_id', arrival_id)
+      .eq('arrival_id', departure_id)
+      .eq('return_date', return_date);
+
+    const { data: cachedFlights, error: cachedError } = await cachedQuery;
+
+    if (cachedError) {
+      console.error('Error fetching cached return flights from database:', cachedError);
+    }
+
+    if (cachedFlights && cachedFlights.length > 0) {
+      const normalizedFlights = cachedFlights.map((row) => ({
+        ...(row.additional_data || {}),
+        price: row.price,
+        departure_token: row.departure_token,
+        total_duration: row.total_duration,
+        flights: row.flights,
+        layovers: row.layovers,
+        departure_airport_code: row.departure_id,
+        arrival_airport_code: row.arrival_id
+      }));
+
+      console.log(`Returning ${normalizedFlights.length} cached return flights from database`);
+      return res.status(200).json({
+        success: true,
+        best_flights: normalizedFlights,
+        other_flights: [],
+        raw_data: null,
+        source: 'cache'
+      });
+    }
+
+    if (!departure_token) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required parameter: departure_token'
       });
     }
 
@@ -204,6 +248,15 @@ router.get('/return', authenticateToken, async (req, res) => {
 
     if (!response.ok) {
       console.error('SerpAPI error:', data);
+      if (data?.error === 'Invalid `departure_token`') {
+        return res.status(200).json({
+          success: false,
+          message: 'Invalid `departure_token`',
+          error: data,
+          best_flights: [],
+          other_flights: []
+        });
+      }
       return res.status(response.status).json({
         success: false,
         message: data.error || 'Failed to fetch return flight data from SerpAPI',

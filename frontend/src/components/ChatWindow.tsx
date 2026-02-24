@@ -1627,6 +1627,7 @@ const ChatWindow = ({
                   departure_airport_code: departureAirportCode,
                   arrival_airport_code: arrivalCode,
                 })),
+              source: result.source || "api",
             };
           } else {
               console.error(`Flight API error for route ${departureAirportCode} → ${arrivalCode}:`, result);
@@ -1634,6 +1635,7 @@ const ChatWindow = ({
                 departureCode: departureAirportCode,
                 arrivalCode,
                 flights: [],
+              source: result.source || "api",
             };
           }
         } catch (error) {
@@ -1668,7 +1670,8 @@ const ChatWindow = ({
 
       // Save flights to database for all airports
       const allFlightsToSave = allFlights;
-      if (allFlightsToSave.length > 0) {
+      const isCacheResponse = results.some((result) => result.source === "cache");
+      if (allFlightsToSave.length > 0 && !isCacheResponse) {
         try {
           console.log(`Saving ${allFlightsToSave.length} outbound flights to database...`);
           const saveResponse = await fetch(getApiUrl("api/flights/save-outbound"), {
@@ -1863,31 +1866,11 @@ const ChatWindow = ({
       return;
     }
 
-    // Find the actual selected flight to get its departure airport code
-    // The selected flight might be from a different airport than the primary departureId
-    let actualDepartureId =
+    // Return flights should use the selected return departure airport(s)
+    const actualDepartureId =
       selectedReturnDepartureAirportCodes[0] ||
       returnDepartureId ||
-      departureId;
-    if (selectedOutboundIndex !== null && bestFlights[selectedOutboundIndex]) {
-      const selectedFlight = bestFlights[selectedOutboundIndex];
-      // Get departure airport code from the selected flight
-      if (selectedFlight.departure_airport_code) {
-        actualDepartureId = selectedFlight.departure_airport_code;
-      } else if (selectedFlight.flights?.[0]?.departure_airport?.id) {
-        actualDepartureId = selectedFlight.flights[0].departure_airport.id;
-      }
-      // If we have grouped flights, search for the exact flight object to get its airport code
-      if (Object.keys(flightsByAirport).length > 0 && selectedFlight?.departure_token) {
-        for (const [airportCode, flightsForAirport] of Object.entries(flightsByAirport)) {
-          const found = flightsForAirport.find(f => f?.departure_token === selectedFlight?.departure_token);
-          if (found) {
-            actualDepartureId = airportCode;
-            break;
-          }
-        }
-      }
-    }
+      null;
 
     if (!actualDepartureId) {
       const errorMessage: Message = {
@@ -1906,12 +1889,10 @@ const ChatWindow = ({
 
       // For return flights, use the actual departure_id from the selected outbound flight
       // The departure_token tells SerpAPI which outbound flight was selected and returns matching return flights
-      const finalArrivalId =
-        selectedReturnArrivalAirportCodes[0] ||
-        returnArrivalId ||
-        departureId ||
-        arrivalId ||
-        (selectedDepartureAirportCodes[0] || null);
+    const finalArrivalId =
+      selectedReturnArrivalAirportCodes[0] ||
+      returnArrivalId ||
+      null;
       const params = new URLSearchParams({
         departure_id: actualDepartureId,
         arrival_id: finalArrivalId || "",
