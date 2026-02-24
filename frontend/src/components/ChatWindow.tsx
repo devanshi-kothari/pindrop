@@ -5746,7 +5746,7 @@ const ChatWindow = ({
                           <Button
                             size="sm"
                             className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                            disabled={isFetchingInterCityFlights[currentInterCitySegment] || !!interCityDepartureId[currentInterCitySegment]}
+                            disabled={isFetchingInterCityFlights[currentInterCitySegment]}
                             onClick={async () => {
                               setIsFetchingInterCityFlights(prev => ({ ...prev, [currentInterCitySegment]: true }));
                               try {
@@ -5778,9 +5778,29 @@ const ChatWindow = ({
                               }
                             }}
                           >
-                            {isFetchingInterCityFlights[currentInterCitySegment] ? "Finding..." : interCityDepartureId[currentInterCitySegment] || "Find airport code"}
+                            {isFetchingInterCityFlights[currentInterCitySegment] ? "Finding..." : "Find airport code"}
                           </Button>
                         </div>
+                        {interCityDepartureCodes[currentInterCitySegment]?.length > 0 && (
+                          <div className="space-y-1">
+                            <p className="text-[11px] text-emerald-400">
+                              Primary departure airport:{" "}
+                              <span className="font-semibold">
+                                {interCityDepartureId[currentInterCitySegment]}
+                              </span>
+                            </p>
+                            <div className="flex flex-wrap gap-1">
+                              {interCityDepartureCodes[currentInterCitySegment].map((code) => (
+                                <span
+                                  key={code}
+                                  className="rounded border border-blue-200 bg-white px-2 py-0.5 text-[10px] text-slate-600"
+                                >
+                                  {code}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
 
                       {/* Arrival Location */}
@@ -5796,7 +5816,7 @@ const ChatWindow = ({
                           <Button
                             size="sm"
                             className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                            disabled={isFetchingInterCityFlights[currentInterCitySegment] || !!interCityArrivalId[currentInterCitySegment]}
+                            disabled={isFetchingInterCityFlights[currentInterCitySegment]}
                             onClick={async () => {
                               setIsFetchingInterCityFlights(prev => ({ ...prev, [currentInterCitySegment]: true }));
                               try {
@@ -5828,9 +5848,29 @@ const ChatWindow = ({
                               }
                             }}
                           >
-                            {isFetchingInterCityFlights[currentInterCitySegment] ? "Finding..." : interCityArrivalId[currentInterCitySegment] || "Find airport code"}
+                            {isFetchingInterCityFlights[currentInterCitySegment] ? "Finding..." : "Find airport code"}
                           </Button>
                         </div>
+                        {interCityArrivalCodes[currentInterCitySegment]?.length > 0 && (
+                          <div className="space-y-1">
+                            <p className="text-[11px] text-emerald-400">
+                              Primary arrival airport:{" "}
+                              <span className="font-semibold">
+                                {interCityArrivalId[currentInterCitySegment]}
+                              </span>
+                            </p>
+                            <div className="flex flex-wrap gap-1">
+                              {interCityArrivalCodes[currentInterCitySegment].map((code) => (
+                                <span
+                                  key={code}
+                                  className="rounded border border-blue-200 bg-white px-2 py-0.5 text-[10px] text-slate-600"
+                                >
+                                  {code}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
 
                       {/* Search Flights Button */}
