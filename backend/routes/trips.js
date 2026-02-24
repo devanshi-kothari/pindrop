@@ -1131,11 +1131,11 @@ Category:`;
   if (existing) {
     // Update existing activity with new data if available
     const updateData = {};
-    // image_url and price_range are omitted here because the current Supabase schema cache for 'activity' does not include them
 
     if (costEstimate !== null && existing.cost_estimate === null) updateData.cost_estimate = costEstimate;
     if (duration && !existing.duration) updateData.duration = duration;
     if (address && !existing.address) updateData.address = address;
+    if (finalImageUrl && !existing.image_url) updateData.image_url = finalImageUrl;
     // Update source_url if we found a better link
     if (finalLink && finalLink !== existing.source_url && !isLowQualityLink(finalLink)) {
       updateData.source_url = finalLink;
@@ -1169,7 +1169,8 @@ Category:`;
     rating: null,
     tags,
     source: 'google-search',
-    source_url: finalLink || null
+    source_url: finalLink || null,
+    image_url: finalImageUrl || null
   };
   if (city != null) insertPayload.city = city;
 
@@ -4272,6 +4273,7 @@ If dates or number of days are missing, infer a reasonable number of days (3-5) 
                   act.rating !== undefined && act.rating !== null
                     ? parseFloat(act.rating)
                     : null,
+                image_url: act.image_url || null,
                 tags: Array.isArray(act.tags) ? act.tags : [],
                 source: 'llm-itinerary',
               },
