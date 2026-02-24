@@ -1777,6 +1777,7 @@ const ChatWindow = ({
     setHasSearchedFlights(false);
   }, [tripId, departureId, arrivalId, tripPreferences?.start_date, tripPreferences?.end_date]);
 
+
   const retrySaveOutboundFlights = async () => {
     if (!tripId || bestFlights.length === 0 || !tripPreferences?.start_date || !tripPreferences?.end_date) {
       return;
@@ -2733,23 +2734,21 @@ const ChatWindow = ({
       return null;
     }
 
-    // Parse arrival time/date
-    const parsedDate = new Date(arrivalTime);
-    
-    if (isNaN(parsedDate.getTime())) {
-      // Try to extract date from string format like "2024-03-05 14:30"
-      const dateMatch = String(arrivalTime).match(/(\d{4}-\d{2}-\d{2})/);
-      if (dateMatch) {
-        return new Date(dateMatch[1]);
-      }
-      return null;
+    // Prefer extracting a YYYY-MM-DD date string to avoid timezone shifts
+    const dateMatch = String(arrivalTime).match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (dateMatch) {
+      const year = Number(dateMatch[1]);
+      const month = Number(dateMatch[2]) - 1;
+      const day = Number(dateMatch[3]);
+      return new Date(year, month, day);
     }
 
-    // Extract just the date part (YYYY-MM-DD) to avoid timezone issues
-    const year = parsedDate.getFullYear();
-    const month = parsedDate.getMonth();
-    const day = parsedDate.getDate();
-    return new Date(year, month, day);
+    // Fallback to Date parsing if no date string is present
+    const parsedDate = new Date(arrivalTime);
+    if (isNaN(parsedDate.getTime())) {
+      return null;
+    }
+    return new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate());
   };
 
   // Derived helpers for dates / num_days validation and UX
