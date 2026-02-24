@@ -58,8 +58,10 @@ const ActivitySwipeCard = ({
       } else if (dragOffset.y < -SWIPE_THRESHOLD) {
         onSwipe("up");
       }
-      setDragOffset({ x: 0, y: 0 });
-    } else if (!isDragging) {
+      if (dragOffset.x !== 0 || dragOffset.y !== 0) {
+        setDragOffset({ x: 0, y: 0 });
+      }
+    } else if (!isDragging && (dragOffset.x !== 0 || dragOffset.y !== 0)) {
       setDragOffset({ x: 0, y: 0 });
     }
   }, [isDragging, dragOffset, onSwipe]);
