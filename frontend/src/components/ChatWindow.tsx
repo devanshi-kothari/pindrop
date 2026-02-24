@@ -6130,12 +6130,7 @@ const ChatWindow = ({
               hotelSegments.push({ city, cityIndex: index, isReturn: false });
             });
             
-            // Check if we need a hotel for the return destination
-            const returnFlightDestination = getArrivalLocation();
-            const lastCity = orderedCities[orderedCities.length - 1];
-            if (returnFlightDestination && lastCity.toLowerCase() !== returnFlightDestination.toLowerCase()) {
-              hotelSegments.push({ city: returnFlightDestination, cityIndex: -1, isReturn: true });
-            }
+            // Only include hotels for listed cities
             
             const currentSegment = hotelSegments[currentHotelCityIndex];
             const totalSegments = hotelSegments.length;
