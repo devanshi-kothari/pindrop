@@ -866,7 +866,7 @@ When you recommend activities, also explain briefly why they fit these preferenc
 // Returns the 3 closest airports to the given location
 router.post('/airport-code', authenticateToken, async (req, res) => {
   try {
-    const { location } = req.body;
+    const { location, scope } = req.body;
     const userId = req.user.userId;
 
     if (!location) {
@@ -876,7 +876,14 @@ router.post('/airport-code', authenticateToken, async (req, res) => {
       });
     }
 
-    const prompt = `Given the location "${location}", provide the 3 closest airports sorted by distance (closest first).
+    const isRegional = scope === 'regional';
+    const prompt = isRegional
+      ? `Given the location "${location}", provide up to 3 major airports in the surrounding metro area (nearby cities are OK), sorted by distance (closest first).
+If there are fewer than 3 airports, return as many as you can find (minimum 1).`
+      : `Given the location "${location}", provide up to 3 airports that are located in that exact city (not nearby cities), sorted by distance (closest first).
+If there are fewer than 3 airports in that city, return only those in the city (do NOT include nearby cities).` +
+        ` If you cannot find any airport in that city, return an empty airports array.`;
+    const fullPrompt = `${prompt}
 For each airport, provide the 3-letter IATA airport code in uppercase, the full airport name, and the approximate distance in miles.
 Return ONLY valid JSON in this exact format (no markdown, no explanation):
 {
@@ -886,7 +893,7 @@ Return ONLY valid JSON in this exact format (no markdown, no explanation):
     {"code": "EWR", "name": "Newark Liberty International Airport", "distance_miles": 18}
   ]
 }
-If you cannot find 3 airports, return as many as you can find (minimum 1). Only include valid 3-letter IATA codes.`;
+Only include valid 3-letter IATA codes.`;
 
     const completion = await openaiClient.chat.completions.create({
       model: DEFAULT_MODEL,
@@ -897,7 +904,7 @@ If you cannot find 3 airports, return as many as you can find (minimum 1). Only 
         },
         {
           role: 'user',
-          content: prompt,
+          content: fullPrompt,
         },
       ],
       temperature: 0.2,
@@ -912,9 +919,9 @@ If you cannot find 3 airports, return as many as you can find (minimum 1). Only 
       // Parse JSON response
       const parsed = JSON.parse(response);
 
-      if (parsed.airports && Array.isArray(parsed.airports)) {
+    if (parsed.airports && Array.isArray(parsed.airports)) {
         // Extract valid airport codes (3-letter uppercase)
-        airports = parsed.airports
+      airports = parsed.airports
           .filter(airport => airport && airport.code && /^[A-Z]{3}$/.test(airport.code))
           .slice(0, 3) // Ensure max 3 airports
           .map(airport => ({
@@ -936,6 +943,17 @@ If you cannot find 3 airports, return as many as you can find (minimum 1). Only 
         name: '',
         distance_miles: null
       }));
+    }
+
+    // If we have a city token, filter to airports whose names include it
+    const cityToken = typeof location === 'string' ? location.split(',')[0]?.trim() : '';
+    if (!isRegional && cityToken) {
+      const filtered = airports.filter(a =>
+        typeof a.name === 'string' && a.name.toLowerCase().includes(cityToken.toLowerCase())
+      );
+      if (filtered.length > 0) {
+        airports = filtered;
+      }
     }
 
     // Ensure we have at least one airport

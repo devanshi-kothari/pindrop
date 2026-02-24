@@ -135,6 +135,7 @@ const ChatWindow = ({
   const [arrivalAirportCodes, setArrivalAirportCodes] = useState<string[]>([]); // All arrival airport codes
   const [selectedArrivalAirportCodes, setSelectedArrivalAirportCodes] = useState<string[]>([]); // User-selected arrival airport codes
   const [arrivalAirports, setArrivalAirports] = useState<Array<{code: string; name: string; distance_miles: number | null}>>([]); // Full arrival airport details
+  const [includeNearbyArrivalAirports, setIncludeNearbyArrivalAirports] = useState(false);
   const [isFetchingDepartureCode, setIsFetchingDepartureCode] = useState(false);
   const [isFetchingArrivalCode, setIsFetchingArrivalCode] = useState(false);
   const [bestFlights, setBestFlights] = useState<any[]>([]);
@@ -2154,7 +2155,11 @@ const ChatWindow = ({
 
   // Query LLM to get airport codes for a location (silent - doesn't save to chat history)
   // Returns the primary airport code (closest) for backward compatibility
-  const getAirportCode = async (location: string, isDeparture: boolean): Promise<string | null> => {
+  const getAirportCode = async (
+    location: string,
+    isDeparture: boolean,
+    scope: "regional" | "city" = "regional"
+  ): Promise<string | null> => {
     try {
       const token = getAuthToken();
       if (!token) return null;
@@ -2167,6 +2172,7 @@ const ChatWindow = ({
         },
         body: JSON.stringify({
           location: location,
+          scope,
         }),
       });
 
@@ -4219,7 +4225,7 @@ const ChatWindow = ({
                       disabled={!departureLocation.trim() || isFetchingDepartureCode || !!departureId}
                       onClick={async () => {
                         setIsFetchingDepartureCode(true);
-                        const code = await getAirportCode(departureLocation.trim(), true);
+                        const code = await getAirportCode(departureLocation.trim(), true, "regional");
                         if (code) {
                           setDepartureId(code);
                         } else {
@@ -4304,6 +4310,15 @@ const ChatWindow = ({
                       <>
                         {arrivalLocation ? (
                           <>
+                            <div className="flex items-center justify-between rounded border border-blue-100 bg-blue-50/60 px-2 py-1">
+                              <span className="text-[11px] text-slate-600">
+                                Include nearby airports
+                              </span>
+                              <Switch
+                                checked={includeNearbyArrivalAirports}
+                                onCheckedChange={(val) => setIncludeNearbyArrivalAirports(val)}
+                              />
+                            </div>
                             <div className="flex gap-2">
                               <Input
                                 type="text"
@@ -4317,7 +4332,11 @@ const ChatWindow = ({
                                 disabled={isFetchingArrivalCode || !!arrivalId}
                                 onClick={async () => {
                                   setIsFetchingArrivalCode(true);
-                                  const code = await getAirportCode(arrivalLocation, false);
+                                  const code = await getAirportCode(
+                                    arrivalLocation,
+                                    false,
+                                    includeNearbyArrivalAirports ? "regional" : "city"
+                                  );
                                   if (code) {
                                     setArrivalId(code);
                                   } else {
