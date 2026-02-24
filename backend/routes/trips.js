@@ -2242,11 +2242,61 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
     }
 
     if (activityCandidates.length === 0) {
-      return res.status(200).json({
-        success: true,
-        activities: [],
-        message: 'No activities were found from search.',
-      });
+      // Fallback: use cached activities by city match
+      console.log('[activities] No activities found from search, trying cached activities by city.');
+      const seasonalContext = (() => {
+        if (!tripPreferences?.start_date) return '';
+        const d = new Date(tripPreferences.start_date);
+        if (Number.isNaN(d.getTime())) return '';
+        const month = d.getMonth() + 1;
+        if (month >= 12 || month <= 2) return 'winter';
+        if (month >= 3 && month <= 5) return 'spring';
+        if (month >= 6 && month <= 8) return 'summer';
+        return 'fall';
+      })();
+      const seasonalKeywords = seasonalContext === 'winter'
+        ? ['winter', 'christmas', 'holiday', 'snow', 'festive', 'markets', 'indoor', 'cozy']
+        : seasonalContext === 'spring'
+        ? ['spring', 'flowers', 'bloom', 'festival', 'outdoor']
+        : seasonalContext === 'summer'
+        ? ['summer', 'beach', 'outdoor', 'sunset', 'festival', 'night']
+        : seasonalContext === 'fall'
+        ? ['fall', 'autumn', 'harvest', 'foliage', 'festival', 'outdoor']
+        : [];
+
+      const fallbackCities = cities.length > 0 ? cities : [(trip.destination || '').trim()].filter(Boolean);
+      const cachedCandidates = [];
+      for (const city of fallbackCities) {
+        const { data: cachedActs, error: cachedError } = await supabase
+          .from('activity')
+          .select('activity_id, name, location, city, address, category, duration, cost_estimate, rating, tags, image_url, description, source_url')
+          .or(`city.ilike.%${city}%,location.ilike.%${city}%`);
+
+        if (cachedError) {
+          console.error('[activities] Error fetching cached activities for city:', city, cachedError);
+          continue;
+        }
+        if (!cachedActs || cachedActs.length === 0) continue;
+
+        const scored = cachedActs.map((a) => {
+          const haystack = `${a.name || ''} ${a.description || ''} ${(a.tags || []).join(' ')} ${(a.category || '')}`.toLowerCase();
+          const seasonScore = seasonalKeywords.reduce((acc, kw) => acc + (haystack.includes(kw) ? 1 : 0), 0);
+          return { ...a, city: a.city || city, _seasonScore: seasonScore };
+        });
+        const seasonalFirst = scored.sort((a, b) => b._seasonScore - a._seasonScore);
+        cachedCandidates.push(...seasonalFirst);
+      }
+
+      if (cachedCandidates.length === 0) {
+        return res.status(200).json({
+          success: true,
+          activities: [],
+          message: 'No activities were found from search or cache.',
+        });
+      }
+
+      console.log(`[activities] Using ${cachedCandidates.length} cached activities (season: ${seasonalContext || 'n/a'})`);
+      activityCandidates.push(...cachedCandidates);
     }
 
     console.log(`[activities] Collected ${activityCandidates.length} unique activity candidates`);
