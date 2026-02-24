@@ -2977,7 +2977,73 @@ Rules:
       parsed = match ? JSON.parse(match[0]) : [];
     }
 
-    const list = Array.isArray(parsed) ? parsed : (parsed?.restaurants ? parsed.restaurants : []);
+    let list = Array.isArray(parsed) ? parsed : (parsed?.restaurants ? parsed.restaurants : []);
+
+    if (list.length === 0) {
+      console.log('[restaurants] No LLM restaurants returned, falling back to cached restaurants.');
+      let cached = [];
+      if (selectedCities.length > 0) {
+        for (const city of selectedCities) {
+          const { data: cityRest, error: cityErr } = await supabase
+            .from('restaurant')
+            .select('*')
+            .ilike('location', `%${city}%`)
+            .limit(10);
+          if (!cityErr && cityRest && cityRest.length > 0) {
+            cached = [...cached, ...cityRest];
+          }
+        }
+      }
+      if (cached.length === 0 && destinationName) {
+        const { data: destRest, error: destErr } = await supabase
+          .from('restaurant')
+          .select('*')
+          .ilike('location', `%${destinationName}%`)
+          .limit(10);
+        if (!destErr && destRest && destRest.length > 0) {
+          cached = destRest;
+        }
+      }
+      if (cached.length > 0) {
+        const deduped = new Map(cached.map((r) => [r.restaurant_id, r]));
+        const cachedSuggestions = Array.from(deduped.values()).slice(0, 5);
+        const suggestions = [];
+        for (const rest of cachedSuggestions) {
+          const { data: existingPref } = await supabase
+            .from('trip_restaurant_preference')
+            .select('*')
+            .eq('trip_id', tripId)
+            .eq('restaurant_id', rest.restaurant_id)
+            .maybeSingle();
+
+          if (!existingPref) {
+            await supabase
+              .from('trip_restaurant_preference')
+              .insert({ trip_id: tripId, restaurant_id: rest.restaurant_id, preference: 'pending' });
+          }
+
+          const { data: prefRow } = await supabase
+            .from('trip_restaurant_preference')
+            .select('*')
+            .eq('trip_id', tripId)
+            .eq('restaurant_id', rest.restaurant_id)
+            .maybeSingle();
+
+          suggestions.push({
+            ...rest,
+            trip_restaurant_preference_id: prefRow?.trip_restaurant_preference_id,
+            preference: prefRow?.preference || 'pending',
+          });
+        }
+
+        return res.status(200).json({
+          success: true,
+          restaurants: suggestions,
+          message: 'Loaded cached restaurants.',
+        });
+      }
+    }
+
     const toInsert = list.slice(0, 5);
 
     const suggestions = [];
