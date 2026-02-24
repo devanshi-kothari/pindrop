@@ -8,6 +8,25 @@ import { saveMessage, extractTripInfo, fetchDestinationImage } from './chat.js';
 
 const router = express.Router();
 
+async function fetchCachedDestinationImage(destination) {
+  if (!destination) return null;
+  const { data, error } = await supabase
+    .from('trip')
+    .select('image_url, destination')
+    .ilike('destination', `%${destination}%`)
+    .not('image_url', 'is', null)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Error fetching cached destination image:', error);
+    return null;
+  }
+
+  return data?.image_url || null;
+}
+
 // Initialize OpenAI client for itinerary generation
 const openaiClient = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -1328,6 +1347,9 @@ router.post('/', authenticateToken, async (req, res) => {
         console.error('Error fetching destination image (trips):', imageError);
       }
     }
+    if (!finalImageUrl && finalDestination) {
+      finalImageUrl = await fetchCachedDestinationImage(finalDestination);
+    }
 
     let generatedTitle = null;
     if (!title && raw_title_message && typeof raw_title_message === 'string') {
@@ -1433,6 +1455,12 @@ router.put('/:tripId', authenticateToken, async (req, res) => {
           }
         } catch (err) {
           console.error('Error fetching destination image on trip update:', err);
+        }
+        if (!updateData.image_url) {
+          const cachedImage = await fetchCachedDestinationImage(finalDestination);
+          if (cachedImage) {
+            updateData.image_url = cachedImage;
+          }
         }
       }
     }
