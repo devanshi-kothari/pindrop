@@ -1671,6 +1671,11 @@ const ChatWindow = ({
       // Save flights to database for all airports
       const allFlightsToSave = allFlights;
       const isCacheResponse = results.some((result) => result.source === "cache");
+      if (isCacheResponse) {
+        setSelectedOutboundIndex(null);
+        setSelectedReturnIndex(null);
+        setReturnFlights([]);
+      }
       if (allFlightsToSave.length > 0 && !isCacheResponse) {
         try {
           console.log(`Saving ${allFlightsToSave.length} outbound flights to database...`);
@@ -2594,52 +2599,13 @@ const ChatWindow = ({
             setBestFlights(flightsResult.outbound_flights);
             setOutboundFlightIds(flightsResult.outbound_flight_ids || {});
 
-            // Restore selected outbound flight
-            if (flightsResult.selected_outbound_index !== null && flightsResult.selected_outbound_index !== undefined) {
-              setSelectedOutboundIndex(flightsResult.selected_outbound_index);
-              const selectedOutbound = flightsResult.outbound_flights[flightsResult.selected_outbound_index];
-              console.log("Restored selected outbound flight:", selectedOutbound);
-              console.log("Departure token in restored flight:", selectedOutbound?.departure_token);
-              console.log("Button should be enabled:", !!selectedOutbound?.departure_token && returnFlights.length === 0);
-            }
+          // Do not auto-select flights when restoring cached results
+          setSelectedOutboundIndex(null);
 
             // If there's a selected outbound flight, load its return flights ONLY if a return flight was actually selected
             // Otherwise, clear return flights so the "Choose return flight" button is visible
-            if (flightsResult.selected_outbound_index !== null && flightsResult.selected_outbound_index !== undefined) {
-              const selectedOutbound = flightsResult.outbound_flights[flightsResult.selected_outbound_index];
-              if (selectedOutbound?.departure_token) {
-                // Only restore return flights if a return flight was actually selected
-                // This ensures the "Choose return flight" button is visible if user wants to select/change return flights
-                if (flightsResult.selected_return_index !== null && flightsResult.selected_return_index !== undefined) {
-                  const returnFlightsForDeparture = flightsResult.return_flights || [];
-                  if (returnFlightsForDeparture.length > 0) {
-                    console.log("Restoring return flights from database:", returnFlightsForDeparture.length, "flights");
-                    setReturnFlights(returnFlightsForDeparture);
-                    setReturnFlightIds(flightsResult.return_flight_ids || {});
-                    setSelectedReturnIndex(flightsResult.selected_return_index);
-                  } else {
-                    // Return flight was selected but data not found - clear state
-                    console.log("Return flight was selected but data not found in database");
-                    setReturnFlights([]);
-                    setSelectedReturnIndex(null);
-                  }
-                } else {
-                  // No return flight selected - clear return flights so button is visible
-                  console.log("No return flight selected - clearing return flights to show button");
-                  setReturnFlights([]);
-                  setSelectedReturnIndex(null);
-                }
-              } else {
-                console.warn("Selected outbound flight does not have departure_token:", selectedOutbound);
-                // Clear return flights if departure_token is missing
-                setReturnFlights([]);
-                setSelectedReturnIndex(null);
-              }
-            } else {
-              // No outbound flight selected - clear return flights
-              setReturnFlights([]);
-              setSelectedReturnIndex(null);
-            }
+          setReturnFlights([]);
+          setSelectedReturnIndex(null);
 
             // If flights exist, user has confirmed trip sketch and started flights phase
             setHasConfirmedTripSketch(true);
@@ -4630,7 +4596,7 @@ const ChatWindow = ({
                         <Button
                           size="sm"
                           className="h-8 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                          disabled={isFetchingReturnDepartureCode || !!returnDepartureId}
+                        disabled={isFetchingReturnDepartureCode}
                           onClick={async () => {
                             const returnLocation = getReturnDepartureLocation();
                             if (!returnLocation) return;
@@ -4657,11 +4623,7 @@ const ChatWindow = ({
                             setIsFetchingReturnDepartureCode(false);
                           }}
                         >
-                          {isFetchingReturnDepartureCode
-                            ? "Finding..."
-                            : returnDepartureId
-                            ? returnDepartureId
-                            : "Find airport code"}
+                        {isFetchingReturnDepartureCode ? "Finding..." : "Find airport code"}
                         </Button>
                       </div>
                       {returnDepartureId && (
@@ -5664,12 +5626,7 @@ const ChatWindow = ({
               segments.push({ from: orderedCities[i], to: orderedCities[i + 1], isReturn: false });
             }
             
-            // Check if last city matches return flight destination
-            const returnFlightDestination = getArrivalLocation(); // This gets the original destination from round trip
-            const lastCity = orderedCities[orderedCities.length - 1];
-            if (returnFlightDestination && lastCity.toLowerCase() !== returnFlightDestination.toLowerCase()) {
-              segments.push({ from: lastCity, to: returnFlightDestination, isReturn: true });
-            }
+            // Only include inter-city legs between listed cities
             
             const currentSegment = segments[currentInterCitySegment];
             const totalSegments = segments.length;
