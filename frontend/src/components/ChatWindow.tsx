@@ -2072,7 +2072,7 @@ const ChatWindow = ({
       console.log(`Hotels API result for city ${cityIndex}:`, result);
 
       if (response.ok && result.success && Array.isArray(result.properties)) {
-        const hotelsToSet = result.properties;
+        const hotelsToSet = result.properties.slice(0, 5);
         setHotelsByCity(prev => ({ ...prev, [cityIndex]: hotelsToSet }));
 
         // Save hotels to database
@@ -2193,7 +2193,7 @@ const ChatWindow = ({
       console.log("Hotels API result:", result);
 
       if (response.ok && result.success && Array.isArray(result.properties)) {
-        const hotelsToSet = result.properties;
+        const hotelsToSet = result.properties.slice(0, 5);
         setHotels(hotelsToSet);
 
         // Save hotels to database - save ALL hotels returned from API
