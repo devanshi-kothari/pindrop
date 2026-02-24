@@ -471,21 +471,24 @@ USER CONTEXT:
 - Group type: ${preferences?.group_type || 'not specified'}
 - Travel style: ${userProfile?.travel_style || 'not specified'}
 - Liked tags: ${Array.isArray(userProfile?.liked_tags) && userProfile.liked_tags.length > 0 ? userProfile.liked_tags.join(', ') : 'none'}
+- Budget preference (total trip, per person): ${preferences?.min_budget || preferences?.max_budget ? `min ${preferences?.min_budget ?? 'n/a'}, max ${preferences?.max_budget ?? 'n/a'}` : userProfile?.budget_preference ?? 'not specified'}
 
 INSTRUCTIONS:
 1. Extract ANY activity name from the search result that could be at "${destination}".
 2. If it's a list article, extract the FIRST activity mentioned in the snippet or title.
 3. If the title looks like an activity name, use it (even if it's not perfect).
 4. **When season or dates are specified, strongly prefer activities, events, or experiences that are especially relevant to that time of year** (for example, winter villages, holiday markets, seasonal light shows, cherry blossom festivals, summer-only rooftop events).
-5. Be very lenient - it's better to extract something than return "SKIP".
-6. Keep it 2-10 words.
-7. Only return "SKIP" if the search result is completely unrelated to activities or travel.
+5. If a budget preference is provided, note it is the total trip budget (per person), so lean toward activities that collectively fit that budget (e.g., lower-cost/free options for tighter budgets).
+6. Be very lenient - it's better to extract something than return "SKIP".
+7. Keep it 2-10 words.
+8. Only return "SKIP" if the search result is completely unrelated to activities or travel.
 
 Examples of good extractions:
 - "10 Best Things to Do in Paris" → "Eiffel Tower" or "Visit the Eiffel Tower"
 - "Paris Museums Guide" → "Louvre Museum" or "Explore Paris Museums"
 - "Things to Do in Paris in December" → "Christmas market at Champs-Élysées" or another clearly seasonal December activity
 - "Winter in New York City: What to Do" → "Bryant Park Winter Village" or "Rockefeller Center Christmas Tree"
+- "Best Things to Do in Rome (on a budget)" → "Free walking tour of Rome" or "Trevi Fountain visit"
 
 Return ONLY the activity name or "SKIP", nothing else. No quotes, no explanations.`;
 
