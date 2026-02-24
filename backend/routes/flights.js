@@ -263,8 +263,14 @@ router.post('/save-outbound', authenticateToken, async (req, res) => {
         flights: knownFields.flights || null,
         layovers: knownFields.layovers || null,
         additional_data: Object.keys(additionalData).length > 0 ? additionalData : {},
-        departure_id: clampText(searchParamsObj.departure_id, 100) || null,
-        arrival_id: clampText(searchParamsObj.arrival_id, 100) || null,
+        departure_id: clampText(
+          flightOption.departure_airport_code || searchParamsObj.departure_id,
+          100
+        ) || null,
+        arrival_id: clampText(
+          flightOption.arrival_airport_code || searchParamsObj.arrival_id,
+          100
+        ) || null,
         outbound_date: searchParamsObj.outbound_date ? new Date(searchParamsObj.outbound_date).toISOString().split('T')[0] : null,
         return_date: searchParamsObj.return_date ? new Date(searchParamsObj.return_date).toISOString().split('T')[0] : null,
         currency: clampText(searchParamsObj.currency || 'USD', 10),
@@ -435,8 +441,14 @@ router.post('/save-return', authenticateToken, async (req, res) => {
         flights: flightOption.flights || null,
         layovers: flightOption.layovers || null,
         additional_data: flightOption.additional_data || {},
-        departure_id: clampText(searchParamsObj.arrival_id, 100) || null, // Return flight departs from arrival location
-        arrival_id: clampText(searchParamsObj.departure_id, 100) || null, // Return flight arrives at departure location
+        departure_id: clampText(
+          flightOption.departure_airport_code || searchParamsObj.arrival_id,
+          100
+        ) || null, // Return flight departs from arrival location
+        arrival_id: clampText(
+          flightOption.arrival_airport_code || searchParamsObj.departure_id,
+          100
+        ) || null, // Return flight arrives at departure location
         outbound_date: searchParamsObj.outbound_date ? new Date(searchParamsObj.outbound_date).toISOString().split('T')[0] : null,
         return_date: searchParamsObj.return_date ? new Date(searchParamsObj.return_date).toISOString().split('T')[0] : null,
         currency: clampText(searchParamsObj.currency || 'USD', 10),
