@@ -2866,9 +2866,61 @@ const ChatWindow = ({
             setHotels(hotelsResult.hotels);
             setHotelIds(hotelsResult.hotel_ids || {});
 
-            // Restore selected hotel
+            // Group hotels by city (search_location) for multi-city display
+            if (orderedCities.length > 1) {
+              const groupedHotels: Record<number, any[]> = {};
+              const groupedHotelIds: Record<number, Record<number, number>> = {};
+
+              hotelsResult.hotels.forEach((hotel: any, index: number) => {
+                const searchLocation = (hotel.search_location || "").toLowerCase();
+                const cityIndex = orderedCities.findIndex(
+                  (city) => city.toLowerCase() === searchLocation
+                );
+                const safeCityIndex = Math.max(0, cityIndex);
+                if (!groupedHotels[safeCityIndex]) groupedHotels[safeCityIndex] = [];
+                if (!groupedHotelIds[safeCityIndex]) groupedHotelIds[safeCityIndex] = {};
+                groupedHotelIds[safeCityIndex][groupedHotels[safeCityIndex].length] =
+                  hotelsResult.hotel_ids?.[index] ?? hotel.hotel_id;
+                groupedHotels[safeCityIndex].push(hotel);
+              });
+
+              setHotelsByCity(groupedHotels);
+              setHotelIdsByCity(groupedHotelIds);
+            }
+
+            // Restore selected hotel (single-city)
             if (hotelsResult.selected_hotel_index !== null && hotelsResult.selected_hotel_index !== undefined) {
               setSelectedHotelIndex(hotelsResult.selected_hotel_index);
+            }
+
+            // Restore selected hotels (multi-city)
+            if (orderedCities.length > 1 && Array.isArray(hotelsResult.selected_hotel_indices)) {
+              const selectedByCity: Record<number, number | null> = {};
+              const groupedHotelsLocal: Record<number, any[]> = {};
+
+              hotelsResult.hotels.forEach((hotel: any) => {
+                const searchLocation = (hotel.search_location || "").toLowerCase();
+                const cityIndex = orderedCities.findIndex(
+                  (city) => city.toLowerCase() === searchLocation
+                );
+                const safeCityIndex = Math.max(0, cityIndex);
+                if (!groupedHotelsLocal[safeCityIndex]) groupedHotelsLocal[safeCityIndex] = [];
+                groupedHotelsLocal[safeCityIndex].push(hotel);
+              });
+
+              hotelsResult.selected_hotel_indices.forEach((selectedIndex: number) => {
+                const selectedHotel = hotelsResult.hotels[selectedIndex];
+                const searchLocation = (selectedHotel?.search_location || "").toLowerCase();
+                const cityIndex = orderedCities.findIndex(
+                  (city) => city.toLowerCase() === searchLocation
+                );
+                if (cityIndex >= 0) {
+                  const group = groupedHotelsLocal[cityIndex] || [];
+                  const groupedIndex = group.findIndex((h: any) => h === selectedHotel);
+                  selectedByCity[cityIndex] = groupedIndex >= 0 ? groupedIndex : null;
+                }
+              });
+              setSelectedHotelIndexByCity(selectedByCity);
             }
 
             // If hotels exist, user has started hotels phase
@@ -3708,7 +3760,13 @@ const ChatWindow = ({
                     <TabsTrigger value="multi-city" className="text-xs" disabled={!hasConfirmedFlights}>Multi-City</TabsTrigger>
                   )}
                   <TabsTrigger value="hotels" className="text-xs" disabled={!hasConfirmedFlights || (orderedCities.length > 1 && !hasConfirmedMultiCityPlanning)}>Hotels</TabsTrigger>
-                  <TabsTrigger value="activities" className="text-xs" disabled={!hasConfirmedHotels}>Activities</TabsTrigger>
+                  <TabsTrigger
+                    value="activities"
+                    className="text-xs"
+                    disabled={!hasConfirmedHotels && !hasConfirmedActivities && !hasConfirmedRestaurants}
+                  >
+                    Activities
+                  </TabsTrigger>
                   <TabsTrigger value="restaurants" className="text-xs" disabled={!hasConfirmedActivities}>Restaurants</TabsTrigger>
                   <TabsTrigger value="summary" className="text-xs" disabled={!hasConfirmedRestaurants}>Summary</TabsTrigger>
                 </TabsList>
@@ -6613,6 +6671,41 @@ const ChatWindow = ({
                       City {currentHotelCityIndex + 1} of {totalSegments}
                     </p>
                   </div>
+                  {hasConfirmedHotels && (
+                    <div className="p-3 border border-emerald-500/30 bg-emerald-500/10 rounded-lg">
+                      <p className="text-xs font-semibold text-emerald-400 mb-2">Selected hotels</p>
+                      <div className="space-y-2">
+                        {orderedCities.length > 1
+                          ? orderedCities.map((city, index) => {
+                              const cityHotels = hotelsByCity[index] || [];
+                              const selectedIdx = selectedHotelIndexByCity[index] ?? null;
+                              const selected = selectedIdx !== null ? cityHotels[selectedIdx] : null;
+                              if (!selected) return null;
+                              return (
+                                <div key={`${city}-${index}`} className="text-[11px] text-slate-700">
+                                  <p>
+                                    {city}: <span className="font-semibold">{selected.name || "Selected hotel"}</span>
+                                  </p>
+                                  {selected.address && <p className="text-slate-500">{selected.address}</p>}
+                                </div>
+                              );
+                            })
+                          : (() => {
+                              if (selectedHotelIndex === null) return null;
+                              const selected = hotels[selectedHotelIndex];
+                              if (!selected) return null;
+                              return (
+                                <div className="text-[11px] text-slate-700">
+                                  <p>
+                                    <span className="font-semibold">{selected.name || "Selected hotel"}</span>
+                                  </p>
+                                  {selected.address && <p className="text-slate-500">{selected.address}</p>}
+                                </div>
+                              );
+                            })()}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Hotel Location and Dates Info */}
                   <div className="space-y-2">

@@ -3076,10 +3076,17 @@ Rules:
       const rating = r.rating != null ? parseFloat(r.rating) : null;
       const review_count = r.review_count != null ? parseInt(r.review_count, 10) : null;
       const tags = Array.isArray(r.tags) ? r.tags : [];
-      const source_url = r.link || r.source_url || null;
-      const reservation_url = r.reservation_url || null;
+      const source_url = r.link || r.website || r.url || r.source_url || null;
+      const reservation_url = r.reservation_url || r.reservation_link || r.book_url || null;
       const description = r.description || null;
       const hours = r.hours || null;
+      const image_url =
+        r.image_url ||
+        r.image ||
+        r.photo_url ||
+        r.thumbnail ||
+        r.thumbnail_url ||
+        null;
 
       const { data: inserted, error: insertErr } = await supabase
         .from('restaurant')
@@ -3100,6 +3107,7 @@ Rules:
           reservation_url: reservation_url || null,
           description,
           hours,
+          image_url,
         })
         .select()
         .single();
