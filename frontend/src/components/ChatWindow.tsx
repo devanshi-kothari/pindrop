@@ -2680,21 +2680,29 @@ const ChatWindow = ({
           if (flightsResult.departure_id) {
             console.log("Restoring departure airport code:", flightsResult.departure_id);
             setDepartureId(flightsResult.departure_id);
-            setHasFetchedDepartureCodes(false);
+            setHasFetchedDepartureCodes(true);
+            setDepartureAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.departure_id]));
+            setSelectedDepartureAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.departure_id]));
           }
           if (flightsResult.arrival_id) {
             console.log("Restoring arrival airport code:", flightsResult.arrival_id);
             setArrivalId(flightsResult.arrival_id);
-            setHasFetchedArrivalCodes(false);
+            setHasFetchedArrivalCodes(true);
+            setArrivalAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.arrival_id]));
+            setSelectedArrivalAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.arrival_id]));
           }
           if (flightsResult.return_arrival_id) {
             console.log("Restoring return arrival airport code:", flightsResult.return_arrival_id);
             setReturnArrivalId(flightsResult.return_arrival_id);
-            setHasFetchedReturnArrivalCodes(false);
+            setHasFetchedReturnArrivalCodes(true);
+            setReturnArrivalAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.return_arrival_id]));
+            setSelectedReturnArrivalAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.return_arrival_id]));
           }
           if (flightsResult.return_departure_id) {
             console.log("Restoring return departure airport code:", flightsResult.return_departure_id);
             setReturnDepartureId(flightsResult.return_departure_id);
+            setReturnDepartureAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.return_departure_id]));
+            setSelectedReturnDepartureAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.return_departure_id]));
           }
 
           // Restore outbound flights
@@ -2722,6 +2730,7 @@ const ChatWindow = ({
             setFlightsByAirport(flightsByAirportMap);
             setBestFlights(flightsResult.outbound_flights);
             setOutboundFlightIds(flightsResult.outbound_flight_ids || {});
+            setHasSearchedFlights(true);
 
             // Restore selected flights if they were previously chosen
             if (flightsResult.selected_outbound_index !== null && flightsResult.selected_outbound_index !== undefined) {
@@ -4512,7 +4521,56 @@ const ChatWindow = ({
                   )}
                 </div>
 
-                <div className="space-y-3 rounded border border-blue-100 bg-blue-50/40 p-2">
+                {/* Complete Round Trip Summary */}
+                {selectedOutboundIndex !== null && selectedReturnIndex !== null && (
+                  <div className="mt-2 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg">
+                    <p className="text-xs font-semibold text-emerald-400 mb-2">Complete Round Trip:</p>
+                    <div className="grid grid-cols-2 gap-4 text-xs">
+                      <div>
+                        <p className="text-slate-600 font-semibold mb-1">Outbound</p>
+                        {(() => {
+                          const outbound = bestFlights[selectedOutboundIndex];
+                          const outboundFlights = outbound?.flights || [];
+                          const first = outboundFlights[0];
+                          const last = outboundFlights[outboundFlights.length - 1];
+                          return (
+                            <>
+                              <p className="text-slate-800">{first?.departure_airport?.id} → {last?.arrival_airport?.id}</p>
+                              <p className="text-[11px] text-slate-500">${outbound?.price?.toLocaleString() || "N/A"}</p>
+                            </>
+                          );
+                        })()}
+                      </div>
+                      <div>
+                        <p className="text-slate-600 font-semibold mb-1">Return</p>
+                        {(() => {
+                          const returnFlight = returnFlights[selectedReturnIndex];
+                          const returnFlightLegs = returnFlight?.flights || [];
+                          const first = returnFlightLegs[0];
+                          const last = returnFlightLegs[returnFlightLegs.length - 1];
+                          return (
+                            <>
+                              <p className="text-slate-800">{first?.departure_airport?.id} → {last?.arrival_airport?.id}</p>
+                              <p className="text-[11px] text-slate-500">${returnFlight?.price?.toLocaleString() || "N/A"}</p>
+                            </>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                    <div className="mt-3 pt-3 border-t border-emerald-500/30">
+                      <p className="text-sm font-semibold text-emerald-400">
+                        Total: ${(
+                          (bestFlights[selectedOutboundIndex]?.price || 0) +
+                          (returnFlights[selectedReturnIndex]?.price || 0)
+                        ).toLocaleString()}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {false && !hasConfirmedFlights && (
+                  <>
+                  <div className="space-y-3 rounded border border-blue-100 bg-blue-50/40 p-2">
                   <Label className="text-slate-800 text-[11px]">Outbound flight</Label>
                   <div className="space-y-2">
                     <Label className="text-slate-800 text-[11px]">Outbound departure location (home)</Label>
@@ -4967,60 +5025,66 @@ const ChatWindow = ({
                     </div>
                   </div>
                 )}
-
-                {/* Flight Dates Summary */}
-                {tripPreferences?.start_date && tripPreferences?.end_date && (
-                  <div className="space-y-2 pt-2 border-t border-blue-200">
-                    <p className="text-xs font-semibold text-slate-600">Flight dates</p>
-                    <div className="text-[11px] text-slate-500 space-y-1">
-                      <p>Outbound date: <span className="text-slate-800">{tripPreferences.start_date}</span></p>
-                      <p>Return date: <span className="text-slate-800">{tripPreferences.end_date}</span></p>
-                      <p>Trip type: <span className="text-slate-800">Round trip (type: 1)</span></p>
-                    </div>
-                  </div>
+                </>
                 )}
 
-                {/* Search Flights Button */}
-                {departureId && arrivalId && (
-                  <div className="space-y-2 pt-2 border-t border-blue-200">
-                    {!tripPreferences?.start_date || !tripPreferences?.end_date ? (
-                      <p className="text-[11px] text-rose-400">
-                        Please set your trip dates in Phase 1 to search for flights.
-                      </p>
-                    ) : (
-                      <div className="space-y-2">
-                        <Button
-                          size="sm"
-                          className="w-full h-8 bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-xs font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400 disabled:opacity-60"
-                          disabled={isFetchingFlights}
-                          onClick={fetchFlights}
-                        >
-                          {isFetchingFlights ? "Searching for flights..." : "Search for flights"}
-                        </Button>
-                        {bestFlights.length > 0 && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="w-full h-8 text-xs border-blue-200 text-slate-700"
-                            onClick={retrySaveOutboundFlights}
-                          >
-                            Retry saving outbound flights
-                          </Button>
+                {false && !hasConfirmedFlights && (
+                  <>
+                    {/* Flight Dates Summary */}
+                    {tripPreferences?.start_date && tripPreferences?.end_date && (
+                      <div className="space-y-2 pt-2 border-t border-blue-200">
+                        <p className="text-xs font-semibold text-slate-600">Flight dates</p>
+                        <div className="text-[11px] text-slate-500 space-y-1">
+                          <p>Outbound date: <span className="text-slate-800">{tripPreferences.start_date}</span></p>
+                          <p>Return date: <span className="text-slate-800">{tripPreferences.end_date}</span></p>
+                          <p>Trip type: <span className="text-slate-800">Round trip (type: 1)</span></p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Search Flights Button */}
+                    {departureId && arrivalId && (
+                      <div className="space-y-2 pt-2 border-t border-blue-200">
+                        {!tripPreferences?.start_date || !tripPreferences?.end_date ? (
+                          <p className="text-[11px] text-rose-400">
+                            Please set your trip dates in Phase 1 to search for flights.
+                          </p>
+                        ) : (
+                          <div className="space-y-2">
+                            <Button
+                              size="sm"
+                              className="w-full h-8 bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 text-xs font-semibold hover:from-emerald-300 hover:via-sky-400 hover:to-blue-400 disabled:opacity-60"
+                              disabled={isFetchingFlights}
+                              onClick={fetchFlights}
+                            >
+                              {isFetchingFlights ? "Searching for flights..." : "Search for flights"}
+                            </Button>
+                            {bestFlights.length > 0 && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="w-full h-8 text-xs border-blue-200 text-slate-700"
+                                onClick={retrySaveOutboundFlights}
+                              >
+                                Retry saving outbound flights
+                              </Button>
+                            )}
+                          </div>
                         )}
                       </div>
                     )}
-                  </div>
+                  </>
                 )}
 
                 {/* Loading Indicator */}
-                {isFetchingFlights && (
+                {false && isFetchingFlights && (
                   <div className="space-y-2 pt-2 border-t border-blue-200">
                     <p className="text-xs text-slate-500">Searching for flights...</p>
                   </div>
                 )}
 
                 {/* Flight Results - Step 1: Select Outbound */}
-                {hasSearchedFlights && bestFlights.length > 0 && returnFlights.length === 0 && (
+                {false && hasSearchedFlights && bestFlights.length > 0 && returnFlights.length === 0 && (
                   <div className="space-y-4 pt-2 border-t border-blue-200">
                     <p className="text-xs font-semibold text-slate-600">Step 1: Select your outbound flight</p>
 
@@ -5092,7 +5156,7 @@ const ChatWindow = ({
                               const token = getAuthToken();
                               if (!token || !tripId) return;
 
-                              let flightId = outboundFlightIds[index];
+                              let flightId = outboundFlightIds[index] || flightOption.flight_id;
 
                               // If flight_id not available yet, wait a moment and check again
                               if (!flightId) {
@@ -5245,7 +5309,7 @@ const ChatWindow = ({
                               const token = getAuthToken();
                               if (!token || !tripId) return;
 
-                              let flightId = outboundFlightIds[index];
+                              let flightId = outboundFlightIds[index] || flightOption.flight_id;
 
                               // If flight_id not available yet, wait a moment and check again
                               if (!flightId) {
@@ -5504,7 +5568,7 @@ const ChatWindow = ({
                               const token = getAuthToken();
                               if (!token || !tripId) return;
 
-                              let flightId = returnFlightIds[index];
+                              let flightId = returnFlightIds[index] || flightOption.flight_id;
 
                               // If flight_id not available yet, wait a moment and check again
                               if (!flightId) {
