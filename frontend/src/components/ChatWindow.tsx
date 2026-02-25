@@ -4533,10 +4533,43 @@ const ChatWindow = ({
                           const outboundFlights = outbound?.flights || [];
                           const first = outboundFlights[0];
                           const last = outboundFlights[outboundFlights.length - 1];
+                          const layovers = outbound?.layovers || [];
+                          const formatDuration = (minutes: number) => {
+                            const hours = Math.floor(minutes / 60);
+                            const mins = minutes % 60;
+                            return `${hours}h ${mins}m`;
+                          };
                           return (
                             <>
-                              <p className="text-slate-800">{first?.departure_airport?.id} → {last?.arrival_airport?.id}</p>
-                              <p className="text-[11px] text-slate-500">${outbound?.price?.toLocaleString() || "N/A"}</p>
+                              <p className="text-slate-800">
+                                {first?.departure_airport?.id || "—"} → {last?.arrival_airport?.id || "—"}
+                              </p>
+                              <p className="text-[11px] text-slate-500">
+                                {first?.departure_airport?.time || "—"} → {last?.arrival_airport?.time || "—"}
+                              </p>
+                              <p className="text-[11px] text-slate-500">
+                                {first?.airline || "Multiple airlines"}
+                              </p>
+                              <p className="text-[11px] text-slate-500">
+                                Duration: {formatDuration(outbound?.total_duration || 0)}
+                              </p>
+                              <p className="text-[11px] text-slate-500">
+                                Stops: {layovers.length}
+                              </p>
+                              <p className="text-[11px] text-slate-500">
+                                Price: ${outbound?.price?.toLocaleString() || "N/A"}
+                              </p>
+                              {outboundFlights.length > 0 && (
+                                <div className="mt-2 space-y-1">
+                                  {outboundFlights.map((leg: any, legIdx: number) => (
+                                    <div key={legIdx} className="text-[11px] text-slate-500">
+                                      {leg?.departure_airport?.id} {leg?.departure_airport?.time} →{" "}
+                                      {leg?.arrival_airport?.id} {leg?.arrival_airport?.time}{" "}
+                                      {leg?.airline ? `• ${leg.airline}` : ""}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </>
                           );
                         })()}
@@ -4548,10 +4581,43 @@ const ChatWindow = ({
                           const returnFlightLegs = returnFlight?.flights || [];
                           const first = returnFlightLegs[0];
                           const last = returnFlightLegs[returnFlightLegs.length - 1];
+                          const layovers = returnFlight?.layovers || [];
+                          const formatDuration = (minutes: number) => {
+                            const hours = Math.floor(minutes / 60);
+                            const mins = minutes % 60;
+                            return `${hours}h ${mins}m`;
+                          };
                           return (
                             <>
-                              <p className="text-slate-800">{first?.departure_airport?.id} → {last?.arrival_airport?.id}</p>
-                              <p className="text-[11px] text-slate-500">${returnFlight?.price?.toLocaleString() || "N/A"}</p>
+                              <p className="text-slate-800">
+                                {first?.departure_airport?.id || "—"} → {last?.arrival_airport?.id || "—"}
+                              </p>
+                              <p className="text-[11px] text-slate-500">
+                                {first?.departure_airport?.time || "—"} → {last?.arrival_airport?.time || "—"}
+                              </p>
+                              <p className="text-[11px] text-slate-500">
+                                {first?.airline || "Multiple airlines"}
+                              </p>
+                              <p className="text-[11px] text-slate-500">
+                                Duration: {formatDuration(returnFlight?.total_duration || 0)}
+                              </p>
+                              <p className="text-[11px] text-slate-500">
+                                Stops: {layovers.length}
+                              </p>
+                              <p className="text-[11px] text-slate-500">
+                                Price: ${returnFlight?.price?.toLocaleString() || "N/A"}
+                              </p>
+                              {returnFlightLegs.length > 0 && (
+                                <div className="mt-2 space-y-1">
+                                  {returnFlightLegs.map((leg: any, legIdx: number) => (
+                                    <div key={legIdx} className="text-[11px] text-slate-500">
+                                      {leg?.departure_airport?.id} {leg?.departure_airport?.time} →{" "}
+                                      {leg?.arrival_airport?.id} {leg?.arrival_airport?.time}{" "}
+                                      {leg?.airline ? `• ${leg.airline}` : ""}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                             </>
                           );
                         })()}
@@ -5467,14 +5533,14 @@ const ChatWindow = ({
                 )}
 
                 {/* Loading Return Flights */}
-                {selectedOutboundIndex !== null && isFetchingReturnFlights && (
+                {false && selectedOutboundIndex !== null && isFetchingReturnFlights && (
                   <div className="space-y-2 pt-2 border-t border-blue-200">
                     <p className="text-xs text-slate-500">Loading return flight options...</p>
                   </div>
                 )}
 
                 {/* Step 2: Select Return Flight */}
-                {hasSearchedFlights && selectedOutboundIndex !== null && returnFlights.length > 0 && (
+                {false && hasSearchedFlights && selectedOutboundIndex !== null && returnFlights.length > 0 && (
                   <div className="space-y-3 pt-2 border-t border-blue-200">
                     <div className="flex items-center justify-between">
                     <p className="text-xs font-semibold text-slate-600">Step 2: Select your return flight</p>
