@@ -221,6 +221,7 @@ const ChatWindow = ({
   const [expandedBookingOptions, setExpandedBookingOptions] = useState<Record<number, boolean>>({});
   const [finalItinerary, setFinalItinerary] = useState<any | null>(null);
   const [isGeneratingFinalItinerary, setIsGeneratingFinalItinerary] = useState(false);
+  const [hasAttemptedFinalItinerary, setHasAttemptedFinalItinerary] = useState(false);
   const [destinationCarouselIndices, setDestinationCarouselIndices] = useState<Record<number, number>>(
     {}
   );
@@ -1131,6 +1132,7 @@ const ChatWindow = ({
 
       if (response.ok && result.success && result.itinerary) {
         setFinalItinerary(result.itinerary);
+        setHasAttemptedFinalItinerary(true);
       } else {
         console.error("Failed to generate final itinerary:", result.message);
         const errorMessage: Message = {
@@ -1139,6 +1141,7 @@ const ChatWindow = ({
           timestamp: formatTime(),
         };
         setMessages((prev) => [...prev, errorMessage]);
+        setHasAttemptedFinalItinerary(true);
       }
     } catch (error) {
       console.error("Error generating final itinerary:", error);
@@ -1148,10 +1151,35 @@ const ChatWindow = ({
         timestamp: formatTime(),
       };
       setMessages((prev) => [...prev, errorMessage]);
+      setHasAttemptedFinalItinerary(true);
     } finally {
       setIsGeneratingFinalItinerary(false);
     }
   };
+
+  useEffect(() => {
+    if (!tripId || activeTab !== "summary" || !hasConfirmedRestaurants) return;
+    if (finalItinerary || isGeneratingFinalItinerary || hasAttemptedFinalItinerary) return;
+
+    const ensureFinalItinerary = async () => {
+      const loaded = await loadFinalItinerary(tripId);
+      if (!loaded) {
+        await generateFinalItinerary();
+      } else {
+        setHasAttemptedFinalItinerary(true);
+      }
+    };
+
+    ensureFinalItinerary();
+  }, [
+    tripId,
+    activeTab,
+    hasConfirmedRestaurants,
+    finalItinerary,
+    isGeneratingFinalItinerary,
+    hasAttemptedFinalItinerary,
+    loadFinalItinerary,
+  ]);
 
   const updateActivityPreference = async (
     activityId: number,
