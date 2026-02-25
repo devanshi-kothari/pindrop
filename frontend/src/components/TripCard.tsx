@@ -101,7 +101,7 @@ const TripCard = ({ tripId, title, destination, imageUrl, startDate, endDate, st
           </span>
         </div>
       </CardContent>
-      {status === "draft" && (
+      {status !== "archived" && (
         <>
           <button
             type="button"
