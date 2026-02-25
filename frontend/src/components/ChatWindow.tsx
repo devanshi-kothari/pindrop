@@ -180,6 +180,8 @@ const ChatWindow = ({
   const [currentInterCitySegment, setCurrentInterCitySegment] = useState<number>(0); // Which city-to-city segment we're booking (0 = city 1->2, 1 = city 2->3, etc.)
   const [interCityFlights, setInterCityFlights] = useState<Record<number, any[]>>({}); // Flights for each inter-city segment
   const [selectedInterCityFlights, setSelectedInterCityFlights] = useState<Record<number, number | null>>({}); // Selected flight index for each segment
+  const [interCityFlightsFlat, setInterCityFlightsFlat] = useState<any[]>([]);
+  const [interCitySelectedIds, setInterCitySelectedIds] = useState<number[]>([]);
   const [interCityTransportation, setInterCityTransportation] = useState<Record<number, "flight" | "driving">>({}); // Transportation type for each segment
   const [isFetchingInterCityFlights, setIsFetchingInterCityFlights] = useState<Record<number, boolean>>({});
   const [interCityDepartureCodes, setInterCityDepartureCodes] = useState<Record<number, string[]>>({});
@@ -2818,6 +2820,7 @@ const ChatWindow = ({
                 grouped[segmentIndex].push(flight);
               });
               setInterCityFlights(grouped);
+              setInterCityFlightsFlat(flightsResult.intercity_flights);
 
               if (Array.isArray(flightsResult.intercity_selected_ids) && flightsResult.intercity_selected_ids.length > 0) {
                 const selectedMap: Record<number, number | null> = {};
@@ -2829,6 +2832,7 @@ const ChatWindow = ({
                   selectedMap[segmentIdx] = selectedIndex >= 0 ? selectedIndex : null;
                 });
                 setSelectedInterCityFlights(selectedMap);
+                setInterCitySelectedIds(flightsResult.intercity_selected_ids);
               }
             }
 
@@ -5055,33 +5059,6 @@ const ChatWindow = ({
                         </div>
                       )}
 
-                      {selectedInterCityFlights[currentInterCitySegment] !== null &&
-                        interCityFlights[currentInterCitySegment] &&
-                        interCityFlights[currentInterCitySegment].length > 0 && (
-                          <div className="mt-3 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg">
-                            <p className="text-xs font-semibold text-emerald-400 mb-2">Selected flight:</p>
-                            {(() => {
-                              const selectedIdx = selectedInterCityFlights[currentInterCitySegment] as number;
-                              const selected = interCityFlights[currentInterCitySegment][selectedIdx];
-                              const legs = selected?.flights || [];
-                              const first = legs[0];
-                              const last = legs[legs.length - 1];
-                              return (
-                                <div className="text-[11px] text-slate-700">
-                                  <p>
-                                    {first?.departure_airport?.id || "—"} → {last?.arrival_airport?.id || "—"}
-                                  </p>
-                                  <p className="text-slate-500">
-                                    {first?.departure_airport?.time || "—"} → {last?.arrival_airport?.time || "—"}
-                                  </p>
-                                  <p className="text-slate-500">
-                                    Price: ${selected?.price?.toLocaleString() || "N/A"}
-                                  </p>
-                                </div>
-                              );
-                            })()}
-                          </div>
-                        )}
                     </div>
 
                     <div className="space-y-2">
@@ -6018,6 +5995,32 @@ const ChatWindow = ({
                     Book transportation between cities
                   </Button>
                 </div>
+
+                {interCitySelectedIds.length > 0 && interCityFlightsFlat.length > 0 && (
+                  <div className="p-3 border border-emerald-500/30 bg-emerald-500/10 rounded-lg">
+                    <p className="text-xs font-semibold text-emerald-400 mb-2">Selected inter-city flights</p>
+                    <div className="space-y-2">
+                      {interCitySelectedIds.map((id) => {
+                        const flight = interCityFlightsFlat.find((f: any) => f.flight_id === id);
+                        const legs = flight?.flights || [];
+                        const first = legs[0];
+                        const last = legs[legs.length - 1];
+                        return (
+                          <div key={id} className="text-[11px] text-slate-700">
+                            <p>
+                              {first?.departure_airport?.id || flight?.departure_airport_code || "—"} →{" "}
+                              {last?.arrival_airport?.id || flight?.arrival_airport_code || "—"}
+                            </p>
+                            <p className="text-slate-500">
+                              {first?.departure_airport?.time || "—"} → {last?.arrival_airport?.time || "—"}
+                            </p>
+                            <p className="text-slate-500">Price: ${flight?.price?.toLocaleString() || "N/A"}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
