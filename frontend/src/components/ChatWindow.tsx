@@ -669,9 +669,9 @@ const ChatWindow = ({
 
   // Initialize ordered cities from tripPreferences or citySuggestions when they become available
   useEffect(() => {
-    if (hasConfirmedTripSketch && activeTab === "flights" && orderedCities.length === 0) {
+    if (hasConfirmedTripSketch && orderedCities.length === 0) {
       // Initialize from selected_cities if available, otherwise from citySuggestions
-      const citiesToUse = 
+      const citiesToUse =
         tripPreferences?.selected_cities && tripPreferences.selected_cities.length > 0
           ? tripPreferences.selected_cities
           : citySuggestions.length > 0
@@ -679,12 +679,12 @@ const ChatWindow = ({
           : tripDestination
           ? [tripDestination]
           : [];
-      
+
       if (citiesToUse.length > 0) {
         setOrderedCities([...citiesToUse]);
       }
     }
-  }, [hasConfirmedTripSketch, activeTab, tripPreferences?.selected_cities, citySuggestions, tripDestination, orderedCities.length]);
+  }, [hasConfirmedTripSketch, tripPreferences?.selected_cities, citySuggestions, tripDestination, orderedCities.length]);
 
 
   const loadActivities = useCallback(
@@ -2657,6 +2657,7 @@ const ChatWindow = ({
         const itineraryResult = await itineraryResponse.json();
         if (itineraryResponse.ok && itineraryResult.success && Array.isArray(itineraryResult.days) && itineraryResult.days.length > 0) {
           setHasConfirmedTripSketch(true);
+          setHasStartedPlanning(true);
           // Generate summary from days if needed
           if (itineraryResult.days.length > 0) {
             const summary = `Your ${itineraryResult.days.length}-day trip itinerary has been generated.`;
@@ -2722,16 +2723,29 @@ const ChatWindow = ({
             setBestFlights(flightsResult.outbound_flights);
             setOutboundFlightIds(flightsResult.outbound_flight_ids || {});
 
-          // Do not auto-select flights when restoring cached results
-          setSelectedOutboundIndex(null);
+            // Restore selected flights if they were previously chosen
+            if (flightsResult.selected_outbound_index !== null && flightsResult.selected_outbound_index !== undefined) {
+              setSelectedOutboundIndex(flightsResult.selected_outbound_index);
+            } else {
+              setSelectedOutboundIndex(null);
+            }
 
-            // If there's a selected outbound flight, load its return flights ONLY if a return flight was actually selected
-            // Otherwise, clear return flights so the "Choose return flight" button is visible
-          setReturnFlights([]);
-          setSelectedReturnIndex(null);
+            if (flightsResult.selected_return_index !== null && flightsResult.selected_return_index !== undefined) {
+              setSelectedReturnIndex(flightsResult.selected_return_index);
+              if (flightsResult.return_flights && flightsResult.return_flights.length > 0) {
+                setReturnFlights(flightsResult.return_flights);
+              }
+              if (flightsResult.return_flight_ids) {
+                setReturnFlightIds(flightsResult.return_flight_ids);
+              }
+            } else {
+              setReturnFlights([]);
+              setSelectedReturnIndex(null);
+            }
 
             // If flights exist, user has confirmed trip sketch and started flights phase
             setHasConfirmedTripSketch(true);
+            setHasStartedPlanning(true);
             if (flightsResult.selected_outbound_index !== null || flightsResult.selected_return_index !== null) {
               setHasConfirmedFlights(true);
               setHasStartedHotels(true);
@@ -2777,6 +2791,7 @@ const ChatWindow = ({
               setHasConfirmedHotels(true);
               setActiveTab("activities");
             }
+            setHasStartedPlanning(true);
           }
         }
       } catch (error) {
@@ -2808,11 +2823,8 @@ const ChatWindow = ({
   }, [planningMode, tripId, initialMessage, hasSentInitialExploreMessage, isLoadingHistory]);
 
   useEffect(() => {
-    if (didAutoResume || !hasStartedPlanning) return;
+    if (didAutoResume || !hasStartedPlanning || orderedCities.length === 0) return;
     const isMultiCity = orderedCities.length > 1;
-    if (isMultiCity && hasConfirmedHotels && !hasConfirmedMultiCityPlanning) {
-      setHasConfirmedMultiCityPlanning(true);
-    }
     let nextTab: typeof activeTab = "flights";
 
     if (hasConfirmedRestaurants) {
@@ -6279,7 +6291,7 @@ const ChatWindow = ({
             
             // Only include hotels for listed cities
             
-            const currentSegment = hotelSegments[currentHotelCityIndex];
+            const currentSegment = hotelSegments[currentHotelCityIndex] || null;
             const totalSegments = hotelSegments.length;
             const isLastSegment = currentHotelCityIndex === totalSegments - 1;
             
@@ -6292,7 +6304,7 @@ const ChatWindow = ({
               if (!checkInDate) return { checkIn: null, checkOut: null };
               
               // For return destination, use end_date as check-out
-              if (currentSegment.isReturn) {
+              if (currentSegment?.isReturn) {
                 const endDate = tripPreferences?.end_date ? new Date(tripPreferences.end_date) : null;
                 if (endDate) {
                   // Check-in is the day before end_date (or same day if it's just one night)
@@ -6307,13 +6319,13 @@ const ChatWindow = ({
               let cityCheckIn = new Date(checkInDate);
               
               // Add days from previous cities
-              for (let i = 0; i < currentSegment.cityIndex; i++) {
+              for (let i = 0; i < (currentSegment?.cityIndex || 0); i++) {
                 const days = manualCityDaysAllocation[orderedCities[i]] || 0;
                 cityCheckIn = new Date(cityCheckIn.getTime() + days * 24 * 60 * 60 * 1000);
               }
               
               // Calculate check-out (check-in + days in this city)
-              const daysInCity = manualCityDaysAllocation[currentSegment.city] || 0;
+              const daysInCity = manualCityDaysAllocation[currentSegment?.city || ""] || 0;
               const cityCheckOut = new Date(cityCheckIn);
               cityCheckOut.setDate(cityCheckOut.getDate() + daysInCity);
               
@@ -6340,7 +6352,7 @@ const ChatWindow = ({
                   {/* Hotel Location and Dates Info */}
                   <div className="space-y-2">
                     <div className="text-[11px] text-slate-500 space-y-1">
-                      <p>Location: <span className="text-slate-800">{currentSegment.city}</span></p>
+                      <p>Location: <span className="text-slate-800">{currentSegment?.city || "Unknown"}</span></p>
                       {checkIn && checkOut && (
                         <>
                           <p>Check-in: <span className="text-slate-800">{checkIn.toISOString().split('T')[0]}</span></p>
