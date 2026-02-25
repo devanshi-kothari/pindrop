@@ -569,12 +569,13 @@ router.post('/save-intercity', authenticateToken, async (req, res) => {
 
       if (flight?.flight_id) {
         savedFlightIds.push(flight.flight_id);
+        const isSelected = !!flightOption.is_selected;
         const { error: tripFlightError } = await supabase
           .from('trip_flight')
           .upsert([{
             trip_id: trip_id,
             flight_id: flight.flight_id,
-            is_selected: false
+            is_selected: isSelected
           }], {
             onConflict: 'trip_id,flight_id'
           });
@@ -853,10 +854,11 @@ router.put('/select', authenticateToken, async (req, res) => {
           // Find flights that need to be unselected:
           // 1. Flights of the same type (to ensure only one outbound OR one return is selected)
           // 2. If selecting an outbound flight, also unselect any return flights
+          // Note: intercity selections can have multiple segments, so don't unselect them
           const flightsToUnselect = flightTypes
             .filter(f => {
               // Unselect if same type and different flight
-              if (f.flight_type === flight.flight_type && f.flight_id !== flight_id) {
+              if (flight.flight_type !== 'intercity' && f.flight_type === flight.flight_type && f.flight_id !== flight_id) {
                 return true;
               }
               // If selecting outbound, also unselect any return flights
@@ -973,8 +975,10 @@ router.get('/trip/:tripId', authenticateToken, async (req, res) => {
     // Separate outbound and return flights
     const outboundFlights = [];
     const returnFlights = [];
+    const intercityFlights = [];
     const outboundFlightIdMap = {}; // Map original index to flight_id
     const returnFlightIdMap = {};
+    const intercitySelectedIds = new Set();
     let outboundIndex = 0;
     let returnIndex = 0;
     let selectedOutboundFlightId = null;
@@ -1032,6 +1036,31 @@ router.get('/trip/:tripId', authenticateToken, async (req, res) => {
           selectedReturnFlightId = tf.flight_id;
         }
         returnIndex++;
+      } else if (tf.flight && tf.flight.flight_type === 'intercity') {
+        const additionalData = tf.flight.additional_data || {};
+        const cleanedAdditionalData = { ...additionalData };
+        delete cleanedAdditionalData.price;
+        delete cleanedAdditionalData.departure_token;
+        delete cleanedAdditionalData.total_duration;
+        delete cleanedAdditionalData.flights;
+        delete cleanedAdditionalData.layovers;
+
+        const flightOption = {
+          ...cleanedAdditionalData,
+          price: tf.flight.price,
+          departure_token: tf.flight.departure_token,
+          total_duration: tf.flight.total_duration,
+          flights: tf.flight.flights,
+          layovers: tf.flight.layovers,
+          departure_airport_code: tf.flight.departure_id,
+          arrival_airport_code: tf.flight.arrival_id,
+          flight_id: tf.flight.flight_id
+        };
+
+        intercityFlights.push(flightOption);
+        if (tf.is_selected) {
+          intercitySelectedIds.add(tf.flight.flight_id);
+        }
       }
     });
 
@@ -1116,6 +1145,8 @@ router.get('/trip/:tripId', authenticateToken, async (req, res) => {
       selected_outbound_index: selectedOutboundIndex,
       selected_return_index: filteredSelectedReturnIndex !== null ? filteredSelectedReturnIndex : selectedReturnIndex,
       return_flight_mappings: returnFlightMappings,
+      intercity_flights: intercityFlights,
+      intercity_selected_ids: Array.from(intercitySelectedIds),
       departure_id: departureId, // Airport code for departure location
       arrival_id: arrivalId // Airport code for arrival location
     });

@@ -1760,6 +1760,9 @@ router.put('/:tripId/preferences', authenticateToken, async (req, res) => {
       activity_categories,
       avoid_activity_categories,
       selected_cities,
+      ordered_cities,
+      city_days,
+      has_confirmed_multi_city,
       group_type,
       safety_notes,
       accessibility_notes,
@@ -1842,6 +1845,9 @@ router.put('/:tripId/preferences', authenticateToken, async (req, res) => {
     // If the column doesn't exist, we skip it to avoid failing the entire save operation.
     // To enable this feature, run: ALTER TABLE trip_preference ADD COLUMN selected_cities TEXT[] DEFAULT '{}';
     if (selected_cities !== undefined) preferenceData.selected_cities = selected_cities;
+    if (ordered_cities !== undefined) preferenceData.ordered_cities = ordered_cities;
+    if (city_days !== undefined) preferenceData.city_days = city_days;
+    if (has_confirmed_multi_city !== undefined) preferenceData.has_confirmed_multi_city = has_confirmed_multi_city;
     if (group_type !== undefined) preferenceData.group_type = group_type;
     if (safety_notes !== undefined) preferenceData.safety_notes = safety_notes;
     if (accessibility_notes !== undefined) preferenceData.accessibility_notes = accessibility_notes;
@@ -1866,11 +1872,17 @@ router.put('/:tripId/preferences', authenticateToken, async (req, res) => {
 
     result = await savePreferences(preferenceData);
 
-    // If the save failed due to missing selected_cities column, retry without it
-    if (result.error && result.error.code === 'PGRST204' && result.error.message?.includes('selected_cities')) {
-      console.warn('selected_cities column not found in database, retrying without it. Run migration to add this column.');
-      const { selected_cities: _removed, ...prefDataWithoutCities } = preferenceData;
-      result = await savePreferences(prefDataWithoutCities, true);
+    // If the save failed due to missing columns, retry without them
+    if (result.error && result.error.code === 'PGRST204') {
+      const missingSelectedCities = result.error.message?.includes('selected_cities');
+      const missingOrderedCities = result.error.message?.includes('ordered_cities');
+      const missingCityDays = result.error.message?.includes('city_days');
+      const missingMultiCity = result.error.message?.includes('has_confirmed_multi_city');
+      if (missingSelectedCities || missingOrderedCities || missingCityDays || missingMultiCity) {
+        console.warn('One or more trip_preference columns not found, retrying without them. Run migration to add missing columns.');
+        const { selected_cities: _removedCities, ordered_cities: _removedOrdered, city_days: _removedDays, has_confirmed_multi_city: _removedMulti, ...prefDataWithoutExtras } = preferenceData;
+        result = await savePreferences(prefDataWithoutExtras, true);
+      }
     }
 
     const { data, error } = result;

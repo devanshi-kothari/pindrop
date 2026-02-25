@@ -63,6 +63,9 @@ interface TripPreferences {
   activity_categories: ActivityCategory[];
   avoid_activity_categories: ActivityCategory[];
   selected_cities: string[];
+  ordered_cities?: string[];
+  city_days?: Record<string, number>;
+  has_confirmed_multi_city?: boolean;
   group_type: string;
   safety_notes: string;
   accessibility_notes: string;
@@ -386,6 +389,9 @@ const ChatWindow = ({
       activity_categories: initialCategories,
       avoid_activity_categories: [],
       selected_cities: [],
+      ordered_cities: [],
+      city_days: {},
+      has_confirmed_multi_city: false,
       group_type: "",
       safety_notes: "",
       accessibility_notes: "",
@@ -647,6 +653,9 @@ const ChatWindow = ({
           setTripPreferences({
             ...loaded,
             selected_cities: Array.isArray(loaded?.selected_cities) ? loaded.selected_cities : [],
+            ordered_cities: Array.isArray(loaded?.ordered_cities) ? loaded.ordered_cities : [],
+            city_days: loaded?.city_days || {},
+            has_confirmed_multi_city: !!loaded?.has_confirmed_multi_city,
           });
         } else {
           // Seed with defaults from user profile if no preferences yet
@@ -672,7 +681,9 @@ const ChatWindow = ({
     if (hasConfirmedTripSketch && orderedCities.length === 0) {
       // Initialize from selected_cities if available, otherwise from citySuggestions
       const citiesToUse =
-        tripPreferences?.selected_cities && tripPreferences.selected_cities.length > 0
+        tripPreferences?.ordered_cities && tripPreferences.ordered_cities.length > 0
+          ? tripPreferences.ordered_cities
+          : tripPreferences?.selected_cities && tripPreferences.selected_cities.length > 0
           ? tripPreferences.selected_cities
           : citySuggestions.length > 0
           ? citySuggestions
@@ -684,8 +695,7 @@ const ChatWindow = ({
         setOrderedCities([...citiesToUse]);
       }
     }
-  }, [hasConfirmedTripSketch, tripPreferences?.selected_cities, citySuggestions, tripDestination, orderedCities.length]);
-
+  }, [hasConfirmedTripSketch, tripPreferences?.ordered_cities, tripPreferences?.selected_cities, citySuggestions, tripDestination, orderedCities.length]);
 
   const loadActivities = useCallback(
     async (id: number) => {
@@ -918,7 +928,7 @@ const ChatWindow = ({
     });
   };
 
-  const savePreferences = async () => {
+  const savePreferences = useCallback(async (overrides: Partial<TripPreferences> = {}) => {
     if (!tripId || !tripPreferences) return;
 
     try {
@@ -926,13 +936,14 @@ const ChatWindow = ({
       const token = getAuthToken();
       if (!token) return;
 
+      const payload = { ...tripPreferences, ...overrides };
       const response = await fetch(getApiUrl(`api/trips/${tripId}/preferences`), {
         method: "PUT",
         headers: {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(tripPreferences),
+        body: JSON.stringify(payload),
       });
 
       const result = await response.json();
@@ -947,7 +958,7 @@ const ChatWindow = ({
     } finally {
       setIsSavingPreferences(false);
     }
-  };
+  }, [tripId, tripPreferences]);
 
   const generateItinerary = async () => {
     if (!tripId) return;
@@ -1001,6 +1012,47 @@ const ChatWindow = ({
   const [useTestActivities, setUseTestActivities] = useState(false);
   const [useTestRestaurants, setUseTestRestaurants] = useState(false);
   const [didAutoResume, setDidAutoResume] = useState(false);
+
+  // Restore multi-city day allocation and completion status from preferences
+  useEffect(() => {
+    if (!tripPreferences) return;
+    const storedDays = tripPreferences.city_days || {};
+    if (Object.keys(storedDays).length > 0 && Object.keys(manualCityDaysAllocation).length === 0) {
+      setManualCityDaysAllocation(storedDays);
+    }
+
+    const hasStoredMultiCity = !!tripPreferences.has_confirmed_multi_city || Object.keys(storedDays).length > 0;
+    if (hasStoredMultiCity && orderedCities.length > 1 && hasConfirmedFlights && !hasConfirmedMultiCityPlanning) {
+      setHasConfirmedMultiCityPlanning(true);
+      setHasStartedHotels(true);
+      if (activeTab === "multi-city") {
+        setActiveTab("hotels");
+      }
+      if (!didAutoResume) {
+        setDidAutoResume(true);
+      }
+    }
+  }, [
+    tripPreferences,
+    manualCityDaysAllocation,
+    orderedCities.length,
+    hasConfirmedFlights,
+    hasConfirmedMultiCityPlanning,
+    activeTab,
+    didAutoResume,
+  ]);
+
+  // Persist ordered cities when they change during flight planning
+  useEffect(() => {
+    if (!tripId || !tripPreferences || orderedCities.length === 0) return;
+    if (
+      tripPreferences.ordered_cities &&
+      JSON.stringify(tripPreferences.ordered_cities) === JSON.stringify(orderedCities)
+    ) {
+      return;
+    }
+    savePreferences({ ordered_cities: orderedCities });
+  }, [tripId, tripPreferences, orderedCities, savePreferences]);
 
   const generateActivities = async () => {
     if (!tripId) return;
@@ -2676,7 +2728,7 @@ const ChatWindow = ({
 
         const flightsResult = await flightsResponse.json();
         if (flightsResponse.ok && flightsResult.success) {
-          // Restore airport codes if available
+            // Restore airport codes if available
           if (flightsResult.departure_id) {
             console.log("Restoring departure airport code:", flightsResult.departure_id);
             setDepartureId(flightsResult.departure_id);
@@ -2750,6 +2802,34 @@ const ChatWindow = ({
             } else {
               setReturnFlights([]);
               setSelectedReturnIndex(null);
+            }
+
+            // Restore inter-city flights and selections if available
+            if (Array.isArray(flightsResult.intercity_flights) && flightsResult.intercity_flights.length > 0) {
+              const grouped: Record<number, any[]> = {};
+              flightsResult.intercity_flights.forEach((flight: any) => {
+                const from = flight.departure_airport_code || flight.flights?.[0]?.departure_airport?.id || "";
+                const to = flight.arrival_airport_code || flight.flights?.slice(-1)?.[0]?.arrival_airport?.id || "";
+                const segmentIndex = Math.max(
+                  0,
+                  orderedCities.findIndex((city) => city.toLowerCase() === from.toLowerCase())
+                );
+                if (!grouped[segmentIndex]) grouped[segmentIndex] = [];
+                grouped[segmentIndex].push(flight);
+              });
+              setInterCityFlights(grouped);
+
+              if (Array.isArray(flightsResult.intercity_selected_ids) && flightsResult.intercity_selected_ids.length > 0) {
+                const selectedMap: Record<number, number | null> = {};
+                Object.entries(grouped).forEach(([segmentKey, flights]) => {
+                  const segmentIdx = Number(segmentKey);
+                  const selectedIndex = flights.findIndex((f: any) =>
+                    flightsResult.intercity_selected_ids.includes(f.flight_id)
+                  );
+                  selectedMap[segmentIdx] = selectedIndex >= 0 ? selectedIndex : null;
+                });
+                setSelectedInterCityFlights(selectedMap);
+              }
             }
 
             // If flights exist, user has confirmed trip sketch and started flights phase
@@ -3468,7 +3548,7 @@ const ChatWindow = ({
                     size="sm"
                     variant="outline"
                     className="border-blue-200 bg-white text-slate-900 hover:bg-blue-50"
-                    onClick={savePreferences}
+                    onClick={() => savePreferences()}
                     disabled={isSavingPreferences || !tripPreferences}
                   >
                     {isSavingPreferences ? "Saving..." : "Save preferences"}
@@ -4634,7 +4714,7 @@ const ChatWindow = ({
                   </div>
                 )}
 
-                {false && !hasConfirmedFlights && (
+                {!hasConfirmedFlights && (
                   <>
                   <div className="space-y-3 rounded border border-blue-100 bg-blue-50/40 p-2">
                   <Label className="text-slate-800 text-[11px]">Outbound flight</Label>
@@ -4974,6 +5054,34 @@ const ChatWindow = ({
                           )}
                         </div>
                       )}
+
+                      {selectedInterCityFlights[currentInterCitySegment] !== null &&
+                        interCityFlights[currentInterCitySegment] &&
+                        interCityFlights[currentInterCitySegment].length > 0 && (
+                          <div className="mt-3 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg">
+                            <p className="text-xs font-semibold text-emerald-400 mb-2">Selected flight:</p>
+                            {(() => {
+                              const selectedIdx = selectedInterCityFlights[currentInterCitySegment] as number;
+                              const selected = interCityFlights[currentInterCitySegment][selectedIdx];
+                              const legs = selected?.flights || [];
+                              const first = legs[0];
+                              const last = legs[legs.length - 1];
+                              return (
+                                <div className="text-[11px] text-slate-700">
+                                  <p>
+                                    {first?.departure_airport?.id || "—"} → {last?.arrival_airport?.id || "—"}
+                                  </p>
+                                  <p className="text-slate-500">
+                                    {first?.departure_airport?.time || "—"} → {last?.arrival_airport?.time || "—"}
+                                  </p>
+                                  <p className="text-slate-500">
+                                    Price: ${selected?.price?.toLocaleString() || "N/A"}
+                                  </p>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        )}
                     </div>
 
                     <div className="space-y-2">
@@ -5094,7 +5202,7 @@ const ChatWindow = ({
                 </>
                 )}
 
-                {false && !hasConfirmedFlights && (
+                {!hasConfirmedFlights && (
                   <>
                     {/* Flight Dates Summary */}
                     {tripPreferences?.start_date && tripPreferences?.end_date && (
@@ -5143,14 +5251,14 @@ const ChatWindow = ({
                 )}
 
                 {/* Loading Indicator */}
-                {false && isFetchingFlights && (
+                {isFetchingFlights && (
                   <div className="space-y-2 pt-2 border-t border-blue-200">
                     <p className="text-xs text-slate-500">Searching for flights...</p>
                   </div>
                 )}
 
                 {/* Flight Results - Step 1: Select Outbound */}
-                {false && hasSearchedFlights && bestFlights.length > 0 && returnFlights.length === 0 && (
+                {hasSearchedFlights && bestFlights.length > 0 && returnFlights.length === 0 && (
                   <div className="space-y-4 pt-2 border-t border-blue-200">
                     <p className="text-xs font-semibold text-slate-600">Step 1: Select your outbound flight</p>
 
@@ -5533,14 +5641,14 @@ const ChatWindow = ({
                 )}
 
                 {/* Loading Return Flights */}
-                {false && selectedOutboundIndex !== null && isFetchingReturnFlights && (
+                {selectedOutboundIndex !== null && isFetchingReturnFlights && (
                   <div className="space-y-2 pt-2 border-t border-blue-200">
                     <p className="text-xs text-slate-500">Loading return flight options...</p>
                   </div>
                 )}
 
                 {/* Step 2: Select Return Flight */}
-                {false && hasSearchedFlights && selectedOutboundIndex !== null && returnFlights.length > 0 && (
+                {hasSearchedFlights && selectedOutboundIndex !== null && returnFlights.length > 0 && (
                   <div className="space-y-3 pt-2 border-t border-blue-200">
                     <div className="flex items-center justify-between">
                     <p className="text-xs font-semibold text-slate-600">Step 2: Select your return flight</p>
@@ -6341,8 +6449,28 @@ const ChatWindow = ({
                                     ? "border-blue-500 bg-blue-500/10"
                                     : "border-blue-200 bg-white/60 hover:border-blue-200"
                                 }`}
-                                onClick={() => {
+                                onClick={async () => {
                                   setSelectedInterCityFlights(prev => ({ ...prev, [currentInterCitySegment]: index }));
+                                  const token = getAuthToken();
+                                  if (!token || !tripId) return;
+                                  const flightId = flightOption.flight_id;
+                                  if (!flightId) return;
+                                  try {
+                                    await fetch(getApiUrl("api/flights/select"), {
+                                      method: "PUT",
+                                      headers: {
+                                        Authorization: `Bearer ${token}`,
+                                        "Content-Type": "application/json",
+                                      },
+                                      body: JSON.stringify({
+                                        trip_id: tripId,
+                                        flight_id: flightId,
+                                        is_selected: true,
+                                      }),
+                                    });
+                                  } catch (error) {
+                                    console.error("Error updating inter-city flight selection:", error);
+                                  }
                                 }}
                               >
                                 <div className="space-y-1">
@@ -6391,9 +6519,13 @@ const ChatWindow = ({
                         interCityFlights[currentInterCitySegment] &&
                         interCityFlights[currentInterCitySegment].length > 0
                       }
-                      onClick={() => {
+                      onClick={async () => {
                         if (isLastSegment) {
                           // All segments done, continue to hotels
+                          await savePreferences({
+                            city_days: manualCityDaysAllocation,
+                            has_confirmed_multi_city: true,
+                          });
                           setHasConfirmedMultiCityPlanning(true);
                           setHasStartedHotels(true);
                           setActiveTab("hotels");

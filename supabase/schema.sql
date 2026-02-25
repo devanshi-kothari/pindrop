@@ -116,6 +116,12 @@ CREATE TABLE IF NOT EXISTS trip_preference (
     avoid_activity_categories TEXT[] DEFAULT '{}',
     -- Optional: if the destination is a country/region, the user can pick one or more cities to focus planning on
     selected_cities TEXT[] DEFAULT '{}',
+    -- Ordered city list for multi-city planning
+    ordered_cities TEXT[] DEFAULT '{}',
+    -- Multi-city day allocations (JSON: { [cityName]: number })
+    city_days JSONB,
+    -- Whether the multi-city step was completed
+    has_confirmed_multi_city BOOLEAN DEFAULT FALSE,
     -- Who is travelling: 'solo', 'couple', 'family', 'friends', 'girls_trip', etc.
     group_type VARCHAR(50),
     -- Safety and access notes (ex. \"safe for a group of girls\")
