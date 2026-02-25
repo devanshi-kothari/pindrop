@@ -32,7 +32,7 @@ router.get('/search', authenticateToken, async (req, res) => {
     const cachedFlightType = flightType === '0' ? 'intercity' : 'outbound';
     let cachedQuery = supabase
       .from('flight')
-      .select('price, departure_token, total_duration, flights, layovers, additional_data, departure_id, arrival_id, outbound_date, return_date, currency')
+      .select('flight_id, price, departure_token, total_duration, flights, layovers, additional_data, departure_id, arrival_id, outbound_date, return_date, currency')
       .eq('flight_type', cachedFlightType)
       .eq('departure_id', departure_id)
       .eq('arrival_id', arrival_id)
@@ -51,6 +51,7 @@ router.get('/search', authenticateToken, async (req, res) => {
     if (cachedFlights && cachedFlights.length > 0) {
       const normalizedFlights = cachedFlights.map((row) => ({
         ...(row.additional_data || {}),
+        flight_id: row.flight_id,
         price: row.price,
         departure_token: row.departure_token,
         total_duration: row.total_duration,
@@ -180,7 +181,7 @@ router.get('/return', authenticateToken, async (req, res) => {
     });
     const cachedQuery = supabase
       .from('flight')
-      .select('price, departure_token, total_duration, flights, layovers, additional_data, departure_id, arrival_id, outbound_date, return_date, currency')
+      .select('flight_id, price, departure_token, total_duration, flights, layovers, additional_data, departure_id, arrival_id, outbound_date, return_date, currency')
       .eq('flight_type', 'return')
       .eq('departure_id', departure_id)
       .eq('arrival_id', arrival_id)
@@ -195,6 +196,7 @@ router.get('/return', authenticateToken, async (req, res) => {
     if (cachedFlights && cachedFlights.length > 0) {
       const normalizedFlights = cachedFlights.map((row) => ({
         ...(row.additional_data || {}),
+        flight_id: row.flight_id,
         price: row.price,
         departure_token: row.departure_token,
         total_duration: row.total_duration,
@@ -438,6 +440,51 @@ router.post('/save-outbound', authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'An error occurred while saving outbound flights',
+      error: error.message
+    });
+  }
+});
+
+// Link cached flights to a trip without re-inserting flights
+router.post('/link-cached', authenticateToken, async (req, res) => {
+  try {
+    const { trip_id, flight_ids } = req.body || {};
+    if (!trip_id || !Array.isArray(flight_ids) || flight_ids.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required parameters: trip_id and flight_ids array'
+      });
+    }
+
+    const uniqueIds = [...new Set(flight_ids.filter((id) => Number.isFinite(id)))];
+    const rows = uniqueIds.map((flightId) => ({
+      trip_id,
+      flight_id: flightId,
+      is_selected: false
+    }));
+
+    const { error } = await supabase
+      .from('trip_flight')
+      .upsert(rows, { onConflict: 'trip_id,flight_id' });
+
+    if (error) {
+      console.error('Error linking cached flights to trip:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to link cached flights to trip',
+        error: error.message
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      linked_count: rows.length
+    });
+  } catch (error) {
+    console.error('Error linking cached flights to trip:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'An error occurred while linking cached flights',
       error: error.message
     });
   }

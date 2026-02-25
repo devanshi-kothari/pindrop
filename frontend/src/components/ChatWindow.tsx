@@ -1675,14 +1675,21 @@ const ChatWindow = ({
       // Group flights by departure airport code (keep existing UI grouping)
       const flightsByAirportMap: Record<string, any[]> = {};
       const allFlights: any[] = [];
+      const cachedFlights: any[] = [];
+      const apiFlights: any[] = [];
 
-      results.forEach(({ departureCode, flights }) => {
+      results.forEach(({ departureCode, flights, source }) => {
         if (flights.length > 0) {
           if (!flightsByAirportMap[departureCode]) {
             flightsByAirportMap[departureCode] = [];
           }
           flightsByAirportMap[departureCode].push(...flights);
           allFlights.push(...flights);
+          if (source === "cache") {
+            cachedFlights.push(...flights);
+          } else {
+            apiFlights.push(...flights);
+          }
         }
       });
 
@@ -1690,14 +1697,42 @@ const ChatWindow = ({
       setBestFlights(allFlights); // Keep for backward compatibility
 
       // Save flights to database for all airports
-      const allFlightsToSave = allFlights;
-      const isCacheResponse = results.some((result) => result.source === "cache");
+      const allFlightsToSave = apiFlights;
+      const isCacheResponse = cachedFlights.length > 0;
       if (isCacheResponse) {
         setSelectedOutboundIndex(null);
         setSelectedReturnIndex(null);
         setReturnFlights([]);
+        const cachedIds = cachedFlights.map((f) => f.flight_id).filter(Boolean);
+        if (cachedIds.length > 0) {
+          try {
+            await fetch(getApiUrl("api/flights/link-cached"), {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                trip_id: tripId,
+                flight_ids: cachedIds,
+              }),
+            });
+          } catch (error) {
+            console.error("Error linking cached outbound flights:", error);
+          }
+        }
+
+        const cachedMap: Record<number, number> = {};
+        allFlights.forEach((flight, idx) => {
+          if (flight.flight_id) {
+            cachedMap[idx] = flight.flight_id;
+          }
+        });
+        if (Object.keys(cachedMap).length > 0) {
+          setOutboundFlightIds(cachedMap);
+        }
       }
-      if (allFlightsToSave.length > 0 && !isCacheResponse) {
+      if (allFlightsToSave.length > 0) {
         try {
           console.log(`Saving ${allFlightsToSave.length} outbound flights to database...`);
           const saveResponse = await fetch(getApiUrl("api/flights/save-outbound"), {
@@ -1748,11 +1783,20 @@ const ChatWindow = ({
             // Map flight indices to flight_ids (using global index across all airports)
             const flightIdMap: Record<number, number> = {};
             saveResult.flight_ids.forEach((flightId: number, idx: number) => {
-              if (idx < allFlightsToSave.length) {
-                flightIdMap[idx] = flightId;
+              const flight = allFlightsToSave[idx];
+              if (!flight) return;
+              let globalIndex = allFlights.indexOf(flight);
+              if (globalIndex < 0 && flight.departure_token) {
+                globalIndex = allFlights.findIndex(
+                  (f: any) => f?.departure_token === flight.departure_token
+                );
               }
+              if (globalIndex < 0) {
+                globalIndex = idx;
+              }
+              flightIdMap[globalIndex] = flightId;
             });
-            setOutboundFlightIds(flightIdMap);
+            setOutboundFlightIds((prev) => ({ ...prev, ...flightIdMap }));
 
             if (saveResult.saved_count < allFlightsToSave.length) {
               console.warn(`Warning: Only ${saveResult.saved_count} out of ${allFlightsToSave.length} flights were saved successfully`);
@@ -1967,6 +2011,8 @@ const ChatWindow = ({
       );
 
       let flightsToSet: any[] = [];
+      const cachedReturnFlights: any[] = [];
+      const apiReturnFlights: any[] = [];
       const hasCachedReturnFlights = responses.some(({ result }) => result?.source === "cache");
       responses.forEach(({ response, result, departureCode, arrivalCode }) => {
         console.log("Return flights API result:", result);
@@ -1977,8 +2023,18 @@ const ChatWindow = ({
         if (response.ok && result.success) {
           if (Array.isArray(result.best_flights) && result.best_flights.length > 0) {
             flightsToSet.push(...result.best_flights);
+            if (result.source === "cache") {
+              cachedReturnFlights.push(...result.best_flights);
+            } else {
+              apiReturnFlights.push(...result.best_flights);
+            }
           } else if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
             flightsToSet.push(...result.other_flights);
+            if (result.source === "cache") {
+              cachedReturnFlights.push(...result.other_flights);
+            } else {
+              apiReturnFlights.push(...result.other_flights);
+            }
           }
         } else {
           console.error(`Return flight API error for route ${departureCode} → ${arrivalCode}:`, result);
@@ -1995,8 +2051,29 @@ const ChatWindow = ({
         }));
         setReturnFlights(flightsToSet);
 
-          // Save return flights to database
-        if (!hasCachedReturnFlights && selectedOutboundIndex !== null && bestFlights[selectedOutboundIndex]) {
+        if (cachedReturnFlights.length > 0) {
+          const cachedIds = cachedReturnFlights.map((f) => f.flight_id).filter(Boolean);
+          if (cachedIds.length > 0) {
+            try {
+              await fetch(getApiUrl("api/flights/link-cached"), {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  trip_id: tripId,
+                  flight_ids: cachedIds,
+                }),
+              });
+            } catch (error) {
+              console.error("Error linking cached return flights:", error);
+            }
+          }
+        }
+
+        // Save return flights to database (API results only)
+        if (apiReturnFlights.length > 0 && selectedOutboundIndex !== null && bestFlights[selectedOutboundIndex]) {
             try {
               const selectedOutbound = bestFlights[selectedOutboundIndex];
               const saveResponse = await fetch(getApiUrl("api/flights/save-return"), {
@@ -2009,7 +2086,7 @@ const ChatWindow = ({
                   trip_id: tripId,
                   departing_flight_id: outboundFlightIds[selectedOutboundIndex] || null,
                   departure_token: selectedOutbound.departure_token || null,
-                  flights: flightsToSet,
+                  flights: apiReturnFlights,
                   search_params: {
                     departure_id: departureCandidates[0] || null,
                     arrival_id: arrivalCandidates[0] || null,
@@ -2025,10 +2102,17 @@ const ChatWindow = ({
                 console.log("Saved return flights to database:", saveResult);
                 // Map return flight indices to flight_ids
                 const returnFlightIdMap: Record<number, number> = {};
-                saveResult.flight_ids.forEach((flightId: number, idx: number) => {
-                  if (idx < flightsToSet.length) {
-                    returnFlightIdMap[idx] = flightId;
+                let apiIdx = 0;
+                flightsToSet.forEach((flight, idx) => {
+                  if (flight.flight_id) {
+                    returnFlightIdMap[idx] = flight.flight_id;
+                    return;
                   }
+                  const nextId = saveResult.flight_ids[apiIdx];
+                  if (nextId) {
+                    returnFlightIdMap[idx] = nextId;
+                  }
+                  apiIdx += 1;
                 });
                 setReturnFlightIds(returnFlightIdMap);
               } else {
@@ -2039,6 +2123,17 @@ const ChatWindow = ({
               // Don't show error to user, just log it
             }
           }
+        if (cachedReturnFlights.length > 0 && apiReturnFlights.length === 0) {
+          const returnFlightIdMap: Record<number, number> = {};
+          flightsToSet.forEach((flight, idx) => {
+            if (flight.flight_id) {
+              returnFlightIdMap[idx] = flight.flight_id;
+            }
+          });
+          if (Object.keys(returnFlightIdMap).length > 0) {
+            setReturnFlightIds(returnFlightIdMap);
+          }
+        }
       } else {
         const errorMessage: Message = {
           role: "assistant",
