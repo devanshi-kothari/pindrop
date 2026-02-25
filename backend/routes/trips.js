@@ -2802,7 +2802,7 @@ router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res)
   try {
     const userId = req.user.userId;
     const tripId = parseInt(req.params.tripId);
-    const { testMode } = req.body || {};
+    const { testMode, selected_cities: bodySelectedCities } = req.body || {};
 
     const { data: trip, error: tripError } = await supabase
       .from('trip')
@@ -2846,9 +2846,11 @@ router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res)
     const startDate = tripPreferences?.start_date || null;
     const month = startDate ? new Date(startDate + 'T12:00:00').getMonth() : new Date().getMonth();
     const season = month >= 2 && month <= 4 ? 'spring' : month >= 5 && month <= 7 ? 'summer' : month >= 8 && month <= 10 ? 'autumn' : 'winter';
-    const selectedCities = Array.isArray(tripPreferences?.selected_cities)
-      ? tripPreferences.selected_cities.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())
-      : [];
+    const selectedCities = Array.isArray(bodySelectedCities) && bodySelectedCities.length > 0
+      ? bodySelectedCities.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())
+      : Array.isArray(tripPreferences?.selected_cities)
+        ? tripPreferences.selected_cities.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())
+        : [];
     const destinationName = (trip.destination || '').trim();
     const destinationLabel =
       selectedCities.length > 0 && destinationName

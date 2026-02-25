@@ -116,6 +116,7 @@ const ChatWindow = ({
     Record<number, boolean>
   >({});
   const [currentActivityIndex, setCurrentActivityIndex] = useState(0);
+  const [currentActivityCityIndex, setCurrentActivityCityIndex] = useState(0);
   const [hasShownTripSketchPrompt, setHasShownTripSketchPrompt] = useState(false);
   const [hasConfirmedActivities, setHasConfirmedActivities] = useState(false);
   const [hasConfirmedTripSketch, setHasConfirmedTripSketch] = useState(false);
@@ -190,6 +191,7 @@ const ChatWindow = ({
   const [interCityArrivalId, setInterCityArrivalId] = useState<Record<number, string | null>>({});
   const [hasStartedRestaurants, setHasStartedRestaurants] = useState(false);
   const [restaurants, setRestaurants] = useState<any[]>([]);
+  const [currentRestaurantCityIndex, setCurrentRestaurantCityIndex] = useState(0);
   const [isGeneratingRestaurants, setIsGeneratingRestaurants] = useState(false);
   const [isUpdatingRestaurantPreference, setIsUpdatingRestaurantPreference] = useState<
     Record<number, boolean>
@@ -814,7 +816,7 @@ const ChatWindow = ({
     loadRestaurantPreferences(tripId);
   }, [tripId, loadRestaurantPreferences]);
 
-  const generateRestaurants = async () => {
+  const generateRestaurants = async (citiesOverride?: string[]) => {
     if (!tripId) return;
 
     try {
@@ -831,6 +833,7 @@ const ChatWindow = ({
         },
         body: JSON.stringify({
           testMode: useTestRestaurants,
+          selected_cities: citiesOverride ?? tripPreferences?.selected_cities ?? [],
         }),
       });
 
@@ -1057,7 +1060,7 @@ const ChatWindow = ({
     savePreferences({ ordered_cities: orderedCities });
   }, [tripId, tripPreferences, orderedCities, savePreferences]);
 
-  const generateActivities = async () => {
+  const generateActivities = async (citiesOverride?: string[]) => {
     if (!tripId) return;
 
     try {
@@ -1079,7 +1082,7 @@ const ChatWindow = ({
         },
         body: JSON.stringify({
           testMode: useTestActivities,
-          selected_cities: tripPreferences?.selected_cities ?? [],
+          selected_cities: citiesOverride ?? tripPreferences?.selected_cities ?? [],
           city_days: manualCityDaysAllocation,
         }),
       });
@@ -1087,9 +1090,13 @@ const ChatWindow = ({
       const result = await response.json();
 
       if (response.ok && result.success && Array.isArray(result.activities)) {
-        setActivities(result.activities);
+        setActivities((prev) => {
+          const incomingIds = new Set(result.activities.map((a: any) => a.activity_id));
+          const keep = prev.filter((a) => !incomingIds.has(a.activity_id));
+          return [...keep, ...result.activities];
+        });
 
-        if (result.activities.length > 0) {
+          if (result.activities.length > 0) {
           const assistantMessage: Message = {
             role: "assistant",
             content:
@@ -3807,6 +3814,19 @@ const ChatWindow = ({
                 <p className="text-xs font-semibold text-slate-600 mb-1">
                   Phase {orderedCities.length > 1 ? '5' : '4'}: Explore activities
                 </p>
+                {orderedCities.length > 1 && (
+                  <div className="flex items-center gap-2 text-[11px] text-slate-500 mb-1">
+                    <p>
+                      City {currentActivityCityIndex + 1} of {orderedCities.length}:{" "}
+                      <span className="font-semibold text-slate-700">
+                        {orderedCities[currentActivityCityIndex] || "City"}
+                      </span>
+                    </p>
+                    <span className="px-2 py-0.5 rounded-full border border-blue-200 bg-blue-50 text-[10px] text-blue-700">
+                      0/0 remaining
+                    </span>
+                  </div>
+                )}
                 <p className="text-[11px] text-slate-600 mb-4">
                   Generating activities based on your preferences...
                 </p>
@@ -3821,31 +3841,45 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {tripId && hasStartedPlanning && hasConfirmedHotels && activities.length > 0 && activeTab === "activities" && (
+          {tripId && hasStartedPlanning && hasConfirmedHotels && activities.length > 0 && activeTab === "activities" && (() => {
+            const activityCities = orderedCities.length > 0 ? orderedCities : [];
+            const currentCity = activityCities[currentActivityCityIndex];
+            const cityActivities = currentCity
+              ? activities.filter((a) => (a.city || a.location || "").toLowerCase().includes(currentCity.toLowerCase()))
+              : activities;
+            const pendingCityActivities = cityActivities.filter((a) => a.preference === "pending");
+            const totalCityActivities = cityActivities.length;
+            const allCityAnswered = pendingCityActivities.length === 0 && totalCityActivities > 0;
+
+            return (
             <div className="flex justify-center">
               <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm">
                 <p className="text-xs font-semibold text-slate-600 mb-1">
                   Phase {orderedCities.length > 1 ? '5' : '4'}: Explore activities
                 </p>
+                {orderedCities.length > 1 && (
+                  <p className="text-[11px] text-slate-500 mb-1">
+                    City {currentActivityCityIndex + 1} of {orderedCities.length}:{" "}
+                    <span className="font-semibold text-slate-700">
+                      {orderedCities[currentActivityCityIndex] || "City"}
+                    </span>
+                  </p>
+                )}
                 <p className="text-[11px] text-slate-600 mb-4">
                   Swipe right to like, left to pass, or use the buttons below. Swipe up for maybe.
                 </p>
 
                 {/* Swipe Card Stack */}
                 <div className="relative h-[600px] w-full flex items-center justify-center">
-                  {activities
-                    .filter((a) => a.preference === "pending")
+                  {pendingCityActivities
                     .slice(0, 3)
                     .map((activity, idx) => {
-                      const actualIndex = activities
-                        .filter((a) => a.preference === "pending")
-                        .indexOf(activity);
                       return (
                         <ActivitySwipeCard
                           key={activity.activity_id}
                           activity={activity as any}
                           index={idx}
-                          total={Math.min(3, activities.filter((a) => a.preference === "pending").length)}
+                          total={Math.min(3, pendingCityActivities.length)}
                           onSwipe={(direction) => {
                             if (direction === "left") {
                               updateActivityPreference(activity.activity_id, "disliked");
@@ -3883,14 +3917,16 @@ const ChatWindow = ({
                     })}
 
                   {/* Empty state when all activities are reviewed */}
-                  {activities.filter((a) => a.preference === "pending").length === 0 && (
+                  {pendingCityActivities.length === 0 && (
                     <div className="flex h-full items-center justify-center">
                       <div className="text-center">
                         <p className="text-sm font-semibold text-slate-600 mb-2">
-                          All activities reviewed! 🎉
+                          {totalCityActivities > 0 ? "All activities reviewed! 🎉" : "No activities found for this city."}
                         </p>
                         <p className="text-xs text-slate-500">
-                          You've reacted to all {activities.length} activities.
+                          {totalCityActivities > 0
+                            ? `You've reacted to all ${totalCityActivities} activities.`
+                            : "Try another city or regenerate activities."}
                         </p>
                       </div>
                     </div>
@@ -3900,31 +3936,40 @@ const ChatWindow = ({
                 {/* Progress indicator */}
                 <div className="mt-4 flex items-center justify-between">
                   <p className="text-[11px] text-slate-500">
-                    {activities.filter((a) => a.preference === "pending").length === 0
+                    {pendingCityActivities.length === 0
                       ? "All done!"
-                      : `${activities.filter((a) => a.preference === "pending").length} remaining`}
+                      : `${pendingCityActivities.length} remaining`}
                   </p>
                   <Button
                     size="sm"
                     className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                    disabled={!allActivitiesAnswered}
+                    disabled={!allCityAnswered}
                     onClick={() => {
+                      if (currentActivityCityIndex < orderedCities.length - 1) {
+                        const nextCityIndex = currentActivityCityIndex + 1;
+                        setCurrentActivityCityIndex(nextCityIndex);
+                        generateActivities([orderedCities[nextCityIndex]]);
+                        return;
+                      }
                       setHasConfirmedActivities(true);
+                      setCurrentRestaurantCityIndex(0);
                       setActiveTab("restaurants");
                     }}
                   >
-                    Done with activities
+                    {orderedCities.length > 1 && currentActivityCityIndex < orderedCities.length - 1
+                      ? "Next city →"
+                      : "Done with activities"}
                   </Button>
                 </div>
 
                 {/* Reviewed activities summary */}
-                {activities.filter((a) => a.preference !== "pending").length > 0 && (
+                {cityActivities.filter((a) => a.preference !== "pending").length > 0 && (
                   <div className="mt-4 border-t border-blue-100 pt-3">
                     <p className="text-xs font-semibold text-slate-600 mb-2">
                       Your reviewed activities
                     </p>
                     <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1">
-                      {activities
+                      {cityActivities
                         .filter((a) => a.preference !== "pending")
                         .map((a) => (
                           <div
@@ -3963,7 +4008,8 @@ const ChatWindow = ({
                 )}
               </div>
             </div>
-          )}
+            );
+          })()}
           {hasStartedPlanning && hasConfirmedActivities && activeTab === "restaurants" && restaurants.length === 0 && (
             <div className="flex justify-center">
               <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm">
@@ -4251,6 +4297,9 @@ const ChatWindow = ({
                             },
                             body: JSON.stringify({
                               testMode: useTestRestaurants,
+                              selected_cities: orderedCities.length > 0
+                                ? [orderedCities[currentRestaurantCityIndex] || orderedCities[0]]
+                                : [],
                             }),
                           });
 
@@ -4259,13 +4308,17 @@ const ChatWindow = ({
                           console.log("Generate restaurants response:", generateResult);
 
                           if (generateResponse.ok && generateResult.success) {
-                            const restaurantsArray = Array.isArray(generateResult.restaurants) 
+                          const restaurantsArray = Array.isArray(generateResult.restaurants) 
                               ? generateResult.restaurants 
                               : [];
                             
                             console.log("Setting restaurants:", restaurantsArray.length, restaurantsArray);
                             
-                            setRestaurants(restaurantsArray);
+                            setRestaurants((prev) => {
+                              const incomingIds = new Set(restaurantsArray.map((r: any) => r.restaurant_id));
+                              const keep = prev.filter((r) => !incomingIds.has(r.restaurant_id));
+                              return [...keep, ...restaurantsArray];
+                            });
                             setHasStartedRestaurants(true);
 
                             if (restaurantsArray.length > 0) {
@@ -4315,20 +4368,42 @@ const ChatWindow = ({
               </div>
             </div>
           )}
-          {hasStartedPlanning && hasConfirmedActivities && activeTab === "restaurants" && restaurants.length > 0 && (
+          {hasStartedPlanning && hasConfirmedActivities && activeTab === "restaurants" && restaurants.length > 0 && (() => {
+            const restaurantCities = orderedCities.length > 0 ? orderedCities : [];
+            const currentCity = restaurantCities[currentRestaurantCityIndex];
+            const cityRestaurants = currentCity
+              ? restaurants.filter((r) => (r.location || "").toLowerCase().includes(currentCity.toLowerCase()))
+              : restaurants;
+            const pendingCityRestaurants = cityRestaurants.filter((r) => r.preference === "pending");
+            const totalCityRestaurants = cityRestaurants.length;
+            const allCityAnswered = pendingCityRestaurants.length === 0 && totalCityRestaurants > 0;
+
+            return (
             <div className="flex justify-center">
               <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-6 shadow-sm">
                 <p className="text-xs font-semibold text-slate-600 mb-1">
                   Phase {orderedCities.length > 1 ? '6' : '5'}: Explore restaurants
                 </p>
+                {orderedCities.length > 1 && (
+                  <div className="flex items-center gap-2 text-[11px] text-slate-500 mb-1">
+                    <p>
+                      City {currentRestaurantCityIndex + 1} of {orderedCities.length}:{" "}
+                      <span className="font-semibold text-slate-700">
+                        {orderedCities[currentRestaurantCityIndex] || "City"}
+                      </span>
+                    </p>
+                    <span className="px-2 py-0.5 rounded-full border border-blue-200 bg-blue-50 text-[10px] text-blue-700">
+                      {pendingCityRestaurants.length}/{totalCityRestaurants} remaining
+                    </span>
+                  </div>
+                )}
                 <p className="text-[11px] text-slate-600 mb-4">
                   Swipe right to like, left to pass, or use the buttons below. Swipe up for maybe.
                 </p>
 
                 {/* Swipe Card Stack */}
                 <div className="relative h-[600px] w-full flex items-center justify-center">
-                  {restaurants
-                    .filter((r) => r.preference === "pending")
+                  {pendingCityRestaurants
                     .slice(0, 3)
                     .map((restaurant, idx) => {
                       return (
@@ -4336,7 +4411,7 @@ const ChatWindow = ({
                           key={restaurant.restaurant_id}
                           restaurant={restaurant as any}
                           index={idx}
-                          total={Math.min(3, restaurants.filter((r) => r.preference === "pending").length)}
+                          total={Math.min(3, pendingCityRestaurants.length)}
                           onSwipe={(direction) => {
                             if (direction === "left") {
                               updateRestaurantPreference(restaurant.restaurant_id, "disliked");
@@ -4361,14 +4436,16 @@ const ChatWindow = ({
                     })}
 
                   {/* Empty state when all restaurants are reviewed */}
-                  {restaurants.filter((r) => r.preference === "pending").length === 0 && (
+                  {pendingCityRestaurants.length === 0 && (
                     <div className="flex h-full items-center justify-center">
                       <div className="text-center">
                         <p className="text-sm font-semibold text-slate-600 mb-2">
-                          All restaurants reviewed! 🎉
+                          {totalCityRestaurants > 0 ? "All restaurants reviewed! 🎉" : "No restaurants found for this city."}
                         </p>
                         <p className="text-xs text-slate-500">
-                          You've reacted to all {restaurants.length} restaurants.
+                          {totalCityRestaurants > 0
+                            ? `You've reacted to all ${totalCityRestaurants} restaurants.`
+                            : "Try another city or regenerate restaurants."}
                         </p>
                       </div>
                     </div>
@@ -4378,32 +4455,40 @@ const ChatWindow = ({
                 {/* Progress indicator */}
                 <div className="mt-4 flex items-center justify-between">
                   <p className="text-[11px] text-slate-500">
-                    {restaurants.filter((r) => r.preference === "pending").length === 0
+                    {pendingCityRestaurants.length === 0
                       ? "All done!"
-                      : `${restaurants.filter((r) => r.preference === "pending").length} remaining`}
+                      : `${pendingCityRestaurants.length} remaining`}
                   </p>
                   <Button
                     size="sm"
                     className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
-                    disabled={restaurants.filter((r) => r.preference === "pending").length > 0}
+                    disabled={!allCityAnswered}
                     onClick={() => {
+                      if (currentRestaurantCityIndex < orderedCities.length - 1) {
+                        const nextCityIndex = currentRestaurantCityIndex + 1;
+                        setCurrentRestaurantCityIndex(nextCityIndex);
+                        generateRestaurants([orderedCities[nextCityIndex]]);
+                        return;
+                      }
                       setHasConfirmedRestaurants(true);
                       // Navigate to summary or final itinerary
                       setActiveTab("summary");
                     }}
                   >
-                    Done with restaurants
+                    {orderedCities.length > 1 && currentRestaurantCityIndex < orderedCities.length - 1
+                      ? "Next city →"
+                      : "Done with restaurants"}
                   </Button>
                 </div>
 
                 {/* Reviewed restaurants summary */}
-                {restaurants.filter((r) => r.preference !== "pending").length > 0 && (
+                {cityRestaurants.filter((r) => r.preference !== "pending").length > 0 && (
                   <div className="mt-4 border-t border-blue-100 pt-3">
                     <p className="text-xs font-semibold text-slate-600 mb-2">
                       Your reviewed restaurants
                     </p>
                     <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1">
-                      {restaurants
+                      {cityRestaurants
                         .filter((r) => r.preference !== "pending")
                         .map((r) => (
                           <div
@@ -4447,7 +4532,8 @@ const ChatWindow = ({
                 )}
               </div>
             </div>
-          )}
+            );
+          })()}
           {hasStartedPlanning && itinerarySummary && activeTab === "summary" && (
             <div className="flex justify-start">
               <div className="bg-white border border-emerald-500/60 text-slate-900 rounded-lg px-4 py-3 shadow-sm max-w-[75%]">
@@ -7048,7 +7134,7 @@ const ChatWindow = ({
                               },
                               body: JSON.stringify({
                                 testMode: useTestActivities,
-                                selected_cities: tripPreferences?.selected_cities ?? [],
+                                selected_cities: orderedCities.length > 0 ? [orderedCities[0]] : [],
                                 city_days: manualCityDaysAllocation,
                               }),
                             });
@@ -7056,7 +7142,11 @@ const ChatWindow = ({
                             const result = await response.json();
 
                             if (response.ok && result.success && Array.isArray(result.activities)) {
-                              setActivities(result.activities);
+                              setActivities((prev) => {
+                                const incomingIds = new Set(result.activities.map((a: any) => a.activity_id));
+                                const keep = prev.filter((a) => !incomingIds.has(a.activity_id));
+                                return [...keep, ...result.activities];
+                              });
 
                               if (result.activities.length > 0) {
                                 const assistantMessage: Message = {
@@ -7080,7 +7170,9 @@ const ChatWindow = ({
                             setIsGeneratingActivities(false);
                           }
                           
-                          // Navigate to activities tab
+                            // Start with the first city
+                            setCurrentActivityCityIndex(0);
+                            // Navigate to activities tab
                           setActiveTab("activities");
                         } else {
                           // Move to next city
