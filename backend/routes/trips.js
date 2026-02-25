@@ -1986,6 +1986,83 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       .eq('trip_id', tripId)
       .maybeSingle();
 
+    const determineSeasonalContext = (startDate) => {
+      if (!startDate) return '';
+      const parsed = new Date(startDate);
+      if (Number.isNaN(parsed.getTime())) return '';
+      const month = parsed.getMonth() + 1;
+      if (month >= 12 || month <= 2) return 'winter';
+      if (month >= 3 && month <= 5) return 'spring';
+      if (month >= 6 && month <= 8) return 'summer';
+      return 'fall';
+    };
+
+    const buildSeasonalKeywords = (context) => {
+      if (context === 'winter') return ['winter', 'christmas', 'holiday', 'snow', 'festive', 'markets', 'indoor', 'cozy'];
+      if (context === 'spring') return ['spring', 'flowers', 'bloom', 'festival', 'outdoor'];
+      if (context === 'summer') return ['summer', 'beach', 'outdoor', 'sunset', 'festival', 'night'];
+      if (context === 'fall') return ['fall', 'autumn', 'harvest', 'foliage', 'festival', 'outdoor'];
+      return [];
+    };
+
+    const seasonalContext = determineSeasonalContext(tripPreferences?.start_date || null);
+    const seasonalKeywords = buildSeasonalKeywords(seasonalContext);
+    const MAX_CACHE_ACTIVITIES_PER_CITY = 24;
+    const normalizeCityKey = (value) => {
+      if (!value) return '';
+      return String(value).trim().toLowerCase();
+    };
+    const expandCityVariants = (value) => {
+      if (!value) return [];
+      const trimmed = String(value).trim();
+      if (!trimmed) return [];
+      const variants = new Set([trimmed]);
+      const commaIndex = trimmed.indexOf(',');
+      if (commaIndex !== -1) {
+        const beforeComma = trimmed.slice(0, commaIndex).trim();
+        if (beforeComma) variants.add(beforeComma);
+      }
+      const parenIndex = trimmed.indexOf('(');
+      if (parenIndex !== -1) {
+        const beforeParen = trimmed.slice(0, parenIndex).trim();
+        if (beforeParen) variants.add(beforeParen);
+      }
+      return Array.from(variants);
+    };
+    const fetchCachedActivitiesForCity = async (cityValue, limitMultiplier = 2) => {
+      const variants = expandCityVariants(cityValue);
+      if (variants.length === 0) return [];
+      const limit = MAX_CACHE_ACTIVITIES_PER_CITY * limitMultiplier;
+      const seen = new Map();
+      for (const variant of variants) {
+        if (!variant) continue;
+        const likeValue = `%${variant}%`;
+        for (const column of ['city', 'location']) {
+          try {
+            const { data, error } = await supabase
+              .from('activity')
+              .select('activity_id, name, location, city, address, category, duration, cost_estimate, rating, tags, image_url, description, source_url')
+              .ilike(column, likeValue)
+              .limit(limit);
+            if (error) {
+              console.error(`[activities] Error fetching cached activities (${column}) for "${variant}":`, error);
+              continue;
+            }
+            for (const act of data || []) {
+              if (seen.has(act.activity_id)) continue;
+              seen.set(act.activity_id, {
+                ...act,
+                city: act.city || cityValue || variant,
+              });
+            }
+          } catch (cacheErr) {
+            console.error(`[activities] Unexpected error fetching cached activities (${column}) for "${variant}":`, cacheErr);
+          }
+        }
+      }
+      return Array.from(seen.values());
+    };
+
     // TEST MODE: instead of calling Google Custom Search, reuse existing activities
     // from Greece cities (Athens, Mykonos, Santorini) by default, grouped by city
     if (testMode) {
@@ -2007,7 +2084,7 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
             const withCity = cityActivities.map((a) => ({
             ...a,
             city: a.city || city,
-            location: trip.destination || a.location || null,
+            location: a.location || city || trip.destination || null,
           }));
           activitiesByCity.set(city, withCity);
           console.log(`[activities][testMode] Found ${cityActivities.length} activities for "${city}"`);
@@ -2095,7 +2172,7 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
               trip_activity_preference_id: prefRow.trip_activity_preference_id,
               activity_id: activity.activity_id,
               name: activity.name,
-              location: trip.destination || activity.location || null,
+              location: activity.location || activity.city || cityKey || trip.destination || null,
               city: activity.city || cityKey,
               category: activity.category,
               duration: activity.duration,
@@ -2257,7 +2334,73 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
     const activityCandidates = [];
     const processedActivityIds = new Set();
 
-    for (const entry of queryEntries.slice(0, 10)) {
+    // First, try to preload cached activities per city so we reuse known good entries
+    const cacheCities = Array.from(
+      new Set(
+        (cities.length > 0 ? cities : [(trip.destination || '').trim()])
+          .filter((c) => typeof c === 'string' && c.trim())
+          .map((c) => c.trim())
+      )
+    ).slice(0, 10);
+    const cachedCityCounts = new Map();
+    for (const city of cacheCities) {
+      try {
+        const cachedActs = await fetchCachedActivitiesForCity(city);
+        if (!cachedActs || cachedActs.length === 0) {
+          console.log(`[activities] No cached activities found for "${city}" before search.`);
+          continue;
+        }
+
+        const scored = cachedActs
+          .map((a) => {
+            const haystack = `${a.name || ''} ${a.description || ''} ${(a.tags || []).join(' ')} ${(a.category || '')}`.toLowerCase();
+            const seasonScore = seasonalKeywords.reduce((acc, kw) => acc + (haystack.includes(kw) ? 1 : 0), 0);
+            return { ...a, city: a.city || city, _seasonScore: seasonScore };
+          })
+          .sort((a, b) => (b._seasonScore || 0) - (a._seasonScore || 0));
+
+        let addedForCity = 0;
+        for (const activity of scored) {
+          if (processedActivityIds.has(activity.activity_id)) continue;
+          const { _seasonScore, ...rest } = activity;
+          processedActivityIds.add(rest.activity_id);
+          activityCandidates.push({
+            ...rest,
+            city: rest.city || city,
+            location: rest.location || rest.city || city || trip.destination || null,
+          });
+          addedForCity++;
+          const key = normalizeCityKey(city);
+          cachedCityCounts.set(key, (cachedCityCounts.get(key) || 0) + 1);
+          if (addedForCity >= MAX_CACHE_ACTIVITIES_PER_CITY) break;
+        }
+
+        console.log(`[activities] Preloaded ${addedForCity} cached activities for "${city}" before search.`);
+      } catch (cacheError) {
+        console.error('[activities] Unexpected error while preloading cache for city:', city, cacheError);
+      }
+    }
+
+    const missingCacheCities = cacheCities.filter((city) => {
+      const key = normalizeCityKey(city);
+      return (cachedCityCounts.get(key) || 0) === 0;
+    });
+    const shouldRunSearch = cacheCities.length === 0 || missingCacheCities.length > 0;
+
+    const searchEntries = shouldRunSearch
+      ? queryEntries.filter((entry) => {
+          if (missingCacheCities.length === 0) return true;
+          if (!entry.scope || entry.scope === 'travel activities') return true;
+          const scopeKey = normalizeCityKey(entry.scope);
+          return missingCacheCities.some((city) => normalizeCityKey(city) === scopeKey);
+        })
+      : [];
+
+    if (!shouldRunSearch) {
+      console.log('[activities] Cache satisfied requested cities; skipping Google search.');
+    }
+
+    for (const entry of (shouldRunSearch ? searchEntries : []).slice(0, 10)) {
       try {
         const items = await fetchActivitySearchResults(entry.query, itemsPerQuery);
         const filteredItems = items.filter((item) => {
@@ -2283,7 +2426,7 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
             const city = opts.city || null;
             activityCandidates.push({
               ...activity,
-              location: trip.destination || activity.location || null,
+              location: activity.location || city || trip.destination || null,
               city: city || activity.city || null,
             });
           } catch (innerError) {
@@ -2297,40 +2440,12 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
     }
 
     if (activityCandidates.length === 0) {
-      // Fallback: use cached activities by city match
-      console.log('[activities] No activities found from search, trying cached activities by city.');
-      const seasonalContext = (() => {
-        if (!tripPreferences?.start_date) return '';
-        const d = new Date(tripPreferences.start_date);
-        if (Number.isNaN(d.getTime())) return '';
-        const month = d.getMonth() + 1;
-        if (month >= 12 || month <= 2) return 'winter';
-        if (month >= 3 && month <= 5) return 'spring';
-        if (month >= 6 && month <= 8) return 'summer';
-        return 'fall';
-      })();
-      const seasonalKeywords = seasonalContext === 'winter'
-        ? ['winter', 'christmas', 'holiday', 'snow', 'festive', 'markets', 'indoor', 'cozy']
-        : seasonalContext === 'spring'
-        ? ['spring', 'flowers', 'bloom', 'festival', 'outdoor']
-        : seasonalContext === 'summer'
-        ? ['summer', 'beach', 'outdoor', 'sunset', 'festival', 'night']
-        : seasonalContext === 'fall'
-        ? ['fall', 'autumn', 'harvest', 'foliage', 'festival', 'outdoor']
-        : [];
-
+      // Fallback: use cached activities by city match (secondary safety net)
+      console.log('[activities] No activities found after cache preload/search, trying cached activities by city.');
       const fallbackCities = cities.length > 0 ? cities : [(trip.destination || '').trim()].filter(Boolean);
       const cachedCandidates = [];
       for (const city of fallbackCities) {
-        const { data: cachedActs, error: cachedError } = await supabase
-          .from('activity')
-          .select('activity_id, name, location, city, address, category, duration, cost_estimate, rating, tags, image_url, description, source_url')
-          .or(`city.ilike.%${city}%,location.ilike.%${city}%`);
-
-        if (cachedError) {
-          console.error('[activities] Error fetching cached activities for city:', city, cachedError);
-          continue;
-        }
+        const cachedActs = await fetchCachedActivitiesForCity(city, 3);
         if (!cachedActs || cachedActs.length === 0) continue;
 
         const scored = cachedActs.map((a) => {
@@ -2338,8 +2453,13 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
           const seasonScore = seasonalKeywords.reduce((acc, kw) => acc + (haystack.includes(kw) ? 1 : 0), 0);
           return { ...a, city: a.city || city, _seasonScore: seasonScore };
         });
-        const seasonalFirst = scored.sort((a, b) => b._seasonScore - a._seasonScore);
-        cachedCandidates.push(...seasonalFirst);
+        const seasonalFirst = scored.sort((a, b) => (b._seasonScore || 0) - (a._seasonScore || 0));
+        const sanitized = seasonalFirst.map(({ _seasonScore, ...rest }) => ({
+          ...rest,
+          city: rest.city || city,
+          location: rest.location || rest.city || city || trip.destination || null,
+        }));
+        cachedCandidates.push(...sanitized);
       }
 
       if (cachedCandidates.length === 0) {
@@ -2395,7 +2515,7 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       cityKeys.map((key) => {
         const daysForCity = Number(cityDays[key]);
         const safeDays = Number.isFinite(daysForCity) && daysForCity > 0 ? daysForCity : 1;
-        const target = Math.max(1, Math.round(safeDays * 2.0));
+        const target = Math.max(1, Math.round(safeDays * 3.0));
         return [key, target];
       })
     );
@@ -6578,4 +6698,3 @@ router.put('/:tripId/meals/:mealId/confirm-replacement', authenticateToken, asyn
 });
 
 export default router;
-

@@ -1074,6 +1074,21 @@ const ChatWindow = ({
       const token = getAuthToken();
       if (!token) return;
 
+      const resolvedCities =
+        Array.isArray(citiesOverride) && citiesOverride.length > 0
+          ? citiesOverride
+          : orderedCities.length > 0
+          ? [orderedCities[currentActivityCityIndex] || orderedCities[0]]
+          : Array.isArray(tripPreferences?.selected_cities) && tripPreferences.selected_cities.length > 0
+          ? [tripPreferences.selected_cities[0]]
+          : tripDestination
+          ? [tripDestination]
+          : [];
+
+      const payloadCities = resolvedCities
+        .map((city) => (typeof city === "string" ? city.trim() : ""))
+        .filter((city) => city.length > 0);
+
       const response = await fetch(getApiUrl(`api/trips/${tripId}/generate-activities`), {
         method: "POST",
         headers: {
@@ -1082,7 +1097,7 @@ const ChatWindow = ({
         },
         body: JSON.stringify({
           testMode: useTestActivities,
-          selected_cities: citiesOverride ?? tripPreferences?.selected_cities ?? [],
+          selected_cities: payloadCities,
           city_days: manualCityDaysAllocation,
         }),
       });
@@ -7110,65 +7125,14 @@ const ChatWindow = ({
                       onClick={async () => {
                         if (isLastSegment) {
                           // All hotels booked, continue to activities
-                          setHasConfirmedHotels(true);
-                          
+                            setHasConfirmedHotels(true);
+                            
                           // Generate activities when moving from hotels to activities
                           if (!tripId) return;
 
-                          try {
-                            setIsGeneratingActivities(true);
-
-                            // Save preferences first so activities can reflect latest constraints
-                            if (tripPreferences) {
-                              await savePreferences();
-                            }
-
-                            const token = getAuthToken();
-                            if (!token) return;
-
-                            const response = await fetch(getApiUrl(`api/trips/${tripId}/generate-activities`), {
-                              method: "POST",
-                              headers: {
-                                Authorization: `Bearer ${token}`,
-                                "Content-Type": "application/json",
-                              },
-                              body: JSON.stringify({
-                                testMode: useTestActivities,
-                                selected_cities: orderedCities.length > 0 ? [orderedCities[0]] : [],
-                                city_days: manualCityDaysAllocation,
-                              }),
-                            });
-
-                            const result = await response.json();
-
-                            if (response.ok && result.success && Array.isArray(result.activities)) {
-                              setActivities((prev) => {
-                                const incomingIds = new Set(result.activities.map((a: any) => a.activity_id));
-                                const keep = prev.filter((a) => !incomingIds.has(a.activity_id));
-                                return [...keep, ...result.activities];
-                              });
-
-                              if (result.activities.length > 0) {
-                                const assistantMessage: Message = {
-                                  role: "assistant",
-                                  content:
-                                    "I pulled together a small set of activity ideas based on your preferences. Swipe through them below and tell me what you like.",
-                                  timestamp: formatTime(),
-                                };
-                                setMessages((prev) => [...prev, assistantMessage]);
-                              } else {
-                                window.alert(
-                                  "I wasn't able to find good activity ideas just yet. You can adjust your preferences or try again."
-                                );
-                              }
-                            } else {
-                              console.error("Failed to generate activities:", result.message);
-                            }
-                          } catch (error) {
-                            console.error("Error generating activities:", error);
-                          } finally {
-                            setIsGeneratingActivities(false);
-                          }
+                          await generateActivities(
+                            orderedCities.length > 0 ? [orderedCities[0]] : tripDestination ? [tripDestination] : undefined
+                          );
                           
                             // Start with the first city
                             setCurrentActivityCityIndex(0);
@@ -7496,4 +7460,3 @@ const ChatWindow = ({
 };
 
 export default ChatWindow;
-
