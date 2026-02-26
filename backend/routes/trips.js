@@ -1534,6 +1534,161 @@ async function generateRestaurantsForRemainingSlots({
   return generatedRows;
 }
 
+const cloneCoord = (coord) => ({ lat: coord.lat, lng: coord.lng });
+
+const initCentroids = (entries, clusterCount) => {
+  const centroids = [];
+  if (entries.length === 0) return centroids;
+  centroids.push(cloneCoord(entries[0].coord));
+  while (centroids.length < clusterCount && centroids.length < entries.length) {
+    let bestEntry = null;
+    let bestDistance = -1;
+    for (const entry of entries) {
+      const minDistance = centroids.reduce((min, centroid) => {
+        const dist = haversineDistanceKm(entry.coord, centroid);
+        return Math.min(min, dist);
+      }, Infinity);
+      if (minDistance > bestDistance) {
+        bestDistance = minDistance;
+        bestEntry = entry;
+      }
+    }
+    if (bestEntry) {
+      centroids.push(cloneCoord(bestEntry.coord));
+    } else {
+      break;
+    }
+  }
+  while (centroids.length < clusterCount) {
+    centroids.push(cloneCoord(entries[0].coord));
+  }
+  return centroids;
+};
+
+const recomputeCentroids = (clusters) =>
+  clusters.map((cluster) => {
+    if (cluster.length === 0) return null;
+    const centroid = centroidOfCoords(cluster.map((entry) => entry.coord).filter(Boolean));
+    return centroid;
+  });
+
+function clusterActivitiesByCoords(activities, clusterCount) {
+  if (!Array.isArray(activities) || activities.length === 0) {
+    return Array.from({ length: clusterCount }, () => []);
+  }
+  if (clusterCount <= 1) {
+    return [activities.slice()];
+  }
+  const entries = activities
+    .map((activity) => ({
+      activity,
+      coord: hasValidCoords(activity._geo) ? activity._geo : null,
+    }))
+    .filter((entry) => entry.coord);
+
+  const withoutCoords = activities.filter((activity) => !hasValidCoords(activity._geo));
+
+  if (entries.length === 0) {
+    const result = Array.from({ length: clusterCount }, () => []);
+    activities.forEach((activity, index) => {
+      result[index % clusterCount].push(activity);
+    });
+    return result;
+  }
+
+  const k = Math.min(clusterCount, entries.length);
+  let centroids = initCentroids(entries, k);
+
+  for (let iter = 0; iter < 5; iter++) {
+    const clusters = Array.from({ length: k }, () => []);
+    entries.forEach((entry) => {
+      let bestIdx = 0;
+      let bestDistance = Infinity;
+      centroids.forEach((centroid, idx) => {
+        if (!centroid) return;
+        const distance = haversineDistanceKm(entry.coord, centroid);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIdx = idx;
+        }
+      });
+      clusters[bestIdx].push(entry);
+    });
+    const newCentroids = recomputeCentroids(clusters);
+    let changed = false;
+    centroids.forEach((centroid, idx) => {
+      const nextCentroid = newCentroids[idx];
+      if (
+        !centroid ||
+        !nextCentroid ||
+        Math.abs(centroid.lat - nextCentroid.lat) > 0.0001 ||
+        Math.abs(centroid.lng - nextCentroid.lng) > 0.0001
+      ) {
+        changed = true;
+      }
+      centroids[idx] = nextCentroid || centroid;
+    });
+    if (!changed) break;
+  }
+
+  const grouped = Array.from({ length: clusterCount }, () => []);
+  entries.forEach((entry) => {
+    let bestIdx = 0;
+    let bestDistance = Infinity;
+    centroids.forEach((centroid, idx) => {
+      if (!centroid) return;
+      const distance = haversineDistanceKm(entry.coord, centroid);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIdx = idx;
+      }
+    });
+    grouped[bestIdx].push(entry.activity);
+  });
+
+  withoutCoords.forEach((activity, index) => {
+    if (grouped.length === 0) return;
+    grouped[index % grouped.length].push(activity);
+  });
+
+  // Ensure we have clusterCount buckets (k might be less)
+  if (grouped.length < clusterCount) {
+    const extended = Array.from({ length: clusterCount }, (_, idx) => grouped[idx] || []);
+    return extended;
+  }
+
+  return grouped;
+}
+
+async function redistributeActivitiesByCityClusters(dailyActivities, { destination }) {
+  if (!Array.isArray(dailyActivities) || dailyActivities.length === 0) return;
+  const cityBuckets = new Map();
+  dailyActivities.forEach((day, idx) => {
+    if (!day || day.travel_day) return;
+    const cityLabel = day.city || '__no_city__';
+    if (!cityBuckets.has(cityLabel)) {
+      cityBuckets.set(cityLabel, { indices: [], activities: [] });
+    }
+    const bucket = cityBuckets.get(cityLabel);
+    bucket.indices.push(idx);
+    if (Array.isArray(day.activities)) {
+      bucket.activities.push(...day.activities);
+    }
+  });
+
+  for (const [cityLabel, bucket] of cityBuckets.entries()) {
+    if (!bucket.activities.length) continue;
+    const cityForGeo = cityLabel === '__no_city__' ? null : cityLabel;
+    for (const activity of bucket.activities) {
+      await attachGeoToActivity(activity, { city: cityForGeo, destination });
+    }
+    const clusters = clusterActivitiesByCoords(bucket.activities, bucket.indices.length);
+    bucket.indices.forEach((dayIndex, clusterIndex) => {
+      dailyActivities[dayIndex].activities = clusters[clusterIndex] || [];
+    });
+  }
+}
+
 // Helper function to check if an activity matches avoid categories
 function matchesAvoidCategory(activityName, activityCategory, snippet, avoidCategories) {
   if (!avoidCategories || !Array.isArray(avoidCategories) || avoidCategories.length === 0) {
@@ -6278,6 +6433,33 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
       .eq('preference', 'liked');
 
     const likedActivities = (likedActivityPrefs || []).map(ap => ap.activity).filter(Boolean);
+    const likedActivitiesByCity = new Map();
+    const likedActivitiesGeneral = [];
+    likedActivities.forEach((activity) => {
+      if (!activity) return;
+      const cityValue = activity.city || activity.location || null;
+      const key = cityValue ? normalizeCityKey(cityValue) : null;
+      if (key) {
+        if (!likedActivitiesByCity.has(key)) {
+          likedActivitiesByCity.set(key, []);
+        }
+        likedActivitiesByCity.get(key).push(activity);
+      } else {
+        likedActivitiesGeneral.push(activity);
+      }
+    });
+    const takeLikedActivitiesForCity = (cityKey, count) => {
+      if (!count || count <= 0) return [];
+      const picked = [];
+      const bucket = cityKey ? likedActivitiesByCity.get(cityKey) : null;
+      if (bucket && bucket.length) {
+        picked.push(...bucket.splice(0, count));
+      }
+      if (picked.length < count && likedActivitiesGeneral.length) {
+        picked.push(...likedActivitiesGeneral.splice(0, count - picked.length));
+      }
+      return picked;
+    };
 
     // Get liked restaurants to populate trip_meal for final itinerary
     const { data: likedRestaurantPrefs } = await supabase
@@ -6402,7 +6584,6 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
     const targetActivitiesPerDay = tripPreferences.pace === 'packed' ? 4 : tripPreferences.pace === 'balanced' ? 3 : 2;
     const likedPerDay =
       likedActivities.length > 0 ? Math.ceil(likedActivities.length / Math.max(1, effectiveActivitySlots)) : 0;
-    let likedPointer = 0;
 
     for (let day = 0; day < numDays; day++) {
       const dateStr = calendarDates[day] || calendarDates[calendarDates.length - 1];
@@ -6423,15 +6604,17 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
       // Get activities for this day (distribute liked activities + generate new ones)
       const dayActivities = [];
 
-      if (likedPerDay > 0 && likedPointer < likedActivities.length) {
-        const dayLikedActivities = likedActivities.slice(likedPointer, likedPointer + likedPerDay);
-        likedPointer += likedPerDay;
-        dayActivities.push(
-          ...dayLikedActivities.map((a) => ({
-            ...a,
-            source: 'user_selected',
-          }))
-        );
+      if (likedPerDay > 0) {
+        const dayCityKey = dayCity ? normalizeCityKey(dayCity) : null;
+        const likedForDay = takeLikedActivitiesForCity(dayCityKey, likedPerDay);
+        if (likedForDay.length > 0) {
+          dayActivities.push(
+            ...likedForDay.map((a) => ({
+              ...a,
+              source: 'user_selected',
+            }))
+          );
+        }
       }
 
       let todaysTarget = targetActivitiesPerDay;
@@ -6536,41 +6719,9 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
     }
 
     // Redistribute activities evenly across days (round-robin) so later days are not empty
-    if (dailyActivities.length > 0) {
-      const eligibleIndices = dailyActivities
-        .map((day, idx) => (!day.travel_day ? idx : -1))
-        .filter((idx) => idx >= 0);
-
-      if (eligibleIndices.length > 0) {
-        const cityBuckets = new Map();
-        eligibleIndices.forEach((idx) => {
-          const cityLabel = dailyActivities[idx]?.city || null;
-          const key = cityLabel ? normalizeCityKey(cityLabel) : `__no_city__`;
-          if (!cityBuckets.has(key)) {
-            cityBuckets.set(key, []);
-          }
-          cityBuckets.get(key).push(idx);
-        });
-
-        cityBuckets.forEach((indices) => {
-          const pool = indices.flatMap((idx) => dailyActivities[idx].activities || []);
-          if (pool.length === 0) {
-            return;
-          }
-          const redistributed = indices.map((idx) => ({
-            index: idx,
-            activities: [],
-          }));
-          pool.forEach((activity, index) => {
-            const bucketIndex = index % redistributed.length;
-            redistributed[bucketIndex].activities.push(activity);
-          });
-          redistributed.forEach((bucket) => {
-            dailyActivities[bucket.index].activities = bucket.activities;
-          });
-        });
-      }
-    }
+    await redistributeActivitiesByCityClusters(dailyActivities, {
+      destination: trip.destination,
+    });
 
     await enrichAndOptimizeDailyActivities(dailyActivities, {
       destination: trip.destination,
