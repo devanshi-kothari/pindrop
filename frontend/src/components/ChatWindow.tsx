@@ -1171,6 +1171,7 @@ const ChatWindow = ({
   const [useTestActivities, setUseTestActivities] = useState(false);
   const [useTestRestaurants, setUseTestRestaurants] = useState(false);
   const [didAutoResume, setDidAutoResume] = useState(false);
+  const [autoResumeLevel, setAutoResumeLevel] = useState(0);
 
   // Restore multi-city day allocation and completion status from preferences
   useEffect(() => {
@@ -2889,7 +2890,10 @@ const ChatWindow = ({
       if (!token) return;
 
       try {
+        setAutoResumeLevel(0);
+        setDidAutoResume(false);
         setFinalItinerary(null);
+        setHasAttemptedFinalItinerary(false);
         // Load trip to get destination
         const tripResponse = await fetch(getApiUrl(`api/trips/${tripId}`), {
           method: "GET",
@@ -3229,10 +3233,14 @@ const ChatWindow = ({
 
                 return summaryEntries;
               });
-              setActiveTab("activities");
             }
             setHasStartedPlanning(true);
           }
+        }
+
+        const finalItineraryLoaded = await loadFinalItinerary(tripId);
+        if (finalItineraryLoaded) {
+          setHasAttemptedFinalItinerary(true);
         }
       } catch (error) {
         console.error("Error loading persisted data:", error);
@@ -3263,28 +3271,40 @@ const ChatWindow = ({
   }, [planningMode, tripId, initialMessage, hasSentInitialExploreMessage, isLoadingHistory]);
 
   useEffect(() => {
-    if (didAutoResume || !hasStartedPlanning || orderedCities.length === 0) return;
-    const isMultiCity = orderedCities.length > 1;
-    let nextTab: typeof activeTab = "flights";
+    if (!hasStartedPlanning) return;
 
-    if (hasConfirmedRestaurants) {
-      nextTab = "summary";
-    } else if (hasConfirmedActivities) {
-      nextTab = "restaurants";
-    } else if (hasConfirmedHotels) {
-      nextTab = "activities";
-    } else if (hasConfirmedFlights) {
-      if (isMultiCity && !hasConfirmedMultiCityPlanning) {
-        nextTab = "multi-city";
-      } else {
-        nextTab = "hotels";
+    const resumeState = () => {
+      if (hasConfirmedRestaurants) {
+        return { level: 5, tab: "summary" as typeof activeTab };
       }
-    }
+      if (hasConfirmedActivities) {
+        return { level: 4, tab: "restaurants" as typeof activeTab };
+      }
+      if (hasConfirmedHotels) {
+        return { level: 3, tab: "activities" as typeof activeTab };
+      }
+      if (hasConfirmedFlights) {
+        const isMultiCity = orderedCities.length > 1;
+        if (isMultiCity && !hasConfirmedMultiCityPlanning) {
+          return { level: 2, tab: "multi-city" as typeof activeTab };
+        }
+        return { level: 2, tab: "hotels" as typeof activeTab };
+      }
+      return { level: 1, tab: "flights" as typeof activeTab };
+    };
 
-    setActiveTab(nextTab);
-    setDidAutoResume(true);
+    const { level, tab } = resumeState();
+
+    if (level > autoResumeLevel) {
+      if (activeTab !== tab) {
+        setActiveTab(tab);
+      }
+      setAutoResumeLevel(level);
+      setDidAutoResume(true);
+    }
   }, [
-    didAutoResume,
+    autoResumeLevel,
+    activeTab,
     hasStartedPlanning,
     hasConfirmedFlights,
     hasConfirmedHotels,
@@ -3292,7 +3312,6 @@ const ChatWindow = ({
     hasConfirmedRestaurants,
     hasConfirmedMultiCityPlanning,
     orderedCities.length,
-    activeTab,
   ]);
 
   // Auto-scroll to bottom when new messages arrive
