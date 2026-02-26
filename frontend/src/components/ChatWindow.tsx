@@ -211,11 +211,18 @@ const ChatWindow = ({
   });
   const [isSavingRestaurantPreferences, setIsSavingRestaurantPreferences] = useState(false);
   const [hasConfirmedRestaurants, setHasConfirmedRestaurants] = useState(false);
+  const [orderedCities, setOrderedCities] = useState<string[]>([]); // Ordered list of cities for flight booking
   const [hasStartedHotels, setHasStartedHotels] = useState(false);
+  const [isEditingHotels, setIsEditingHotels] = useState(false);
   const [hotels, setHotels] = useState<any[]>([]);
   const [isFetchingHotels, setIsFetchingHotels] = useState(false);
   const [selectedHotelIndex, setSelectedHotelIndex] = useState<number | null>(null);
   const [hasConfirmedHotels, setHasConfirmedHotels] = useState(false);
+  useEffect(() => {
+    if (!hasConfirmedHotels) {
+      setIsEditingHotels(true);
+    }
+  }, [hasConfirmedHotels]);
   const [currentHotelCityIndex, setCurrentHotelCityIndex] = useState<number>(0); // Which city's hotel we're booking
   const [hotelsByCity, setHotelsByCity] = useState<Record<number, any[]>>({}); // Hotels for each city
   const [selectedHotelIndexByCity, setSelectedHotelIndexByCity] = useState<Record<number, number | null>>({}); // Selected hotel index for each city
@@ -225,6 +232,27 @@ const ChatWindow = ({
   const [propertyDetails, setPropertyDetails] = useState<Record<number, any>>({});
   const [isFetchingPropertyDetails, setIsFetchingPropertyDetails] = useState<Record<number, boolean>>({});
   const [expandedBookingOptions, setExpandedBookingOptions] = useState<Record<number, boolean>>({});
+  const [savedHotelSelections, setSavedHotelSelections] = useState<Array<{ city: string; hotel: any }>>([]);
+
+  const computeLocalHotelSummary = useCallback(() => {
+    const summaryEntries: Array<{ city: string; hotel: any }> = [];
+    if (orderedCities.length > 1) {
+      orderedCities.forEach((city, index) => {
+        const cityHotels = hotelsByCity[index] || [];
+        const selectedIdx = selectedHotelIndexByCity[index] ?? null;
+        const selected = selectedIdx !== null ? cityHotels[selectedIdx] : null;
+        if (selected) {
+          summaryEntries.push({ city, hotel: selected });
+        }
+      });
+    } else if (selectedHotelIndex !== null && hotels[selectedHotelIndex]) {
+      const cityLabel = orderedCities[0] || tripDestination || "Destination";
+      summaryEntries.push({ city: cityLabel, hotel: hotels[selectedHotelIndex] });
+    }
+    if (summaryEntries.length > 0) {
+      setSavedHotelSelections(summaryEntries);
+    }
+  }, [orderedCities, hotelsByCity, selectedHotelIndexByCity, selectedHotelIndex, hotels, tripDestination]);
   const [finalItinerary, setFinalItinerary] = useState<any | null>(null);
   const [isGeneratingFinalItinerary, setIsGeneratingFinalItinerary] = useState(false);
   const [hasAttemptedFinalItinerary, setHasAttemptedFinalItinerary] = useState(false);
@@ -250,7 +278,6 @@ const ChatWindow = ({
   const [hasSentInitialExploreMessage, setHasSentInitialExploreMessage] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [lockDestination, setLockDestination] = useState("");
-  const [orderedCities, setOrderedCities] = useState<string[]>([]); // Ordered list of cities for flight booking
   const [newCityInput, setNewCityInput] = useState(""); // Input for adding new city
   const [cityDaysAllocation, setCityDaysAllocation] = useState<Array<{
     city: string;
@@ -2952,16 +2979,50 @@ const ChatWindow = ({
             setHotels(hotelsResult.hotels);
             setHotelIds(hotelsResult.hotel_ids || {});
 
+            const inferredCityOrder: string[] = (() => {
+              if (orderedCities.length > 0) return [...orderedCities];
+              if (tripPreferences?.ordered_cities && tripPreferences.ordered_cities.length > 0) {
+                return tripPreferences.ordered_cities
+                  .map((city) => String(city))
+                  .filter((city) => city.trim().length > 0);
+              }
+              if (tripPreferences?.selected_cities && tripPreferences.selected_cities.length > 0) {
+                return tripPreferences.selected_cities
+                  .map((city) => String(city))
+                  .filter((city) => city.trim().length > 0);
+              }
+              const derivedSource: string[] = hotelsResult.hotels
+                .map((hotel: any) => String(hotel?.search_location || "").trim())
+                .filter((city: string) => city.length > 0);
+              const derived: string[] = Array.from(new Set<string>(derivedSource));
+              return derived;
+            })();
+
+            if (orderedCities.length === 0 && inferredCityOrder.length > 0) {
+              setOrderedCities(inferredCityOrder);
+            }
+
+            const cityListForHotels: string[] =
+              orderedCities.length > 0 ? orderedCities : inferredCityOrder;
+            const isMultiCityHotels = cityListForHotels.length > 1;
+
+            const resolveCityIndex = (cityName: string) => {
+              if (!cityListForHotels || cityListForHotels.length === 0) return 0;
+              const normalized = (cityName || "").toLowerCase();
+              const idx = cityListForHotels.findIndex(
+                (city) => city.toLowerCase() === normalized
+              );
+              return idx >= 0 ? idx : 0;
+            };
+
             // Group hotels by city (search_location) for multi-city display
-            if (orderedCities.length > 1) {
+            if (isMultiCityHotels) {
               const groupedHotels: Record<number, any[]> = {};
               const groupedHotelIds: Record<number, Record<number, number>> = {};
 
               hotelsResult.hotels.forEach((hotel: any, index: number) => {
                 const searchLocation = (hotel.search_location || "").toLowerCase();
-                const cityIndex = orderedCities.findIndex(
-                  (city) => city.toLowerCase() === searchLocation
-                );
+                const cityIndex = resolveCityIndex(searchLocation);
                 const safeCityIndex = Math.max(0, cityIndex);
                 if (!groupedHotels[safeCityIndex]) groupedHotels[safeCityIndex] = [];
                 if (!groupedHotelIds[safeCityIndex]) groupedHotelIds[safeCityIndex] = {};
@@ -2980,15 +3041,13 @@ const ChatWindow = ({
             }
 
             // Restore selected hotels (multi-city)
-            if (orderedCities.length > 1 && Array.isArray(hotelsResult.selected_hotel_indices)) {
+            if (isMultiCityHotels && Array.isArray(hotelsResult.selected_hotel_indices)) {
               const selectedByCity: Record<number, number | null> = {};
               const groupedHotelsLocal: Record<number, any[]> = {};
 
               hotelsResult.hotels.forEach((hotel: any) => {
                 const searchLocation = (hotel.search_location || "").toLowerCase();
-                const cityIndex = orderedCities.findIndex(
-                  (city) => city.toLowerCase() === searchLocation
-                );
+                const cityIndex = resolveCityIndex(searchLocation);
                 const safeCityIndex = Math.max(0, cityIndex);
                 if (!groupedHotelsLocal[safeCityIndex]) groupedHotelsLocal[safeCityIndex] = [];
                 groupedHotelsLocal[safeCityIndex].push(hotel);
@@ -2997,9 +3056,7 @@ const ChatWindow = ({
               hotelsResult.selected_hotel_indices.forEach((selectedIndex: number) => {
                 const selectedHotel = hotelsResult.hotels[selectedIndex];
                 const searchLocation = (selectedHotel?.search_location || "").toLowerCase();
-                const cityIndex = orderedCities.findIndex(
-                  (city) => city.toLowerCase() === searchLocation
-                );
+                const cityIndex = resolveCityIndex(searchLocation);
                 if (cityIndex >= 0) {
                   const group = groupedHotelsLocal[cityIndex] || [];
                   const groupedIndex = group.findIndex((h: any) => h === selectedHotel);
@@ -3020,6 +3077,51 @@ const ChatWindow = ({
             
             if (hasSelectedHotels) {
               setHasConfirmedHotels(true);
+              setIsEditingHotels(false);
+              setSavedHotelSelections(() => {
+                const summaryEntries: Array<{ city: string; hotel: any }> = [];
+                const summaryMap = new Map<string, { city: string; hotel: any }>();
+                const normalize = (value: string) => (value || "").trim().toLowerCase();
+                const selectedIndices: number[] =
+                  Array.isArray(hotelsResult.selected_hotel_indices) && hotelsResult.selected_hotel_indices.length > 0
+                    ? hotelsResult.selected_hotel_indices
+                    : hotelsResult.selected_hotel_index !== null && hotelsResult.selected_hotel_index !== undefined
+                    ? [hotelsResult.selected_hotel_index]
+                    : [];
+
+                selectedIndices.forEach((selectedIdx) => {
+                  const selectedHotel = hotelsResult.hotels[selectedIdx];
+                  if (!selectedHotel) return;
+                  const cityLabel =
+                    selectedHotel.search_location ||
+                    cityListForHotels[selectedIdx] ||
+                    tripDestination ||
+                    "Destination";
+                  const normalizedCity = normalize(cityLabel);
+                  if (!summaryMap.has(normalizedCity)) {
+                    summaryMap.set(normalizedCity, { city: cityLabel.trim(), hotel: selectedHotel });
+                  }
+                });
+
+                const orderedSummaryCities =
+                  cityListForHotels.length > 0
+                    ? cityListForHotels
+                    : Array.from(new Set(Array.from(summaryMap.values()).map((entry) => entry.city)));
+
+                orderedSummaryCities.forEach((city) => {
+                  const normalizedCity = normalize(city);
+                  const entry = summaryMap.get(normalizedCity);
+                  if (entry) {
+                    summaryEntries.push(entry);
+                  }
+                });
+
+                if (summaryEntries.length === 0) {
+                  summaryMap.forEach((entry) => summaryEntries.push(entry));
+                }
+
+                return summaryEntries;
+              });
               setActiveTab("activities");
             }
             setHasStartedPlanning(true);
@@ -6786,6 +6888,66 @@ const ChatWindow = ({
             const currentSegment = hotelSegments[currentHotelCityIndex] || null;
             const totalSegments = hotelSegments.length;
             const isLastSegment = currentHotelCityIndex === totalSegments - 1;
+            const showHotelSelection = !hasConfirmedHotels || isEditingHotels || hotels.length === 0;
+
+            if (!showHotelSelection) {
+              const summaryEntries = savedHotelSelections.length > 0
+                ? savedHotelSelections
+                : hotels
+                    .filter((hotel) => hotel?.search_location)
+                    .map((hotel) => ({
+                      city: hotel.search_location,
+                      hotel,
+                    }));
+
+              return (
+                <div className="flex justify-center">
+                  <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-5 py-5 shadow-sm space-y-4">
+                    <div>
+                      <p className="text-xs font-semibold text-slate-600">
+                        Phase {orderedCities.length > 1 ? '4' : '3'}: Book your hotels
+                      </p>
+                      <p className="text-sm text-slate-500">
+                        You’ve already saved hotels for this trip. Review them below anytime.
+                      </p>
+                    </div>
+                    {summaryEntries.length > 0 ? (
+                      <div className="space-y-3">
+                        {summaryEntries.map((entry, index) => (
+                          <div
+                            key={`${entry.city}-${index}`}
+                            className="border border-blue-100 rounded-xl px-4 py-3 bg-blue-50/60"
+                          >
+                            <p className="text-xs font-semibold text-slate-600 mb-1">{entry.city}</p>
+                            <p className="text-sm font-semibold text-slate-900">
+                              {entry.hotel?.name || "Selected hotel"}
+                            </p>
+                            {entry.hotel?.address && (
+                              <p className="text-xs text-slate-500">{entry.hotel.address}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700">
+                        We couldn’t load the saved hotel details. Please contact support if this persists.
+                      </div>
+                    )}
+                    <div className="flex justify-end">
+                      <Button
+                        size="sm"
+                        className="h-8 px-4 bg-blue-500 text-white"
+                        onClick={() => {
+                          setActiveTab("activities");
+                        }}
+                      >
+                        Continue →
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              );
+            }
             
             // Calculate check-in and check-out dates for current city
             const calculateCityDates = () => {
@@ -7166,6 +7328,8 @@ const ChatWindow = ({
                         if (isLastSegment) {
                           // All hotels booked, continue to activities
                           setHasConfirmedHotels(true);
+                          setIsEditingHotels(false);
+                          computeLocalHotelSummary();
                           // Persist that hotels phase is confirmed so we can resume later
                           await savePreferences({ has_confirmed_hotels: true });
 
