@@ -3340,11 +3340,16 @@ router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res)
     };
 
     const resolveRestaurantCity = (restaurantEntry, explicitCityLabel = null) => {
-      const preferCity = canonicalizeCity(
-        explicitCityLabel && explicitCityLabel.trim() ? explicitCityLabel : null
-      );
+      const trimmedExplicit =
+        typeof explicitCityLabel === 'string' && explicitCityLabel.trim().length > 0
+          ? explicitCityLabel.trim()
+          : '';
+      const preferCity = trimmedExplicit ? canonicalizeCity(trimmedExplicit) : '';
       if (preferCity) {
         return preferCity;
+      }
+      if (trimmedExplicit) {
+        return trimmedExplicit;
       }
       const fromEntry = matchCityFromValue(
         restaurantEntry?.city ||
@@ -3384,7 +3389,14 @@ router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res)
           trip.destination ||
           '';
         const cityValue = resolveRestaurantCity(restaurantEntry, explicitCityLabel);
-        const location = destinationCountry || destinationLabel || trip.destination || '';
+        const location =
+          canonicalizeCountry(destinationCountry) ||
+          canonicalizeCountry(destinationLabel) ||
+          canonicalizeCountry(trip.destination) ||
+          destinationCountry ||
+          destinationLabel ||
+          trip.destination ||
+          '';
         const cuisine_type = restaurantEntry.cuisine_type || 'Various';
         const meal_types = Array.isArray(restaurantEntry.meal_types) ? restaurantEntry.meal_types : [];
         const dietary_options = Array.isArray(restaurantEntry.dietary_options) ? restaurantEntry.dietary_options : [];
