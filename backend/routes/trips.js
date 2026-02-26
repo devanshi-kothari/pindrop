@@ -39,6 +39,108 @@ const GOOGLE_CUSTOM_SEARCH_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
 const GOOGLE_CUSTOM_SEARCH_CX = process.env.GOOGLE_CUSTOM_SEARCH_CX;
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 
+const canonicalizeCityValue = (value) => {
+  if (!value) return '';
+  const trimmed = String(value).trim();
+  if (!trimmed) return '';
+  const noParens = trimmed.replace(/\(.*?\)/g, ' ');
+  const primary = noParens.split(',')[0] || noParens;
+  return primary.trim();
+};
+
+const normalizeCityKey = (value) => canonicalizeCityValue(value).toLowerCase();
+
+const parseDateKey = (value) => {
+  if (!value) return null;
+  const asDate = new Date(value);
+  if (!Number.isNaN(asDate.getTime())) {
+    const yyyy = asDate.getFullYear();
+    const mm = String(asDate.getMonth() + 1).padStart(2, '0');
+    const dd = String(asDate.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  const match = String(value).match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    return `${match[1]}-${match[2]}-${match[3]}`;
+  }
+  return null;
+};
+
+const extractArrivalInfo = (flight) => {
+  if (!flight || !Array.isArray(flight.flights) || flight.flights.length === 0) {
+    return null;
+  }
+  const lastLeg = flight.flights[flight.flights.length - 1] || {};
+  const arrivalValue =
+    lastLeg?.arrival_airport?.time ||
+    lastLeg?.arrival_airport?.date ||
+    lastLeg?.arrival?.time ||
+    lastLeg?.arrival?.date ||
+    lastLeg?.arrival_time ||
+    lastLeg?.arrival_date ||
+    null;
+  if (!arrivalValue) return null;
+  const dateKey = parseDateKey(arrivalValue);
+  const arrivalDateObj = new Date(arrivalValue);
+  const hour = Number.isNaN(arrivalDateObj.getTime()) ? null : arrivalDateObj.getHours();
+  return { dateKey, hour };
+};
+
+const extractDepartureInfo = (flight) => {
+  if (!flight || !Array.isArray(flight.flights) || flight.flights.length === 0) {
+    return null;
+  }
+  const firstLeg = flight.flights[0] || {};
+  const departureValue =
+    firstLeg?.departure_airport?.time ||
+    firstLeg?.departure_airport?.date ||
+    firstLeg?.departure?.time ||
+    firstLeg?.departure?.date ||
+    firstLeg?.departure_time ||
+    firstLeg?.departure_date ||
+    null;
+  if (!departureValue) return null;
+  const dateKey = parseDateKey(departureValue);
+  return { dateKey };
+};
+
+const parseDateParts = (s) => {
+  if (!s) return null;
+  const [y, m, d] = String(s)
+    .split('-')
+    .map((part) => parseInt(part, 10));
+  if (!y || !m || !d) return null;
+  return { y, m, d };
+};
+
+const toDateKeyFromParts = (dateObj) => {
+  if (!dateObj) return null;
+  const mm = String(dateObj.m).padStart(2, '0');
+  const dd = String(dateObj.d).padStart(2, '0');
+  return `${dateObj.y}-${mm}-${dd}`;
+};
+
+const nextDayFromParts = (dateObj) => {
+  if (!dateObj) return null;
+  const dt = new Date(dateObj.y, dateObj.m - 1, dateObj.d + 1);
+  return { y: dt.getFullYear(), m: dt.getMonth() + 1, d: dt.getDate() };
+};
+
+const buildCalendarDates = (startDate, endDate) => {
+  if (!startDate || !endDate) return [];
+  const startParts = parseDateParts(startDate);
+  const endParts = parseDateParts(endDate);
+  if (!startParts || !endParts) return [];
+  const dates = [];
+  const endKey = toDateKeyFromParts(endParts);
+  let cur = { ...startParts };
+  while (toDateKeyFromParts(cur) <= endKey) {
+    dates.push(toDateKeyFromParts(cur));
+    cur = nextDayFromParts(cur);
+  }
+  return dates;
+};
+
 async function generateTripTitleFromMessage(message) {
   if (!message || typeof message !== 'string') return null;
   try {
@@ -4491,6 +4593,7 @@ router.get('/:tripId/final-itinerary', authenticateToken, async (req, res) => {
         `
         flight_id,
         is_selected,
+        created_at,
         flight:flight(*)
       `
       )
@@ -4539,13 +4642,206 @@ router.get('/:tripId/final-itinerary', authenticateToken, async (req, res) => {
     const selectedHotels = (tripHotels || []).map(th => th.hotel).filter(Boolean);
     console.log('[final-itinerary] Selected hotels:', selectedHotels.length, selectedHotels.map(h => ({ id: h.hotel_id, name: h.name, location: h.search_location })));
 
-    const selectedHotel = selectedHotels[0] || null;
+    const hotelByCity = new Map();
+    selectedHotels.forEach((hotel) => {
+      const key = normalizeCityKey(hotel?.search_location || hotel?.location || hotel?.city);
+      if (key && !hotelByCity.has(key)) {
+        hotelByCity.set(key, hotel);
+      }
+    });
+    const fallbackHotel = selectedHotels[0] || null;
 
-    if (days.length > 0) {
-      const lastDayIndex = days.length - 1;
-      if (selectedOutboundFlight) {
-        const additionalData = selectedOutboundFlight.additional_data || {};
-        days[0].outbound_flight = {
+    const calendarDates = tripPreferences?.start_date && tripPreferences?.end_date
+      ? buildCalendarDates(tripPreferences.start_date, tripPreferences.end_date)
+      : [];
+
+    let numDays = tripPreferences?.num_days || calendarDates.length || days.length;
+    if (numDays < days.length) {
+      numDays = days.length;
+    }
+    if (!numDays && tripPreferences?.start_date && tripPreferences?.end_date) {
+      numDays = Math.max(1, calendarDates.length);
+    }
+
+    if (calendarDates.length === 0 && tripPreferences?.start_date && numDays) {
+      const startParts = parseDateParts(tripPreferences.start_date);
+      if (startParts) {
+        let cur = { ...startParts };
+        for (let i = 0; i < numDays; i++) {
+          calendarDates.push(toDateKeyFromParts(cur));
+          cur = nextDayFromParts(cur);
+        }
+      }
+    }
+
+    if (calendarDates.length < numDays && calendarDates.length > 0) {
+      const lastParts = parseDateParts(calendarDates[calendarDates.length - 1]);
+      let cur = lastParts ? nextDayFromParts(lastParts) : null;
+      while (calendarDates.length < numDays && cur) {
+        calendarDates.push(toDateKeyFromParts(cur));
+        cur = nextDayFromParts(cur);
+      }
+    }
+
+    if (calendarDates.length === 0 && days.length > 0) {
+      calendarDates.push(...days.map((day) => parseDateKey(day.date)));
+    }
+
+    const dayByNumber = new Map(days.map((day) => [day.day_number, day]));
+    const builtDays = [];
+    for (let dayNumber = 1; dayNumber <= numDays; dayNumber++) {
+      const existing = dayByNumber.get(dayNumber);
+      const dateValue = existing?.date || calendarDates[dayNumber - 1] || null;
+      builtDays.push({
+        day_number: dayNumber,
+        date: dateValue,
+        summary: existing?.summary || null,
+        activities: Array.isArray(existing?.activities) ? existing.activities : [],
+      });
+    }
+
+    const resolvedCities =
+      Array.isArray(tripPreferences?.ordered_cities) && tripPreferences.ordered_cities.length > 0
+        ? tripPreferences.ordered_cities
+        : Array.isArray(tripPreferences?.selected_cities) && tripPreferences.selected_cities.length > 0
+        ? tripPreferences.selected_cities
+        : trip.destination
+        ? [trip.destination]
+        : [];
+
+    const cityDayAllocations = new Map();
+    if (tripPreferences?.city_days && typeof tripPreferences.city_days === 'object') {
+      Object.entries(tripPreferences.city_days).forEach(([key, value]) => {
+        const normalized = normalizeCityKey(key);
+        const numeric = Number(value);
+        if (normalized && Number.isFinite(numeric) && numeric > 0) {
+          cityDayAllocations.set(normalized, numeric);
+        }
+      });
+    }
+
+    let activityStartIndex = 0;
+    if (builtDays.length > 0 && selectedOutboundFlight) {
+      const outboundArrivalInfo = extractArrivalInfo(selectedOutboundFlight);
+      const arrivalDateKey = outboundArrivalInfo?.dateKey || null;
+      if (arrivalDateKey) {
+        const calendarIndex = calendarDates.indexOf(arrivalDateKey);
+        if (calendarIndex >= 0) {
+          activityStartIndex = calendarIndex;
+        } else {
+          const fallbackIndex = builtDays.findIndex((day) => parseDateKey(day.date) === arrivalDateKey);
+          if (fallbackIndex >= 0) {
+            activityStartIndex = fallbackIndex;
+          }
+        }
+      }
+    }
+    activityStartIndex = Math.max(0, Math.min(activityStartIndex, builtDays.length));
+
+    const dayCityByIndex = Array(builtDays.length).fill(null);
+    let pointer = Math.min(activityStartIndex, builtDays.length);
+    let remainingSlots = Math.max(0, builtDays.length - pointer);
+
+    let effectiveCities = resolvedCities.slice();
+    if (effectiveCities.length === 0 && trip.destination) {
+      effectiveCities = [trip.destination];
+    }
+    if (effectiveCities.length === 0) {
+      effectiveCities = ['Destination'];
+    }
+
+    const allocations = [];
+    let remainingCities = effectiveCities.length;
+    effectiveCities.forEach((city, idx) => {
+      if (remainingSlots <= 0) {
+        allocations.push(0);
+        remainingCities--;
+        return;
+      }
+      const normalized = normalizeCityKey(city);
+      let desired = cityDayAllocations.get(normalized);
+      if (!Number.isFinite(desired) || desired <= 0) {
+        desired = Math.floor(remainingSlots / Math.max(1, remainingCities));
+      }
+      if (idx === effectiveCities.length - 1) {
+        desired = Math.max(desired, remainingSlots);
+      }
+      desired = Math.min(remainingSlots, Math.max(0, Math.round(desired)));
+      allocations.push(desired);
+      remainingSlots -= desired;
+      remainingCities--;
+    });
+    if (remainingSlots > 0 && allocations.length > 0) {
+      allocations[allocations.length - 1] += remainingSlots;
+      remainingSlots = 0;
+    }
+
+    allocations.forEach((count, idx) => {
+      const city = effectiveCities[idx];
+      for (let i = 0; i < count && pointer < dayCityByIndex.length; i += 1) {
+        dayCityByIndex[pointer] = city;
+        pointer += 1;
+      }
+    });
+    while (pointer < dayCityByIndex.length) {
+      dayCityByIndex[pointer] = effectiveCities[effectiveCities.length - 1] || trip.destination || null;
+      pointer += 1;
+    }
+
+    const cityTransitions = [];
+    for (let i = 1; i < dayCityByIndex.length; i++) {
+      const prev = dayCityByIndex[i - 1];
+      const current = dayCityByIndex[i];
+      if (prev && current && normalizeCityKey(prev) !== normalizeCityKey(current)) {
+        cityTransitions.push({ dayIndex: i, fromCity: prev, toCity: current });
+      }
+    }
+
+    const selectedIntercityFlights = (tripFlights || [])
+      .filter((tf) => tf.flight?.flight_type === 'intercity')
+      .sort((a, b) => {
+        const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return aTime - bTime;
+      })
+      .map((tf) => tf.flight);
+
+    const intercityFlightsByDay = new Map();
+    const findDayIndexForFlight = (flight) => {
+      const info = extractDepartureInfo(flight);
+      if (!info?.dateKey) return null;
+      const idx = builtDays.findIndex((day) => parseDateKey(day.date) === info.dateKey);
+      return idx >= 0 ? idx : null;
+    };
+
+    for (let i = 0; i < Math.min(cityTransitions.length, selectedIntercityFlights.length); i++) {
+      const transition = cityTransitions[i];
+      const flight = selectedIntercityFlights[i];
+      const dateIndex = findDayIndexForFlight(flight);
+      const fallbackIndex = Math.max(0, transition.dayIndex - 1);
+      const attachIndex = dateIndex != null ? dateIndex : fallbackIndex;
+      intercityFlightsByDay.set(attachIndex, {
+        flight,
+        fromCity: transition.fromCity,
+        toCity: transition.toCity,
+      });
+    }
+
+    const returnDepartureInfo = extractDepartureInfo(selectedReturnFlight);
+    const returnDateKey =
+      returnDepartureInfo?.dateKey || (tripPreferences?.end_date ? parseDateKey(tripPreferences.end_date) : null);
+    const computeReturnIndex = () => {
+      if (!returnDateKey) return builtDays.length - 1;
+      const calendarIndex = calendarDates.indexOf(returnDateKey);
+      if (calendarIndex >= 0 && calendarIndex < builtDays.length) return calendarIndex;
+      const fallbackIndex = builtDays.findIndex((day) => parseDateKey(day.date) === returnDateKey);
+      if (fallbackIndex >= 0) return fallbackIndex;
+      return builtDays.length - 1;
+    };
+    const returnAttachIndex = computeReturnIndex();
+
+    const outboundFlightData = selectedOutboundFlight
+      ? {
           flight_id: selectedOutboundFlight.flight_id,
           departure_id: selectedOutboundFlight.departure_id,
           arrival_id: selectedOutboundFlight.arrival_id,
@@ -4553,16 +4849,17 @@ router.get('/:tripId/final-itinerary', authenticateToken, async (req, res) => {
           total_duration: selectedOutboundFlight.total_duration,
           flights: selectedOutboundFlight.flights,
           layovers: selectedOutboundFlight.layovers,
-          // Include LLM-generated fields from additional_data
-          airline: additionalData.airline || null,
-          stops: additionalData.stops !== undefined ? additionalData.stops : null,
-          description: additionalData.description || null,
-        };
-      }
+          airline: selectedOutboundFlight.additional_data?.airline || null,
+          stops:
+            selectedOutboundFlight.additional_data?.stops !== undefined
+              ? selectedOutboundFlight.additional_data.stops
+              : null,
+          description: selectedOutboundFlight.additional_data?.description || null,
+        }
+      : null;
 
-      if (selectedReturnFlight) {
-        const additionalData = selectedReturnFlight.additional_data || {};
-        days[lastDayIndex].return_flight = {
+    const returnFlightData = selectedReturnFlight
+      ? {
           flight_id: selectedReturnFlight.flight_id,
           departure_id: selectedReturnFlight.departure_id,
           arrival_id: selectedReturnFlight.arrival_id,
@@ -4570,29 +4867,68 @@ router.get('/:tripId/final-itinerary', authenticateToken, async (req, res) => {
           total_duration: selectedReturnFlight.total_duration,
           flights: selectedReturnFlight.flights,
           layovers: selectedReturnFlight.layovers,
-          // Include LLM-generated fields from additional_data
-          airline: additionalData.airline || null,
-          stops: additionalData.stops !== undefined ? additionalData.stops : null,
-          description: additionalData.description || null,
+          airline: selectedReturnFlight.additional_data?.airline || null,
+          stops:
+            selectedReturnFlight.additional_data?.stops !== undefined
+              ? selectedReturnFlight.additional_data.stops
+              : null,
+          description: selectedReturnFlight.additional_data?.description || null,
+        }
+      : null;
+
+    const detailedDays = builtDays.map((day, index) => {
+      const city = dayCityByIndex[index] || null;
+      const travelDay = index < activityStartIndex;
+      const detailed = {
+        ...day,
+        activities: Array.isArray(day.activities) ? day.activities : [],
+        city,
+        travel_day: travelDay,
+      };
+
+      if (outboundFlightData && index === 0) {
+        detailed.outbound_flight = outboundFlightData;
+      }
+      if (returnFlightData && index === returnAttachIndex) {
+        detailed.return_flight = returnFlightData;
+      }
+
+      const intercityInfo = intercityFlightsByDay.get(index);
+      if (intercityInfo?.flight) {
+        detailed.intercity_flight = {
+          flight_id: intercityInfo.flight.flight_id,
+          departure_id: intercityInfo.flight.departure_id,
+          arrival_id: intercityInfo.flight.arrival_id,
+          price: intercityInfo.flight.price,
+          total_duration: intercityInfo.flight.total_duration,
+          flights: intercityInfo.flight.flights,
+          layovers: intercityInfo.flight.layovers,
+          from_city: intercityInfo.fromCity,
+          to_city: intercityInfo.toCity,
         };
       }
 
-      if (selectedHotel) {
-        days.forEach((day) => {
-          day.hotel = {
-            hotel_id: selectedHotel.hotel_id,
-            name: selectedHotel.name,
-            location: selectedHotel.location,
-            rate_per_night: selectedHotel.rate_per_night_lowest,
-            rate_per_night_formatted: selectedHotel.rate_per_night_formatted,
-            link: selectedHotel.link,
-            overall_rating: selectedHotel.overall_rating,
-            check_in_time: selectedHotel.check_in_time,
-            check_out_time: selectedHotel.check_out_time,
+      if (!travelDay) {
+        const hotelCityKey = normalizeCityKey(city);
+        const hotelForDay = hotelCityKey ? hotelByCity.get(hotelCityKey) : null;
+        const hotelDetails = hotelForDay || fallbackHotel;
+        if (hotelDetails) {
+          detailed.hotel = {
+            hotel_id: hotelDetails.hotel_id,
+            name: hotelDetails.name,
+            location: hotelDetails.location,
+            rate_per_night: hotelDetails.rate_per_night_lowest,
+            rate_per_night_formatted: hotelDetails.rate_per_night_formatted,
+            link: hotelDetails.link,
+            overall_rating: hotelDetails.overall_rating,
+            check_in_time: hotelDetails.check_in_time,
+            check_out_time: hotelDetails.check_out_time,
           };
-        });
+        }
       }
-    }
+
+      return detailed;
+    });
 
     const itinerary = {
       trip_id: tripId,
@@ -4600,9 +4936,9 @@ router.get('/:tripId/final-itinerary', authenticateToken, async (req, res) => {
       destination: trip.destination,
       start_date: tripPreferences?.start_date || null,
       end_date: tripPreferences?.end_date || null,
-      num_days: tripPreferences?.num_days || days.length,
+      num_days: detailedDays.length,
       total_budget: tripPreferences?.max_budget || null,
-      days,
+      days: detailedDays,
     };
 
     res.status(200).json({
@@ -5174,67 +5510,6 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
       });
     }
 
-    const canonicalizeCityValue = (value) => {
-      if (!value) return '';
-      const trimmed = String(value).trim();
-      if (!trimmed) return '';
-      const noParens = trimmed.replace(/\(.*?\)/g, ' ');
-      const primary = noParens.split(',')[0] || noParens;
-      return primary.trim();
-    };
-    const normalizeCityKey = (value) => canonicalizeCityValue(value).toLowerCase();
-    const parseDateKey = (value) => {
-      if (!value) return null;
-      const asDate = new Date(value);
-      if (!Number.isNaN(asDate.getTime())) {
-        const yyyy = asDate.getFullYear();
-        const mm = String(asDate.getMonth() + 1).padStart(2, '0');
-        const dd = String(asDate.getDate()).padStart(2, '0');
-        return `${yyyy}-${mm}-${dd}`;
-      }
-      const match = String(value).match(/(\d{4})-(\d{2})-(\d{2})/);
-      if (match) {
-        return `${match[1]}-${match[2]}-${match[3]}`;
-      }
-      return null;
-    };
-    const extractArrivalInfo = (flight) => {
-      if (!flight || !Array.isArray(flight.flights) || flight.flights.length === 0) {
-        return null;
-      }
-      const lastLeg = flight.flights[flight.flights.length - 1] || {};
-      const arrivalValue =
-        lastLeg?.arrival_airport?.time ||
-        lastLeg?.arrival_airport?.date ||
-        lastLeg?.arrival?.time ||
-        lastLeg?.arrival?.date ||
-        lastLeg?.arrival_time ||
-        lastLeg?.arrival_date ||
-        null;
-      if (!arrivalValue) return null;
-      const dateKey = parseDateKey(arrivalValue);
-      const arrivalDateObj = new Date(arrivalValue);
-      const hour = Number.isNaN(arrivalDateObj.getTime()) ? null : arrivalDateObj.getHours();
-      return { dateKey, hour };
-    };
-    const extractDepartureInfo = (flight) => {
-      if (!flight || !Array.isArray(flight.flights) || flight.flights.length === 0) {
-        return null;
-      }
-      const firstLeg = flight.flights[0] || {};
-      const departureValue =
-        firstLeg?.departure_airport?.time ||
-        firstLeg?.departure_airport?.date ||
-        firstLeg?.departure?.time ||
-        firstLeg?.departure?.date ||
-        firstLeg?.departure_time ||
-        firstLeg?.departure_date ||
-        null;
-      if (!departureValue) return null;
-      const dateKey = parseDateKey(departureValue);
-      return { dateKey };
-    };
-
     // Load user profile
     const { data: userProfile } = await supabase
       .from('app_user')
@@ -5321,35 +5596,7 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
     }
 
     // Calculate date range as pure calendar dates (avoid timezone off-by-one issues)
-    const parseDateParts = (s) => {
-      const [y, m, d] = String(s).split('-').map((part) => parseInt(part, 10));
-      return { y, m, d };
-    };
-
-    const startParts = parseDateParts(tripPreferences.start_date);
-    const endParts = parseDateParts(tripPreferences.end_date);
-
-    const toDateKey = (dateObj) => {
-      const mm = String(dateObj.m).padStart(2, '0');
-      const dd = String(dateObj.d).padStart(2, '0');
-      return `${dateObj.y}-${mm}-${dd}`;
-    };
-
-    const nextDay = (dateObj) => {
-      // Use JS Date only for day rollover; read back Y/M/D to avoid timezone issues
-      const dt = new Date(dateObj.y, dateObj.m - 1, dateObj.d + 1);
-      return { y: dt.getFullYear(), m: dt.getMonth() + 1, d: dt.getDate() };
-    };
-
-    // Build inclusive list of calendar dates from start to end
-    const calendarDates = [];
-    let cur = { ...startParts };
-    const endKey = toDateKey(endParts);
-    while (toDateKey(cur) <= endKey) {
-      calendarDates.push(toDateKey(cur));
-      cur = nextDay(cur);
-    }
-
+    const calendarDates = buildCalendarDates(tripPreferences.start_date, tripPreferences.end_date);
     const calculatedNumDays = calendarDates.length;
 
     // Use num_days from preferences if available, otherwise calculate from dates

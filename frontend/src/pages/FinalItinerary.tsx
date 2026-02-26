@@ -59,6 +59,8 @@ type FinalItineraryFlight = {
   stops?: number;
   description?: string;
   finalized?: boolean;
+  from_city?: string | null;
+  to_city?: string | null;
 };
 
 type FinalItineraryHotel = {
@@ -94,6 +96,9 @@ type FinalItineraryDay = {
   outbound_flight?: FinalItineraryFlight;
   return_flight?: FinalItineraryFlight;
   hotel?: FinalItineraryHotel;
+  intercity_flight?: FinalItineraryFlight;
+  city?: string | null;
+  travel_day?: boolean;
 };
 
 type MealSlot = "breakfast" | "lunch" | "dinner";
@@ -1272,6 +1277,7 @@ const FinalItinerary = () => {
       );
       let flightTotal = 0;
       flightTotal += parseMoneyNumber(day.outbound_flight?.price);
+      flightTotal += parseMoneyNumber(day.intercity_flight?.price);
       flightTotal += parseMoneyNumber(day.return_flight?.price);
       const total = activityTotal + hotelTotal + flightTotal + mealTotal + extrasTotal;
       return {
@@ -1588,9 +1594,29 @@ const FinalItinerary = () => {
                               Editable
                             </span>
                           </div>
+                          <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                            {!day.travel_day && day.city && (
+                              <span className="inline-flex items-center rounded-full border border-blue-200 bg-white px-2 py-0.5">
+                                <span className="mr-1 font-semibold text-blue-600">City:</span>
+                                {day.city}
+                              </span>
+                            )}
+                            {day.travel_day && (
+                              <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-amber-700 font-semibold">
+                                Travel day
+                              </span>
+                            )}
+                          </div>
 
                           {day.summary && (
                             <p className="mt-2 text-xs text-slate-600">{day.summary}</p>
+                          )}
+
+                          {day.travel_day && (
+                            <p className="mt-2 text-xs text-slate-500">
+                              Travel day — use this time for flights and transfers. Hotels and activities resume once you
+                              arrive at your next city.
+                            </p>
                           )}
 
                           {day.outbound_flight && (
@@ -1706,7 +1732,105 @@ const FinalItinerary = () => {
                           </div>
                           )}
 
-                          {day.hotel && (
+                          {day.intercity_flight && (
+                            <div className="mt-2 flex gap-2">
+                              <Dialog>
+                                <DialogTrigger asChild>
+                                  <button className="flex-1 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-slate-600 text-left hover:border-blue-300 hover:bg-blue-50/80 transition-colors">
+                                    <span className="text-blue-600 font-semibold">✈️ Intercity</span>{" "}
+                                    {(day.intercity_flight.from_city || day.intercity_flight.departure_id) || "City"} →{" "}
+                                    {(day.intercity_flight.to_city || day.intercity_flight.arrival_id) || "City"}
+                                  </button>
+                                </DialogTrigger>
+                                <DialogContent className="max-w-lg">
+                                  <DialogHeader>
+                                    <DialogTitle>Intercity flight details</DialogTitle>
+                                    <DialogDescription>
+                                      Saved when you confirmed transportation between cities.
+                                    </DialogDescription>
+                                  </DialogHeader>
+                                  <div className="space-y-2 text-sm text-slate-700">
+                                    <p>
+                                      <span className="font-semibold">Route:</span>{" "}
+                                      {(day.intercity_flight.from_city || day.intercity_flight.departure_id) || "City"} →{" "}
+                                      {(day.intercity_flight.to_city || day.intercity_flight.arrival_id) || "City"}
+                                    </p>
+                                    {typeof day.intercity_flight.price === "number" && (
+                                      <p>
+                                        <span className="font-semibold">Price:</span>{" "}
+                                        ${day.intercity_flight.price.toLocaleString()}
+                                      </p>
+                                    )}
+                                    {formatDuration(day.intercity_flight.total_duration) && (
+                                      <p>
+                                        <span className="font-semibold">Total duration:</span>{" "}
+                                        {formatDuration(day.intercity_flight.total_duration)}
+                                      </p>
+                                    )}
+                                    {day.intercity_flight.airline && (
+                                      <p>
+                                        <span className="font-semibold">Airline:</span>{" "}
+                                        {day.intercity_flight.airline}
+                                      </p>
+                                    )}
+                                    {day.intercity_flight.stops !== undefined && day.intercity_flight.stops !== null && (
+                                      <p>
+                                        <span className="font-semibold">Stops:</span>{" "}
+                                        {day.intercity_flight.stops === 0
+                                          ? "Nonstop"
+                                          : `${day.intercity_flight.stops} stop${day.intercity_flight.stops > 1 ? "s" : ""}`}
+                                      </p>
+                                    )}
+                                    {day.intercity_flight.description && (
+                                      <p className="text-slate-600 italic">
+                                        {day.intercity_flight.description}
+                                      </p>
+                                    )}
+                                    {Array.isArray(day.intercity_flight.flights) && day.intercity_flight.flights.length > 0 && (
+                                      <div className="mt-2">
+                                        <p className="font-semibold text-xs text-slate-600 mb-1">
+                                          Flight segments
+                                        </p>
+                                        <ul className="space-y-1.5 text-xs">
+                                          {day.intercity_flight.flights.map((leg, idx) => (
+                                            <li key={idx} className="rounded border border-blue-100 bg-blue-50/60 px-2 py-1">
+                                              <div className="font-medium">
+                                                {leg.departure_airport?.id} → {leg.arrival_airport?.id}
+                                              </div>
+                                              <div className="text-slate-600">
+                                                {leg.departure_airport?.time} → {leg.arrival_airport?.time}
+                                              </div>
+                                              {leg.airline && (
+                                                <div className="text-slate-500">{leg.airline}</div>
+                                              )}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    )}
+                                    {Array.isArray(day.intercity_flight.layovers) && day.intercity_flight.layovers.length > 0 && (
+                                      <div className="mt-2">
+                                        <p className="font-semibold text-xs text-slate-600 mb-1">
+                                          Layovers
+                                        </p>
+                                        <ul className="space-y-1 text-xs text-slate-600">
+                                          {day.intercity_flight.layovers.map((layover, idx) => (
+                                            <li key={idx}>
+                                              {layover.name || layover.id}{" "}
+                                              {formatDuration(layover.duration) && `• ${formatDuration(layover.duration)}`}
+                                              {layover.overnight && " • overnight"}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    )}
+                                  </div>
+                                </DialogContent>
+                              </Dialog>
+                            </div>
+                          )}
+
+                          {!day.travel_day && day.hotel && (
                             <div className="mt-2 flex gap-2">
                               <Dialog>
                                 <DialogTrigger asChild>
@@ -2641,6 +2765,20 @@ const FinalItinerary = () => {
                                       flightId: day.return_flight.flight_id,
                                     });
                                   }
+                                  if (day.intercity_flight?.price) {
+                                    items.push({
+                                      id: `intercity-${day.day_number}`,
+                                      label: day.intercity_flight.from_city && day.intercity_flight.to_city
+                                        ? `Intercity: ${day.intercity_flight.from_city} → ${day.intercity_flight.to_city}`
+                                        : "Intercity flight",
+                                      amount: day.intercity_flight.price,
+                                      kind: "transport",
+                                      source: "auto",
+                                      dayNumber: day.day_number,
+                                      finalized: day.intercity_flight.finalized ?? true,
+                                      flightId: day.intercity_flight.flight_id,
+                                    });
+                                  }
 
                                   // Hotel (per-night cost)
                                   if (typeof day.hotel?.rate_per_night === "number") {
@@ -3378,7 +3516,17 @@ const FinalItinerary = () => {
                                 )}
                               </div>
                             )}
-                            {day.hotel && (
+                            {day.intercity_flight && (
+                              <div className="rounded-md border border-blue-200 bg-blue-50 px-2 py-1.5 text-[11px] text-slate-600">
+                                <span className="text-blue-600 font-semibold">✈️ Intercity</span>{" "}
+                                {(day.intercity_flight.from_city || day.intercity_flight.departure_id) || "City"} →{" "}
+                                {(day.intercity_flight.to_city || day.intercity_flight.arrival_id) || "City"}
+                                {day.intercity_flight.price && (
+                                  <span className="ml-2 text-emerald-600">${day.intercity_flight.price}</span>
+                                )}
+                              </div>
+                            )}
+                            {!day.travel_day && day.hotel && (
                               <div className="rounded-md border border-yellow-200 bg-yellow-50 px-2 py-1.5 text-[11px] text-slate-600">
                                 <span className="text-yellow-700 font-semibold">🏨 Hotel</span>{" "}
                                 {day.hotel.name}
@@ -3792,4 +3940,3 @@ const FinalItinerary = () => {
 };
 
 export default FinalItinerary;
-
