@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import DashboardHeader from "@/components/DashboardHeader";
 import DashboardSidebar from "@/components/DashboardSidebar";
@@ -17,7 +17,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { PieChart, Pie, Cell, Legend } from "recharts";
 import { getApiUrl } from "@/lib/api";
-import { ArrowLeft, Plus, Trash2, X, RotateCcw } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, X, RotateCcw, GripVertical } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
@@ -110,6 +110,36 @@ type MealInfo = {
   link?: string;
   cost?: number;
   finalized?: boolean;
+};
+
+type ChronoRow =
+  | {
+      kind: "meal";
+      slot: MealSlot;
+      slotLabel: string;
+      label: string;
+      meal?: MealInfo;
+      mealPosition?: number;
+      reorderable: boolean;
+    }
+  | {
+      kind: "activity";
+      slotLabel: string;
+      label: string;
+      activity: FinalItineraryDay["activities"][number];
+      activityIndex: number;
+      reorderable: boolean;
+    };
+
+type DragContext =
+  | { kind: "activity"; dayNumber: number; sourceIndex: number }
+  | { kind: "meal"; dayNumber: number; sourceSlot: MealSlot };
+
+const mealSlotOrder: MealSlot[] = ["breakfast", "lunch", "dinner"];
+const mealSlotLabels: Record<MealSlot, string> = {
+  breakfast: "Breakfast",
+  lunch: "Lunch",
+  dinner: "Dinner",
 };
 
 type FinalItineraryData = {
@@ -220,7 +250,8 @@ const FinalItinerary = () => {
     link: "",
     cost: "",
   });
-  const [dragActivity, setDragActivity] = useState<{ dayNumber: number; index: number } | null>(null);
+  const [dragContext, setDragContext] = useState<DragContext | null>(null);
+  const [dragHoverKey, setDragHoverKey] = useState<string | null>(null);
 
   type ChatMessage = {
     role: "user" | "assistant";
@@ -1126,73 +1157,249 @@ const FinalItinerary = () => {
     }
   };
 
-  const persistMeals = async (nextMeals: Record<number, Partial<Record<MealSlot, MealInfo>>>) => {
-    if (!tripId || !hasLoadedMeals) return;
-    const token = getAuthToken();
-    if (!token) return;
-    const mealsPayload: Array<{
-      day_number: number;
-      slot: MealSlot;
-      name?: string;
-      location?: string;
-      link?: string;
-      cost?: number;
-      finalized?: boolean;
-    }> = [];
-    Object.entries(nextMeals).forEach(([dayStr, dayMeals]) => {
-      const dayNum = Number(dayStr);
-      if (!dayMeals) return;
-      (["breakfast", "lunch", "dinner"] as MealSlot[]).forEach((slot) => {
-        const m = dayMeals[slot];
-        if (!m) return;
-        if (!m.name && !m.location && !m.link && (m.cost === undefined || m.cost === null)) return;
-        mealsPayload.push({
-          day_number: dayNum,
-          slot,
-          name: m.name || "",
-          location: m.location || "",
-          link: m.link,
-          cost: typeof m.cost === "number" ? m.cost : undefined,
-          finalized: typeof m.finalized === "boolean" ? m.finalized : false,
-        });
-      });
-    });
-
-    try {
-      const response = await fetch(getApiUrl(`api/trips/${tripId}/meals`), {
-        method: "PUT",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ meals: mealsPayload }),
-      });
-      const result = await response.json();
-      // Update local state with the returned trip_meal_id values
-      if (response.ok && result.success && Array.isArray(result.meals)) {
-        setMealsByDay((prev) => {
-          const updated = { ...prev };
-          result.meals.forEach((m: any) => {
-            if (!m.day_number || !m.slot) return;
-            if (!updated[m.day_number]) updated[m.day_number] = {};
-            const existing = updated[m.day_number][m.slot as MealSlot];
-            if (existing) {
-              updated[m.day_number] = {
-                ...updated[m.day_number],
-                [m.slot]: {
-                  ...existing,
-                  trip_meal_id: m.trip_meal_id,
-                },
-              };
-            }
+  const persistMeals = useCallback(
+    async (nextMeals: Record<number, Partial<Record<MealSlot, MealInfo>>>) => {
+      if (!tripId || !hasLoadedMeals) return;
+      const token = getAuthToken();
+      if (!token) return;
+      const mealsPayload: Array<{
+        day_number: number;
+        slot: MealSlot;
+        name?: string;
+        location?: string;
+        link?: string;
+        cost?: number;
+        finalized?: boolean;
+      }> = [];
+      Object.entries(nextMeals).forEach(([dayStr, dayMeals]) => {
+        const dayNum = Number(dayStr);
+        if (!dayMeals) return;
+        (["breakfast", "lunch", "dinner"] as MealSlot[]).forEach((slot) => {
+          const m = dayMeals[slot];
+          if (!m) return;
+          if (!m.name && !m.location && !m.link && (m.cost === undefined || m.cost === null)) return;
+          mealsPayload.push({
+            day_number: dayNum,
+            slot,
+            name: m.name || "",
+            location: m.location || "",
+            link: m.link,
+            cost: typeof m.cost === "number" ? m.cost : undefined,
+            finalized: typeof m.finalized === "boolean" ? m.finalized : false,
           });
-          return updated;
         });
+      });
+
+      try {
+        const response = await fetch(getApiUrl(`api/trips/${tripId}/meals`), {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ meals: mealsPayload }),
+        });
+        const result = await response.json();
+        // Update local state with the returned trip_meal_id values
+        if (response.ok && result.success && Array.isArray(result.meals)) {
+          setMealsByDay((prev) => {
+            const updated = { ...prev };
+            result.meals.forEach((m: any) => {
+              if (!m.day_number || !m.slot) return;
+              if (!updated[m.day_number]) updated[m.day_number] = {};
+              const existing = updated[m.day_number][m.slot as MealSlot];
+              if (existing) {
+                updated[m.day_number] = {
+                  ...updated[m.day_number],
+                  [m.slot]: {
+                    ...existing,
+                    trip_meal_id: m.trip_meal_id,
+                  },
+                };
+              }
+            });
+            return updated;
+          });
+        }
+      } catch (err) {
+        console.error("Error persisting meals:", err);
       }
-    } catch (err) {
-      console.error("Error persisting meals:", err);
-    }
-  };
+    },
+    [tripId, hasLoadedMeals, getAuthToken]
+  );
+
+  const buildChronoRows = useCallback(
+    (day: FinalItineraryDay): ChronoRow[] => {
+      const rows: ChronoRow[] = [];
+      const dayMeals = mealsByDay[day.day_number] || {};
+      const activities = Array.isArray(day.activities) ? day.activities : [];
+      let mealPositionCounter = 0;
+
+      const pushMeal = (slot: MealSlot) => {
+        const meal = dayMeals[slot];
+        rows.push({
+          kind: "meal",
+          slot,
+          slotLabel: mealSlotLabels[slot],
+          label: mealSlotLabels[slot],
+          meal,
+          mealPosition: meal && meal.name ? mealPositionCounter++ : undefined,
+          reorderable: !!meal && !!meal.name,
+        });
+      };
+
+      const pushActivity = (activity: FinalItineraryDay["activities"][number], index: number) => {
+        if (!activity) return;
+        rows.push({
+          kind: "activity",
+          slotLabel: index === 0 ? "Morning" : index === 1 ? "Afternoon" : index === 2 ? "Evening" : "Anytime",
+          label: activity.name || "Activity",
+          activity,
+          activityIndex: index,
+          reorderable: true,
+        });
+      };
+
+      pushMeal("breakfast");
+      if (activities[0]) {
+        pushActivity(activities[0], 0);
+      }
+      pushMeal("lunch");
+      if (activities[1]) {
+        pushActivity(activities[1], 1);
+      }
+      pushMeal("dinner");
+      activities.slice(2).forEach((activity, idx) => pushActivity(activity, idx + 2));
+
+      return rows;
+    },
+    [mealsByDay]
+  );
+
+  const getMealOrderForDay = useCallback(
+    (dayNumber: number) =>
+      mealSlotOrder.filter((slot) => {
+        const meal = mealsByDay[dayNumber]?.[slot];
+        return !!meal && !!meal.name;
+      }),
+    [mealsByDay]
+  );
+
+  const moveActivityWithinDay = useCallback(
+    async (dayNumber: number, fromIndex: number, targetIndex: number) => {
+      if (!itinerary || !Array.isArray(itinerary.days) || fromIndex === targetIndex) return;
+
+      let newOrderIds: number[] | null = null;
+      setItinerary((prev) => {
+        if (!prev) return prev;
+        const nextDays = prev.days.map((day) => {
+          if (day.day_number !== dayNumber || !Array.isArray(day.activities)) {
+            return day;
+          }
+          if (day.activities.length < 2 || fromIndex < 0 || fromIndex >= day.activities.length) {
+            return day;
+          }
+          const updatedActivities = [...day.activities];
+          const [moved] = updatedActivities.splice(fromIndex, 1);
+          let insertIndex = targetIndex;
+          if (fromIndex < targetIndex) {
+            insertIndex -= 1;
+          }
+          insertIndex = Math.max(0, Math.min(insertIndex, updatedActivities.length));
+          updatedActivities.splice(insertIndex, 0, moved);
+          newOrderIds = updatedActivities
+            .map((activity) => activity?.activity_id)
+            .filter((id): id is number => typeof id === "number");
+          return { ...day, activities: updatedActivities };
+        });
+        return { ...prev, days: nextDays };
+      });
+
+      if (!tripId || !newOrderIds || newOrderIds.length === 0) {
+        return;
+      }
+
+      try {
+        const token = getAuthToken();
+        if (!token) return;
+        await fetch(getApiUrl(`api/trips/${tripId}/itinerary/${dayNumber}/activities/reorder`), {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ activity_ids: newOrderIds }),
+        });
+      } catch (error) {
+        console.error("Error reordering activities:", error);
+        alert("Couldn't save the new activity order. Please refresh and try again.");
+      }
+    },
+    [itinerary, tripId, getAuthToken]
+  );
+
+  const moveMealWithinDay = useCallback(
+    (dayNumber: number, fromSlot: MealSlot, targetIndex: number) => {
+      const existingOrder = getMealOrderForDay(dayNumber);
+      if (existingOrder.length < 2) return;
+      const fromIndex = existingOrder.findIndex((slot) => slot === fromSlot);
+      if (fromIndex < 0) return;
+
+      let nextState: Record<number, Partial<Record<MealSlot, MealInfo>>> | null = null;
+      setMealsByDay((prev) => {
+        const dayMeals = prev[dayNumber];
+        if (!dayMeals) return prev;
+        const order = [...existingOrder];
+        const [movedSlot] = order.splice(fromIndex, 1);
+        let insertIndex = targetIndex;
+        if (fromIndex < targetIndex) {
+          insertIndex -= 1;
+        }
+        insertIndex = Math.max(0, Math.min(insertIndex, order.length));
+        order.splice(insertIndex, 0, movedSlot);
+
+        const newDayMeals: Partial<Record<MealSlot, MealInfo>> = {};
+        order.forEach((slot, idx) => {
+          const targetSlot = mealSlotOrder[idx];
+          const meal = dayMeals[slot];
+          if (targetSlot && meal) {
+            newDayMeals[targetSlot] = meal;
+          }
+        });
+
+        const updatedState = { ...prev, [dayNumber]: newDayMeals };
+        nextState = updatedState;
+        return updatedState;
+      });
+
+      if (nextState) {
+        persistMeals(nextState);
+      }
+    },
+    [getMealOrderForDay, persistMeals]
+  );
+
+  const handleDrop = useCallback(
+    (dayNumber: number, kind: "activity" | "meal", targetIndex: number) => {
+      if (!dragContext || dragContext.dayNumber !== dayNumber || dragContext.kind !== kind) {
+        return;
+      }
+      if (kind === "activity") {
+        moveActivityWithinDay(dayNumber, dragContext.sourceIndex, targetIndex);
+      } else {
+        moveMealWithinDay(dayNumber, dragContext.sourceSlot, targetIndex);
+      }
+      setDragContext(null);
+      setDragHoverKey(null);
+    },
+    [dragContext, moveActivityWithinDay, moveMealWithinDay]
+  );
+
+  const handleDragEnd = useCallback(() => {
+    setDragContext(null);
+    setDragHoverKey(null);
+  }, []);
+
 
   const persistExpenses = async (nextExpenses: Record<number, ExtraExpense[]>) => {
     if (!tripId || !hasLoadedExpenses) return;
@@ -1912,26 +2119,29 @@ const FinalItinerary = () => {
                           )}
 
                           <div className="mt-3 space-y-2">
-                            <div className="flex items-center justify-between">
-                              <p className="text-xs font-semibold text-slate-600">Activities</p>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => toggleAddForm(day.day_number)}
-                                className="h-6 px-2 text-[10px]"
-                              >
-                                {showAddForm[day.day_number] ? (
-                                  <>
-                                    <X className="h-3 w-3 mr-1" />
-                                    Cancel
-                                  </>
-                                ) : (
-                                  <>
-                                    <Plus className="h-3 w-3 mr-1" />
-                                    Add
-                                  </>
-                                )}
-                              </Button>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-xs font-semibold text-slate-600">Day plan (chronological)</p>
+                              <div className="flex items-center gap-2 text-[10px] text-slate-500">
+                                <span className="hidden sm:inline-flex">Drag cards to reorder</span>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => toggleAddForm(day.day_number)}
+                                  className="h-6 px-2 text-[10px]"
+                                >
+                                  {showAddForm[day.day_number] ? (
+                                    <>
+                                      <X className="h-3 w-3 mr-1" />
+                                      Cancel
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Plus className="h-3 w-3 mr-1" />
+                                      Add activity
+                                    </>
+                                  )}
+                                </Button>
+                              </div>
                             </div>
 
                             {/* Add Activity Form */}
@@ -2019,7 +2229,6 @@ const FinalItinerary = () => {
                                   <Input
                                     type="number"
                                     min={0}
-                                    step="0.01"
                                     value={formData[day.day_number]?.cost_estimate || ""}
                                     onChange={(e) =>
                                       setFormData((prev) => ({
@@ -2077,22 +2286,125 @@ const FinalItinerary = () => {
                               </div>
                             )}
 
-                            {day.activities && day.activities.length > 0 && (
-                              <div className="space-y-2">
-                                {day.activities.map((activity, index) => {
-                                  const activityKey = `${day.day_number}-${activity.activity_id || index}`;
+                            <div className="space-y-2">
+                              {buildChronoRows(day).map((row, idx) => {
+                                const baseKey =
+                                  row.kind === "activity"
+                                    ? `day-${day.day_number}-activity-${row.activityIndex}`
+                                    : `day-${day.day_number}-meal-${row.slot}-${idx}`;
+                                const isDraggingSameDay =
+                                  dragContext && dragContext.dayNumber === day.day_number && dragContext.kind === row.kind;
+                                const highlight = dragHoverKey === baseKey;
+
+                                if (row.kind === "activity" && row.activity) {
+                                  const activity = row.activity;
+                                  const activityKey = `${day.day_number}-${activity.activity_id || row.activityIndex}`;
+                                  const allowDrag =
+                                    (day.activities?.length || 0) > 1 && row.reorderable && !!activity.activity_id;
+
+                                  const handleActivityDragStart = (event: DragEvent<HTMLDivElement>) => {
+                                    if (!allowDrag) return;
+                                    event.dataTransfer.effectAllowed = "move";
+                                    event.dataTransfer.setData("text/plain", activityKey);
+                                    setDragContext({
+                                      kind: "activity",
+                                      dayNumber: day.day_number,
+                                      sourceIndex: row.activityIndex,
+                                    });
+                                  };
+
+                                  const handleActivityDragOver = (event: DragEvent<HTMLDivElement>) => {
+                                    if (!isDraggingSameDay) return;
+                                    event.preventDefault();
+                                    event.dataTransfer.dropEffect = "move";
+                                  };
+
+                                  const handleActivityDrop = (event: DragEvent<HTMLDivElement>) => {
+                                    if (!isDraggingSameDay) return;
+                                    event.preventDefault();
+                                    handleDrop(day.day_number, "activity", row.activityIndex);
+                                  };
+
                                   return (
                                     <div
-                                      key={activityKey}
+                                      key={baseKey}
+                                      draggable={allowDrag}
+                                      onDragStart={handleActivityDragStart}
+                                      onDragOver={handleActivityDragOver}
+                                      onDragEnter={() => {
+                                        if (isDraggingSameDay) setDragHoverKey(baseKey);
+                                      }}
+                                      onDrop={handleActivityDrop}
+                                      onDragEnd={handleDragEnd}
                                       onClick={() => {
                                         setSelectedActivityDetail({ dayNumber: day.day_number, activity });
                                         setActivityLocationDraft(activity.address || activity.location || "");
                                       }}
-                                      className="group rounded-md border border-blue-100 bg-white px-3 py-2 text-xs text-slate-700 hover:border-blue-300 transition-colors cursor-pointer"
+                                      className={`group rounded-md border px-3 py-2 text-xs transition-colors cursor-pointer ${
+                                        highlight ? "border-blue-400 bg-blue-50/80" : "border-blue-100 bg-white"
+                                      }`}
                                     >
-                                      <div className="flex items-start justify-between gap-2">
+                                      <div className="flex items-start gap-2">
+                                        {allowDrag ? (
+                                          <span className="mt-1 text-slate-400">
+                                            <GripVertical className="h-3.5 w-3.5" />
+                                          </span>
+                                        ) : (
+                                          <span className="mt-1 w-3" />
+                                        )}
                                         <div className="flex-1">
-                                          <p className="font-semibold text-slate-900">{activity.name}</p>
+                                          <div className="flex items-center justify-between gap-2">
+                                            <span className="inline-flex rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
+                                              {row.slotLabel}
+                                            </span>
+                                            <div className="flex items-center gap-1">
+                                              {activity.source_url && (
+                                                <a
+                                                  href={activity.source_url}
+                                                  target="_blank"
+                                                  rel="noopener noreferrer"
+                                                  className="text-[11px] text-blue-600 hover:text-blue-700 underline whitespace-nowrap"
+                                                  onClick={(e) => e.stopPropagation()}
+                                                >
+                                                  Learn more →
+                                                </a>
+                                              )}
+                                              {activity.activity_id && (
+                                                <Button
+                                                  variant="ghost"
+                                                  size="sm"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setSelectedActivityToReplace({
+                                                      activity,
+                                                      dayNumber: day.day_number,
+                                                    });
+                                                    setReplaceModalOpen(true);
+                                                  }}
+                                                  className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-blue-500 hover:text-blue-700 hover:bg-blue-50"
+                                                  title="Replace this activity"
+                                                >
+                                                  <RotateCcw className="h-3 w-3" />
+                                                </Button>
+                                              )}
+                                              {activity.activity_id && (
+                                                <Button
+                                                  variant="ghost"
+                                                  size="sm"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleDeleteActivity(day.day_number, activity.activity_id!);
+                                                  }}
+                                                  disabled={deletingActivity[activityKey]}
+                                                  className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-red-500 hover:text-red-700 hover:bg-red-50"
+                                                  title="Delete this activity"
+                                                >
+                                                  <Trash2 className="h-3 w-3" />
+                                                </Button>
+                                              )}
+                                            </div>
+                                          </div>
+                                          <p className="mt-1 font-semibold text-slate-900">{activity.name}</p>
                                           {activity.description && (
                                             <p className="mt-1 text-[11px] text-slate-600">{activity.description}</p>
                                           )}
@@ -2106,155 +2418,183 @@ const FinalItinerary = () => {
                                             )}
                                           </div>
                                         </div>
-                                        <div className="flex items-center gap-1">
-                                          {activity.source_url && (
-                                            <a
-                                              href={activity.source_url}
-                                              target="_blank"
-                                              rel="noopener noreferrer"
-                                              className="text-[11px] text-blue-600 hover:text-blue-700 underline whitespace-nowrap"
-                                              onClick={(e) => e.stopPropagation()}
-                                            >
-                                              Learn more →
-                                            </a>
-                                          )}
-                                          {activity.activity_id && (
-                                            <Button
-                                              variant="ghost"
-                                              size="sm"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                setSelectedActivityToReplace({
-                                                  activity,
-                                                  dayNumber: day.day_number,
-                                                });
-                                                setReplaceModalOpen(true);
-                                              }}
-                                              className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-blue-500 hover:text-blue-700 hover:bg-blue-50"
-                                              title="Replace this activity"
-                                            >
-                                              <RotateCcw className="h-3 w-3" />
-                                            </Button>
-                                          )}
-                                          {activity.activity_id && (
-                                            <Button
-                                              variant="ghost"
-                                              size="sm"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleDeleteActivity(day.day_number, activity.activity_id!);
-                                              }}
-                                              disabled={deletingActivity[activityKey]}
-                                              className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-red-500 hover:text-red-700 hover:bg-red-50"
-                                              title="Delete this activity"
-                                            >
-                                              <Trash2 className="h-3 w-3" />
-                                            </Button>
-                                          )}
-                                        </div>
                                       </div>
                                     </div>
                                   );
-                                })}
-                              </div>
-                            )}
-                          </div>
+                                }
 
-                          {/* Meals / Restaurants Section */}
-                          <div className="mt-3 space-y-2">
-                            <p className="text-xs font-semibold text-slate-600">Meals</p>
-                            {(["breakfast", "lunch", "dinner"] as MealSlot[]).map((slot) => {
-                              const dayMeals = mealsByDay[day.day_number] || {};
-                              const meal = dayMeals[slot];
-                              const slotLabel = slot.charAt(0).toUpperCase() + slot.slice(1);
-                              
-                              if (!meal || !meal.name) {
+                                const meal = row.meal;
+                                const slot = row.slot;
+                                const slotLabel = row.slotLabel;
+                                const mealOrder = getMealOrderForDay(day.day_number);
+                                const allowMealDrag = row.reorderable && mealOrder.length > 1;
+
+                                const handleMealClick = () => {
+                                  setEditingMeal({ dayNumber: day.day_number, slot });
+                                  setMealForm({
+                                    name: meal?.name || "",
+                                    location: meal?.location || itinerary.destination || "",
+                                    link: meal?.link || "",
+                                    cost:
+                                      meal && typeof meal.cost === "number"
+                                        ? String(meal.cost)
+                                        : meal?.cost
+                                          ? String(meal.cost)
+                                          : "30",
+                                  });
+                                };
+
+                                const handleMealDragStart = (event: DragEvent<HTMLDivElement>) => {
+                                  if (!allowMealDrag) return;
+                                  event.dataTransfer.effectAllowed = "move";
+                                  event.dataTransfer.setData("text/plain", slot);
+                                  setDragContext({
+                                    kind: "meal",
+                                    dayNumber: day.day_number,
+                                    sourceSlot: slot,
+                                  });
+                                };
+
+                                const handleMealDragOver = (event: DragEvent<HTMLDivElement>) => {
+                                  if (!isDraggingSameDay) return;
+                                  event.preventDefault();
+                                  event.dataTransfer.dropEffect = "move";
+                                };
+
+                                const handleMealDrop = (event: DragEvent<HTMLDivElement>) => {
+                                  if (!isDraggingSameDay || row.mealPosition === undefined) return;
+                                  event.preventDefault();
+                                  handleDrop(day.day_number, "meal", row.mealPosition);
+                                };
+
+                                if (!meal || !meal.name) {
+                                  return (
+                                    <div
+                                      key={baseKey}
+                                      onClick={() => {
+                                        setEditingMeal({ dayNumber: day.day_number, slot });
+                                        setMealForm({
+                                          name: "",
+                                          location: itinerary.destination || "",
+                                          link: "",
+                                          cost: "30",
+                                        });
+                                      }}
+                                      className="rounded-md border border-dashed border-amber-200 bg-amber-50/40 px-3 py-2 text-xs text-slate-500 cursor-pointer hover:border-amber-300 hover:bg-amber-50/60 transition-colors"
+                                    >
+                                      <span className="text-amber-600 font-semibold">🍽️ {slotLabel}</span>{" "}
+                                      <span className="italic">Click to add restaurant</span>
+                                    </div>
+                                  );
+                                }
+
                                 return (
                                   <div
-                                    key={slot}
-                                    onClick={() => {
-                                      setEditingMeal({ dayNumber: day.day_number, slot });
-                                      setMealForm({
-                                        name: "",
-                                        location: itinerary.destination || "",
-                                        link: "",
-                                        cost: "30",
-                                      });
+                                    key={baseKey}
+                                    draggable={allowMealDrag}
+                                    onDragStart={handleMealDragStart}
+                                    onDragOver={handleMealDragOver}
+                                    onDragEnter={() => {
+                                      if (isDraggingSameDay) setDragHoverKey(baseKey);
                                     }}
-                                    className="rounded-md border border-dashed border-amber-200 bg-amber-50/40 px-3 py-2 text-xs text-slate-500 cursor-pointer hover:border-amber-300 hover:bg-amber-50/60 transition-colors"
+                                    onDrop={handleMealDrop}
+                                    onDragEnd={handleDragEnd}
+                                    onClick={handleMealClick}
+                                    className={`group rounded-md border px-3 py-2 text-xs transition-colors cursor-pointer ${
+                                      highlight ? "border-amber-400 bg-amber-50/80" : "border-amber-200 bg-amber-50"
+                                    }`}
                                   >
-                                    <span className="text-amber-600 font-semibold">🍽️ {slotLabel}</span>{" "}
-                                    <span className="italic">Click to add restaurant</span>
-                                  </div>
-                                );
-                              }
-
-                              return (
-                                <div
-                                  key={slot}
-                                  onClick={() => {
-                                    setEditingMeal({ dayNumber: day.day_number, slot });
-                                    setMealForm({
-                                      name: meal.name || "",
-                                      location: meal.location || itinerary.destination || "",
-                                      link: meal.link || "",
-                                      cost: typeof meal.cost === "number" ? String(meal.cost) : "30",
-                                    });
-                                  }}
-                                  className="group rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-slate-700 cursor-pointer hover:border-amber-300 transition-colors"
-                                >
-                                  <div className="flex items-start justify-between gap-2">
-                                    <div className="flex-1">
-                                      <p className="font-semibold text-slate-900">
-                                        <span className="text-amber-600">🍽️ {slotLabel}:</span> {meal.name}
-                                      </p>
-                                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
-                                        {meal.location && <span>📍 {meal.location}</span>}
-                                        {meal.cost && (
-                                          <span className="text-emerald-500">
-                                            ${meal.cost.toLocaleString()}
+                                    <div className="flex items-start justify-between gap-2">
+                                      <div className="flex items-start gap-2">
+                                        {allowMealDrag ? (
+                                          <span className="mt-1 text-amber-500">
+                                            <GripVertical className="h-3.5 w-3.5" />
                                           </span>
+                                        ) : (
+                                          <span className="mt-1 w-3" />
+                                        )}
+                                        <div>
+                                          <p className="font-semibold text-slate-900">
+                                            <span className="text-amber-600">🍽️ {slotLabel}:</span> {meal.name}
+                                          </p>
+                                          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                                            {meal.location && <span>📍 {meal.location}</span>}
+                                            {meal.cost && (
+                                              <span className="text-emerald-500">
+                                                ${meal.cost.toLocaleString()}
+                                              </span>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-1">
+                                        {meal.link && (
+                                          <a
+                                            href={meal.link}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-[11px] text-blue-600 hover:text-blue-700 underline whitespace-nowrap"
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
+                                            View →
+                                          </a>
+                                        )}
+                                        {meal.trip_meal_id && (
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setSelectedMealToReplace({
+                                                meal,
+                                                dayNumber: day.day_number,
+                                                slot,
+                                              });
+                                              setReplaceRestaurantModalOpen(true);
+                                            }}
+                                            className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-amber-500 hover:text-amber-700 hover:bg-amber-50"
+                                            title="Replace this restaurant"
+                                          >
+                                            <RotateCcw className="h-3 w-3" />
+                                          </Button>
                                         )}
                                       </div>
                                     </div>
-                                    <div className="flex items-center gap-1">
-                                      {meal.link && (
-                                        <a
-                                          href={meal.link}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          className="text-[11px] text-blue-600 hover:text-blue-700 underline whitespace-nowrap"
-                                          onClick={(e) => e.stopPropagation()}
-                                        >
-                                          View →
-                                        </a>
-                                      )}
-                                      {meal.trip_meal_id && (
-                                        <Button
-                                          variant="ghost"
-                                          size="sm"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setSelectedMealToReplace({
-                                              meal,
-                                              dayNumber: day.day_number,
-                                              slot,
-                                            });
-                                            setReplaceRestaurantModalOpen(true);
-                                          }}
-                                          className="h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-amber-500 hover:text-amber-700 hover:bg-amber-50"
-                                          title="Replace this restaurant"
-                                        >
-                                          <RotateCcw className="h-3 w-3" />
-                                        </Button>
-                                      )}
-                                    </div>
                                   </div>
-                                </div>
-                              );
-                            })}
-                          </div>
+                                );
+                              })}
 
+                              {dragContext &&
+                                dragContext.dayNumber === day.day_number &&
+                                (dragContext.kind === "activity" || dragContext.kind === "meal") && (
+                                  <div
+                                    className={`rounded-md border border-dashed px-3 py-2 text-[10px] text-slate-500 ${
+                                      dragHoverKey === `day-${day.day_number}-${dragContext.kind}-end`
+                                        ? "border-blue-400 bg-blue-50/80"
+                                        : "border-slate-200 bg-white/60"
+                                    }`}
+                                    onDragOver={(event) => {
+                                      event.preventDefault();
+                                      event.dataTransfer.dropEffect = "move";
+                                    }}
+                                    onDragEnter={() =>
+                                      setDragHoverKey(`day-${day.day_number}-${dragContext.kind}-end`)
+                                    }
+                                    onDrop={(event) => {
+                                      event.preventDefault();
+                                      if (dragContext.kind === "activity") {
+                                        handleDrop(day.day_number, "activity", day.activities?.length || 0);
+                                      } else {
+                                        handleDrop(day.day_number, "meal", getMealOrderForDay(day.day_number).length);
+                                      }
+                                    }}
+                                    onDragEnd={handleDragEnd}
+                                  >
+                                    Drop here to move to end of day
+                                  </div>
+                                )}
+                            </div>
+                          </div>
                           {day.return_flight && (
                             <div className="mt-3 flex gap-2">
                               <Dialog>

@@ -4420,6 +4420,125 @@ router.put('/:tripId/itinerary/:dayNumber/activities/:activityId', authenticateT
   }
 });
 
+// Reorder activities for a specific day in the itinerary
+router.put('/:tripId/itinerary/:dayNumber/activities/reorder', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const tripId = parseInt(req.params.tripId, 10);
+    const dayNumber = parseInt(req.params.dayNumber, 10);
+    const { activity_ids } = req.body || {};
+
+    if (!Number.isFinite(tripId) || !Number.isFinite(dayNumber) || dayNumber <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid trip or day number.',
+      });
+    }
+
+    if (!Array.isArray(activity_ids) || activity_ids.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'activity_ids must be a non-empty array.',
+      });
+    }
+
+    const normalizedIds = activity_ids
+      .map((id) => parseInt(id, 10))
+      .filter((id) => Number.isFinite(id));
+
+    if (normalizedIds.length !== activity_ids.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'All activity_ids must be valid integers.',
+      });
+    }
+
+    // Ensure trip belongs to the user
+    const { data: trip, error: tripError } = await supabase
+      .from('trip')
+      .select('trip_id, user_id')
+      .eq('trip_id', tripId)
+      .eq('user_id', userId)
+      .single();
+
+    if (tripError || !trip) {
+      return res.status(404).json({
+        success: false,
+        message: 'Trip not found',
+      });
+    }
+
+    const { data: itineraryRow, error: itineraryError } = await supabase
+      .from('itinerary')
+      .select('itinerary_id')
+      .eq('trip_id', tripId)
+      .eq('day_number', dayNumber)
+      .maybeSingle();
+
+    if (itineraryError) {
+      throw itineraryError;
+    }
+    if (!itineraryRow) {
+      return res.status(404).json({
+        success: false,
+        message: 'Itinerary day not found.',
+      });
+    }
+
+    const { data: existingLinks, error: linksError } = await supabase
+      .from('itinerary_activity')
+      .select('activity_id')
+      .eq('itinerary_id', itineraryRow.itinerary_id);
+
+    if (linksError) {
+      throw linksError;
+    }
+
+    const currentIds = (existingLinks || [])
+      .map((row) => row.activity_id)
+      .filter((id) => Number.isFinite(id));
+
+    if (currentIds.length !== normalizedIds.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'activity_ids must include every activity for this day.',
+      });
+    }
+
+    const missingIds = currentIds.filter((id) => !normalizedIds.includes(id));
+    const unknownIds = normalizedIds.filter((id) => !currentIds.includes(id));
+    if (missingIds.length > 0 || unknownIds.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'activity_ids must match the activities currently associated with this day.',
+      });
+    }
+
+    const updates = normalizedIds.map((activityId, index) =>
+      supabase
+        .from('itinerary_activity')
+        .update({ order_index: index })
+        .eq('itinerary_id', itineraryRow.itinerary_id)
+        .eq('activity_id', activityId)
+    );
+
+    const results = await Promise.all(updates);
+    const updateError = results.find((result) => result.error)?.error;
+    if (updateError) {
+      throw updateError;
+    }
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('Error reordering itinerary activities:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reorder itinerary activities',
+      error: error.message,
+    });
+  }
+});
+
 // Remove a manual activity from a specific day in the itinerary
 router.delete('/:tripId/itinerary/:dayNumber/activities/:activityId', authenticateToken, async (req, res) => {
   try {
