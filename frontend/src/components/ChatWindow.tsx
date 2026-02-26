@@ -76,6 +76,37 @@ interface TripPreferences {
   has_confirmed_restaurants?: boolean;
 }
 
+const normalizeCityToken = (value: string | null | undefined): string => {
+  if (!value) return "";
+  let normalized = value.replace(/\(.*?\)/g, " ");
+  normalized = normalized.split(",")[0] || normalized;
+  return normalized.trim().toLowerCase();
+};
+
+const doesEntryMatchCity = (
+  entryCity: string | null | undefined,
+  entryLocation: string | null | undefined,
+  targetCity: string | null | undefined
+): boolean => {
+  const normalizedTarget = normalizeCityToken(targetCity);
+  if (!normalizedTarget) return true;
+  const normalizedCity = normalizeCityToken(entryCity);
+  const normalizedLocation = normalizeCityToken(entryLocation);
+  if (normalizedCity === normalizedTarget || normalizedLocation === normalizedTarget) {
+    return true;
+  }
+  if (normalizedCity && (normalizedCity.includes(normalizedTarget) || normalizedTarget.includes(normalizedCity))) {
+    return true;
+  }
+  if (
+    normalizedLocation &&
+    (normalizedLocation.includes(normalizedTarget) || normalizedTarget.includes(normalizedLocation))
+  ) {
+    return true;
+  }
+  return false;
+};
+
 const ChatWindow = ({
   className = "",
   tripId = null,
@@ -249,10 +280,24 @@ const ChatWindow = ({
       const cityLabel = orderedCities[0] || tripDestination || "Destination";
       summaryEntries.push({ city: cityLabel, hotel: hotels[selectedHotelIndex] });
     }
+    if (summaryEntries.length === 0) {
+      hotels
+        .filter((hotel: any) => hotel?.is_trip_selected)
+        .forEach((hotel) => {
+          if (!hotel) return;
+          const cityLabel = hotel.search_location || tripDestination || "Destination";
+          summaryEntries.push({ city: cityLabel, hotel });
+        });
+    }
     if (summaryEntries.length > 0) {
       setSavedHotelSelections(summaryEntries);
     }
   }, [orderedCities, hotelsByCity, selectedHotelIndexByCity, selectedHotelIndex, hotels, tripDestination]);
+  useEffect(() => {
+    if (hasConfirmedHotels) {
+      computeLocalHotelSummary();
+    }
+  }, [hasConfirmedHotels, computeLocalHotelSummary]);
   const [finalItinerary, setFinalItinerary] = useState<any | null>(null);
   const [isGeneratingFinalItinerary, setIsGeneratingFinalItinerary] = useState(false);
   const [hasAttemptedFinalItinerary, setHasAttemptedFinalItinerary] = useState(false);
@@ -878,6 +923,35 @@ const ChatWindow = ({
       const token = getAuthToken();
       if (!token) return;
 
+      const resolvedCities =
+        Array.isArray(citiesOverride) && citiesOverride.length > 0
+          ? citiesOverride
+          : orderedCities.length > 0
+          ? [orderedCities[currentRestaurantCityIndex] || orderedCities[0]]
+          : Array.isArray(tripPreferences?.selected_cities) && tripPreferences.selected_cities.length > 0
+          ? [tripPreferences.selected_cities[0]]
+          : tripDestination
+          ? [tripDestination]
+          : [];
+
+      const payloadCities = resolvedCities
+        .map((city) => (typeof city === "string" ? city.trim() : ""))
+        .filter((city) => city.length > 0);
+
+      if (payloadCities.length === 0) {
+        setIsGeneratingRestaurants(false);
+        return;
+      }
+
+      const hasExistingRestaurants = payloadCities.every((city) =>
+        restaurants.some((restaurant) => doesEntryMatchCity(restaurant.city, restaurant.location, city))
+      );
+
+      if (hasExistingRestaurants) {
+        setIsGeneratingRestaurants(false);
+        return;
+      }
+
       const response = await fetch(getApiUrl(`api/trips/${tripId}/generate-restaurants`), {
         method: "POST",
         headers: {
@@ -886,14 +960,18 @@ const ChatWindow = ({
         },
         body: JSON.stringify({
           testMode: useTestRestaurants,
-          selected_cities: citiesOverride ?? tripPreferences?.selected_cities ?? [],
+          selected_cities: payloadCities,
         }),
       });
 
       const result = await response.json();
 
       if (response.ok && result.success && Array.isArray(result.restaurants)) {
-        setRestaurants(result.restaurants);
+        setRestaurants((prev) => {
+          const incomingIds = new Set(result.restaurants.map((r: any) => r.restaurant_id));
+          const keep = prev.filter((r) => !incomingIds.has(r.restaurant_id));
+          return [...keep, ...result.restaurants];
+        });
         setHasStartedRestaurants(true);
 
         const assistantMessage: Message = {
@@ -1154,6 +1232,20 @@ const ChatWindow = ({
       const payloadCities = resolvedCities
         .map((city) => (typeof city === "string" ? city.trim() : ""))
         .filter((city) => city.length > 0);
+
+      if (payloadCities.length === 0) {
+        setIsGeneratingActivities(false);
+        return;
+      }
+
+      const hasExistingActivities = payloadCities.every((city) =>
+        activities.some((activity) => doesEntryMatchCity(activity.city, activity.location, city))
+      );
+
+      if (hasExistingActivities) {
+        setIsGeneratingActivities(false);
+        return;
+      }
 
       const response = await fetch(getApiUrl(`api/trips/${tripId}/generate-activities`), {
         method: "POST",
@@ -1559,19 +1651,13 @@ const ChatWindow = ({
       return;
     }
 
-    // Group activities by city name (case-insensitive, normalized)
-    const normalizeCityName = (name: string | null | undefined): string => {
-      if (!name) return '';
-      return name.trim().toLowerCase();
-    };
-
     const activitiesByCity = new Map<string, typeof activities>();
     
     // Group activities by their city field (or location as fallback)
     activities.forEach((activity) => {
       const cityName = activity.city || activity.location || '';
       if (cityName) {
-        const normalized = normalizeCityName(cityName);
+        const normalized = normalizeCityToken(cityName);
         if (!activitiesByCity.has(normalized)) {
           activitiesByCity.set(normalized, []);
         }
@@ -1586,23 +1672,23 @@ const ChatWindow = ({
     
     // Count total activities per city name
     orderedCities.forEach((city) => {
-      const normalized = normalizeCityName(city);
+      const normalized = normalizeCityToken(city);
       const count = activitiesByCity.get(normalized)?.length || 0;
       cityActivityCounts.set(city, (cityActivityCounts.get(city) || 0) + count);
     });
 
     // Distribute activities across duplicate city instances
     orderedCities.forEach((city) => {
-      const normalized = normalizeCityName(city);
+      const normalized = normalizeCityToken(city);
       const allCityActivities = activitiesByCity.get(normalized) || [];
       
       // Count how many times this city appears in orderedCities
-      const cityOccurrences = orderedCities.filter(c => normalizeCityName(c) === normalized).length;
+      const cityOccurrences = orderedCities.filter(c => normalizeCityToken(c) === normalized).length;
       
       // Split activities evenly across occurrences
       const activitiesPerInstance = Math.ceil(allCityActivities.length / cityOccurrences);
       const instanceIndex = orderedCities.slice(0, orderedCities.indexOf(city) + 1)
-        .filter(c => normalizeCityName(c) === normalized).length - 1;
+        .filter(c => normalizeCityToken(c) === normalized).length - 1;
       
       const startIdx = instanceIndex * activitiesPerInstance;
       const endIdx = Math.min(startIdx + activitiesPerInstance, allCityActivities.length);
@@ -2973,10 +3059,11 @@ const ChatWindow = ({
 
         const hotelsResult = await hotelsResponse.json();
         if (hotelsResponse.ok && hotelsResult.success) {
+          const persistedHotels: any[] = Array.isArray(hotelsResult.hotels) ? hotelsResult.hotels : [];
           // Restore hotels
-          if (hotelsResult.hotels && hotelsResult.hotels.length > 0) {
-            console.log("Restoring hotels from database:", hotelsResult.hotels);
-            setHotels(hotelsResult.hotels);
+          if (persistedHotels.length > 0) {
+            console.log("Restoring hotels from database:", persistedHotels);
+            setHotels(persistedHotels);
             setHotelIds(hotelsResult.hotel_ids || {});
 
             const inferredCityOrder: string[] = (() => {
@@ -2991,7 +3078,7 @@ const ChatWindow = ({
                   .map((city) => String(city))
                   .filter((city) => city.trim().length > 0);
               }
-              const derivedSource: string[] = hotelsResult.hotels
+              const derivedSource: string[] = persistedHotels
                 .map((hotel: any) => String(hotel?.search_location || "").trim())
                 .filter((city: string) => city.length > 0);
               const derived: string[] = Array.from(new Set<string>(derivedSource));
@@ -3020,7 +3107,7 @@ const ChatWindow = ({
               const groupedHotels: Record<number, any[]> = {};
               const groupedHotelIds: Record<number, Record<number, number>> = {};
 
-              hotelsResult.hotels.forEach((hotel: any, index: number) => {
+              persistedHotels.forEach((hotel: any, index: number) => {
                 const searchLocation = (hotel.search_location || "").toLowerCase();
                 const cityIndex = resolveCityIndex(searchLocation);
                 const safeCityIndex = Math.max(0, cityIndex);
@@ -3045,7 +3132,7 @@ const ChatWindow = ({
               const selectedByCity: Record<number, number | null> = {};
               const groupedHotelsLocal: Record<number, any[]> = {};
 
-              hotelsResult.hotels.forEach((hotel: any) => {
+              persistedHotels.forEach((hotel: any) => {
                 const searchLocation = (hotel.search_location || "").toLowerCase();
                 const cityIndex = resolveCityIndex(searchLocation);
                 const safeCityIndex = Math.max(0, cityIndex);
@@ -3054,7 +3141,7 @@ const ChatWindow = ({
               });
 
               hotelsResult.selected_hotel_indices.forEach((selectedIndex: number) => {
-                const selectedHotel = hotelsResult.hotels[selectedIndex];
+                const selectedHotel = persistedHotels[selectedIndex];
                 const searchLocation = (selectedHotel?.search_location || "").toLowerCase();
                 const cityIndex = resolveCityIndex(searchLocation);
                 if (cityIndex >= 0) {
@@ -3073,7 +3160,8 @@ const ChatWindow = ({
             // For multi-city trips, check has_selected_hotels or selected_hotel_indices
             const hasSelectedHotels = hotelsResult.has_selected_hotels || 
               hotelsResult.selected_hotel_index !== null ||
-              (hotelsResult.selected_hotel_indices && hotelsResult.selected_hotel_indices.length > 0);
+              (hotelsResult.selected_hotel_indices && hotelsResult.selected_hotel_indices.length > 0) ||
+              persistedHotels.some((hotel: any) => hotel?.is_trip_selected);
             
             if (hasSelectedHotels) {
               setHasConfirmedHotels(true);
@@ -3090,7 +3178,7 @@ const ChatWindow = ({
                     : [];
 
                 selectedIndices.forEach((selectedIdx) => {
-                  const selectedHotel = hotelsResult.hotels[selectedIdx];
+                  const selectedHotel = persistedHotels[selectedIdx];
                   if (!selectedHotel) return;
                   const cityLabel =
                     selectedHotel.search_location ||
@@ -3199,6 +3287,11 @@ const ChatWindow = ({
       sendMessage();
     }
   };
+
+  const canAccessActivities =
+    hasConfirmedHotels || activities.length > 0 || hasConfirmedActivities || hasConfirmedRestaurants;
+  const canAccessRestaurants =
+    hasConfirmedActivities || restaurants.length > 0 || hasConfirmedRestaurants;
 
   // Helper function to extract arrival date from selected outbound flight
   const getFlightArrivalDate = (): Date | null => {
@@ -3937,8 +4030,8 @@ const ChatWindow = ({
                 if (v === "multi-city" && !hasConfirmedFlights) return;
                 if (v === "hotels" && !hasConfirmedFlights) return;
                 if (v === "hotels" && isMultiCity && !hasConfirmedMultiCityPlanning) return;
-                if (v === "activities" && !hasConfirmedHotels) return;
-                if (v === "restaurants" && !hasConfirmedActivities) return;
+                if (v === "activities" && !canAccessActivities) return;
+                if (v === "restaurants" && !canAccessRestaurants) return;
                 if (v === "summary" && !hasConfirmedRestaurants) return;
                 setActiveTab(v as any);
               }} className="w-full max-w-xl">
@@ -3951,11 +4044,11 @@ const ChatWindow = ({
                   <TabsTrigger
                     value="activities"
                     className="text-xs"
-                    disabled={!hasConfirmedHotels && !hasConfirmedActivities && !hasConfirmedRestaurants}
+                    disabled={!canAccessActivities}
                   >
                     Activities
                   </TabsTrigger>
-                  <TabsTrigger value="restaurants" className="text-xs" disabled={!hasConfirmedActivities}>Restaurants</TabsTrigger>
+                  <TabsTrigger value="restaurants" className="text-xs" disabled={!canAccessRestaurants}>Restaurants</TabsTrigger>
                   <TabsTrigger value="summary" className="text-xs" disabled={!hasConfirmedRestaurants}>Summary</TabsTrigger>
                 </TabsList>
               </Tabs>
@@ -3998,7 +4091,7 @@ const ChatWindow = ({
             const activityCities = orderedCities.length > 0 ? orderedCities : [];
             const currentCity = activityCities[currentActivityCityIndex];
             const cityActivities = currentCity
-              ? activities.filter((a) => (a.city || a.location || "").toLowerCase().includes(currentCity.toLowerCase()))
+              ? activities.filter((a) => doesEntryMatchCity(a.city, a.location, currentCity))
               : activities;
             const pendingCityActivities = cityActivities.filter((a) => a.preference === "pending");
             const totalCityActivities = cityActivities.length;
@@ -4527,7 +4620,7 @@ const ChatWindow = ({
             const restaurantCities = orderedCities.length > 0 ? orderedCities : [];
             const currentCity = restaurantCities[currentRestaurantCityIndex];
             const cityRestaurants = currentCity
-              ? restaurants.filter((r) => (r.location || "").toLowerCase().includes(currentCity.toLowerCase()))
+              ? restaurants.filter((r) => doesEntryMatchCity(r.city, r.location, currentCity))
               : restaurants;
             const pendingCityRestaurants = cityRestaurants.filter((r) => r.preference === "pending");
             const totalCityRestaurants = cityRestaurants.length;
@@ -4656,9 +4749,9 @@ const ChatWindow = ({
                               <span className="font-semibold text-slate-900 truncate">
                                 {r.name}
                               </span>
-                              {r.location && (
+                              {(r.city || r.location) && (
                                 <span className="text-slate-500 ml-1 truncate">
-                                  • {r.location}
+                                  • {r.city || r.location}
                                 </span>
                               )}
                               {r.cuisine_type && (
@@ -6888,7 +6981,8 @@ const ChatWindow = ({
             const currentSegment = hotelSegments[currentHotelCityIndex] || null;
             const totalSegments = hotelSegments.length;
             const isLastSegment = currentHotelCityIndex === totalSegments - 1;
-            const showHotelSelection = !hasConfirmedHotels || isEditingHotels || hotels.length === 0;
+            const showHotelSelection =
+              !hasConfirmedHotels || isEditingHotels || (hotels.length === 0 && savedHotelSelections.length === 0);
 
             if (!showHotelSelection) {
               const summaryEntries = savedHotelSelections.length > 0
@@ -7059,34 +7153,93 @@ const ChatWindow = ({
                     <div className="p-3 border border-emerald-500/30 bg-emerald-500/10 rounded-lg">
                       <p className="text-xs font-semibold text-emerald-400 mb-2">Selected hotels</p>
                       <div className="space-y-2">
-                        {orderedCities.length > 1
-                          ? orderedCities.map((city, index) => {
-                              const cityHotels = hotelsByCity[index] || [];
-                              const selectedIdx = selectedHotelIndexByCity[index] ?? null;
-                              const selected = selectedIdx !== null ? cityHotels[selectedIdx] : null;
-                              if (!selected) return null;
-                              return (
-                                <div key={`${city}-${index}`} className="text-[11px] text-slate-700">
-                                  <p>
-                                    {city}: <span className="font-semibold">{selected.name || "Selected hotel"}</span>
-                                  </p>
-                                  {selected.address && <p className="text-slate-500">{selected.address}</p>}
+                        {(
+                          savedHotelSelections.length > 0
+                            ? savedHotelSelections
+                            : (() => {
+                                if (orderedCities.length > 1) {
+                                  return orderedCities
+                                    .map((city, index) => {
+                                      const cityHotels = hotelsByCity[index] || [];
+                                      const selectedIdx = selectedHotelIndexByCity[index] ?? null;
+                                      const selected = selectedIdx !== null ? cityHotels[selectedIdx] : null;
+                                      return selected ? { city, hotel: selected } : null;
+                                    })
+                                    .filter((entry): entry is { city: string; hotel: any } => !!entry);
+                                }
+                                if (selectedHotelIndex === null) return [];
+                                const selected = hotels[selectedHotelIndex];
+                                if (!selected) return [];
+                                return [
+                                  {
+                                    city: orderedCities[0] || tripDestination || "Destination",
+                                    hotel: selected,
+                                  },
+                                ];
+                              })()
+                        ).map((entry, index) => {
+                          const hotelImage =
+                            entry.hotel?.images && entry.hotel.images.length > 0
+                              ? entry.hotel.images[0].original_image || entry.hotel.images[0].thumbnail
+                              : null;
+                          const ratePerNight =
+                            entry.hotel?.rate_per_night?.extracted_lowest !== undefined &&
+                            entry.hotel?.rate_per_night?.extracted_lowest !== null
+                              ? entry.hotel.rate_per_night.extracted_lowest
+                              : entry.hotel?.rate_per_night?.lowest || null;
+                          const formattedRate =
+                            typeof ratePerNight === "number"
+                              ? `$${ratePerNight.toLocaleString(undefined, { maximumFractionDigits: 0 })} / night`
+                              : ratePerNight || null;
+                          const locationText =
+                            entry.hotel?.address ||
+                            entry.hotel?.search_location ||
+                            entry.city ||
+                            tripDestination ||
+                            "";
+
+                          return (
+                            <div
+                              key={`${entry.city}-${index}`}
+                              className="flex gap-3 border border-emerald-200/60 rounded-lg bg-white/70 p-2"
+                            >
+                              {hotelImage && (
+                                <img
+                                  src={hotelImage}
+                                  alt={entry.hotel?.name || "Selected hotel"}
+                                  className="w-20 h-20 object-cover rounded-md border border-emerald-100"
+                                  onError={(e) => {
+                                    (e.target as HTMLImageElement).style.display = "none";
+                                  }}
+                                />
+                              )}
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[10px] font-semibold uppercase text-emerald-500 tracking-wide">
+                                  {entry.city}
+                                </p>
+                                <p className="text-sm font-semibold text-slate-900 truncate">
+                                  {entry.hotel?.name || "Selected hotel"}
+                                </p>
+                                {locationText && (
+                                  <p className="text-[11px] text-slate-500 truncate">{locationText}</p>
+                                )}
+                                <div className="flex items-center justify-between text-[11px] text-slate-500 mt-1">
+                                  <span className="font-semibold text-slate-800">
+                                    {formattedRate || "Rate unavailable"}
+                                  </span>
+                                  {entry.hotel?.overall_rating && (
+                                    <span>
+                                      {entry.hotel.overall_rating.toFixed(1)} ⭐
+                                      {entry.hotel?.reviews
+                                        ? ` • ${entry.hotel.reviews.toLocaleString()} reviews`
+                                        : ""}
+                                    </span>
+                                  )}
                                 </div>
-                              );
-                            })
-                          : (() => {
-                              if (selectedHotelIndex === null) return null;
-                              const selected = hotels[selectedHotelIndex];
-                              if (!selected) return null;
-                              return (
-                                <div className="text-[11px] text-slate-700">
-                                  <p>
-                                    <span className="font-semibold">{selected.name || "Selected hotel"}</span>
-                                  </p>
-                                  {selected.address && <p className="text-slate-500">{selected.address}</p>}
-                                </div>
-                              );
-                            })()}
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   )}

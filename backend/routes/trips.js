@@ -2239,7 +2239,10 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
     const fromDb = Array.isArray(tripPreferences?.selected_cities)
       ? tripPreferences.selected_cities.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())
       : [];
-    let selectedCities = fromBody.length > 0 ? fromBody : fromDb;
+    const orderedFromDb = Array.isArray(tripPreferences?.ordered_cities)
+      ? tripPreferences.ordered_cities.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())
+      : [];
+    let selectedCities = fromBody.length > 0 ? fromBody : fromDb.length > 0 ? fromDb : orderedFromDb;
     if (fromBody.length > 0) {
       console.log(`[activities] Using selected_cities from request body: ${fromBody.join(', ')}`);
     }
@@ -2534,6 +2537,7 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       })
     );
     const desiredTotal = Array.from(targetByCity.values()).reduce((a, b) => a + b, 0);
+    const scopedCityLabel = selectedCities[0] || fallbackCityLabel;
     const suggestions = [];
     const categoryCounts = new Map();
     const categorySeen = new Set();
@@ -2982,40 +2986,184 @@ router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res)
     const startDate = tripPreferences?.start_date || null;
     const month = startDate ? new Date(startDate + 'T12:00:00').getMonth() : new Date().getMonth();
     const season = month >= 2 && month <= 4 ? 'spring' : month >= 5 && month <= 7 ? 'summer' : month >= 8 && month <= 10 ? 'autumn' : 'winter';
-    const selectedCities = Array.isArray(bodySelectedCities) && bodySelectedCities.length > 0
+
+    let selectedCities = Array.isArray(bodySelectedCities) && bodySelectedCities.length > 0
       ? bodySelectedCities.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())
       : Array.isArray(tripPreferences?.selected_cities)
         ? tripPreferences.selected_cities.filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim())
         : [];
+    if (selectedCities.length === 0 && Array.isArray(tripPreferences?.ordered_cities)) {
+      selectedCities = tripPreferences.ordered_cities
+        .filter((c) => typeof c === 'string' && c.trim())
+        .map((c) => c.trim());
+    }
+
     const destinationName = (trip.destination || '').trim();
+
+    const canonicalizeCity = (value) => {
+      if (!value) return '';
+      const noParens = String(value).replace(/\(.*?\)/g, ' ');
+      const primary = noParens.split(',')[0] || noParens;
+      return primary.trim();
+    };
+
+    const canonicalizeCountry = (value) => {
+      if (!value) return '';
+      const raw = String(value).trim();
+      const parts = raw.split(',').map((part) => part.trim()).filter(Boolean);
+      if (parts.length >= 2) {
+        return parts[parts.length - 1];
+      }
+      const parenMatch = raw.match(/\(([^)]+)\)/);
+      if (parenMatch) {
+        return parenMatch[1].trim();
+      }
+      return raw;
+    };
+
     const destinationLabel =
       selectedCities.length > 0 && destinationName
         ? `${selectedCities[0]}, ${destinationName}`
         : destinationName;
+    const destinationCountry =
+      canonicalizeCountry(destinationName) ||
+      canonicalizeCountry(trip.destination) ||
+      destinationName ||
+      trip.destination ||
+      '';
+    const fallbackCityLabel =
+      (selectedCities[0] && selectedCities[0].trim()) ||
+      (destinationLabel && destinationLabel.split(',')[0].trim()) ||
+      (trip.destination && trip.destination.trim()) ||
+      null;
+
+    const normalizedSelectedCities = selectedCities
+      .map((city) => ({
+        raw: city,
+        normalized: canonicalizeCity(city).toLowerCase(),
+      }))
+      .filter((entry) => entry.normalized.length > 0);
+
+    const applyCityLocationFilter = (queryBuilder, rawCityValue, rawCountryValue) => {
+      let builder = queryBuilder;
+      const cityClause = canonicalizeCity(rawCityValue);
+      const countryClause = canonicalizeCountry(rawCountryValue);
+      if (cityClause) {
+        builder = builder.ilike('city', cityClause);
+      }
+      if (countryClause) {
+        builder = builder.ilike('location', countryClause);
+      }
+      return builder;
+    };
+
+    const fetchRestaurantsForScope = async (cityValue, limit = 20, locationOverride = destinationCountry) => {
+      let builder = supabase.from('restaurant').select('*').limit(limit);
+      builder = applyCityLocationFilter(builder, cityValue, locationOverride);
+      let { data, error } = await builder;
+
+      // Legacy fallback: when city/location metadata is missing, try matching against address/name
+      if ((!data || data.length === 0) && cityValue) {
+        const fallbackCity = canonicalizeCity(cityValue);
+        if (fallbackCity) {
+          const fallbackBuilder = supabase
+            .from('restaurant')
+            .select('*')
+            .limit(limit)
+            .or(
+              [
+                `address.ilike.%${fallbackCity}%`,
+                `name.ilike.%${fallbackCity}%`,
+              ].join(',')
+            );
+          const fallbackResult = await fallbackBuilder;
+          if (!fallbackResult.error && fallbackResult.data && fallbackResult.data.length > 0) {
+            data = fallbackResult.data;
+            error = null;
+          }
+        }
+      }
+      return { data, error };
+    };
+
+    const matchCityFromValue = (value) => {
+      const canonical = canonicalizeCity(value);
+      if (!canonical) return '';
+      const normalized = canonical.toLowerCase();
+      const match = normalizedSelectedCities.find(
+        (entry) =>
+          entry.normalized === normalized ||
+          entry.normalized.includes(normalized) ||
+          normalized.includes(entry.normalized)
+      );
+      return match ? match.raw : canonical;
+    };
+
+    const enforceRestaurantMetadata = async (restaurantRow, preferredCity = null) => {
+      if (!restaurantRow || !restaurantRow.restaurant_id) {
+        return restaurantRow;
+      }
+      const preferredLabel = preferredCity && preferredCity.trim() ? preferredCity.trim() : null;
+      const cityValue = preferredLabel || matchCityFromValue(restaurantRow.city);
+      const updatePayload = {};
+      if (cityValue && cityValue.length > 0 && restaurantRow.city !== cityValue) {
+        updatePayload.city = cityValue;
+        restaurantRow.city = cityValue;
+      }
+      if (destinationCountry && restaurantRow.location !== destinationCountry) {
+        updatePayload.location = destinationCountry;
+        restaurantRow.location = destinationCountry;
+      }
+      if (Object.keys(updatePayload).length > 0) {
+        try {
+          await supabase
+            .from('restaurant')
+            .update(updatePayload)
+            .eq('restaurant_id', restaurantRow.restaurant_id);
+        } catch (metaErr) {
+          console.error('Error updating restaurant metadata:', metaErr);
+        }
+      }
+      return restaurantRow;
+    };
 
     if (testMode) {
       let baseRestaurants = [];
 
       if (selectedCities.length > 0) {
         for (const city of selectedCities) {
-          const { data: destRest, error: destErr } = await supabase
-            .from('restaurant')
-            .select('*')
-            .ilike('location', `%${city}%`);
+          const { data: destRest, error: destErr } = await fetchRestaurantsForScope(city);
 
           if (!destErr && destRest && destRest.length > 0) {
-            baseRestaurants = [...baseRestaurants, ...destRest];
+            const normalized = await Promise.all(
+              destRest.map((rest) =>
+                enforceRestaurantMetadata(
+                  { ...rest },
+                  city
+                )
+              )
+            );
+            baseRestaurants = [...baseRestaurants, ...normalized];
           }
         }
       }
-      if (baseRestaurants.length === 0 && destinationName) {
-        const { data: destRest, error: destErr } = await supabase
-          .from('restaurant')
-          .select('*')
-          .ilike('location', `%${destinationName}%`);
+      if (baseRestaurants.length === 0 && destinationCountry) {
+        const { data: destRest, error: destErr } = await fetchRestaurantsForScope(
+          null,
+          20,
+          destinationCountry
+        );
 
         if (!destErr && destRest && destRest.length > 0) {
-          baseRestaurants = destRest;
+          const normalized = await Promise.all(
+            destRest.map((rest) =>
+              enforceRestaurantMetadata(
+                { ...rest },
+                fallbackCityLabel
+              )
+            )
+          );
+          baseRestaurants = normalized;
         }
       }
       if (baseRestaurants.length > 0) {
@@ -3030,7 +3178,15 @@ router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res)
           .limit(20);
 
         if (!anyErr && anyRest && anyRest.length > 0) {
-          baseRestaurants = [...baseRestaurants, ...anyRest];
+          const normalized = await Promise.all(
+            anyRest.map((rest) =>
+              enforceRestaurantMetadata(
+                { ...rest },
+                fallbackCityLabel
+              )
+            )
+          );
+          baseRestaurants = [...baseRestaurants, ...normalized];
         }
       }
 
@@ -3139,24 +3295,36 @@ Rules:
       let cached = [];
       if (selectedCities.length > 0) {
         for (const city of selectedCities) {
-          const { data: cityRest, error: cityErr } = await supabase
-            .from('restaurant')
-            .select('*')
-            .ilike('location', `%${city}%`)
-            .limit(10);
+          const { data: cityRest, error: cityErr } = await fetchRestaurantsForScope(city, 10);
           if (!cityErr && cityRest && cityRest.length > 0) {
-            cached = [...cached, ...cityRest];
+            const normalized = await Promise.all(
+              cityRest.map((rest) =>
+                enforceRestaurantMetadata(
+                  { ...rest },
+                  city
+                )
+              )
+            );
+            cached = [...cached, ...normalized];
           }
         }
       }
-      if (cached.length === 0 && destinationName) {
-        const { data: destRest, error: destErr } = await supabase
-          .from('restaurant')
-          .select('*')
-          .ilike('location', `%${destinationName}%`)
-          .limit(10);
+      if (cached.length === 0 && destinationCountry) {
+        const { data: destRest, error: destErr } = await fetchRestaurantsForScope(
+          null,
+          10,
+          destinationCountry
+        );
         if (!destErr && destRest && destRest.length > 0) {
-          cached = destRest;
+          const normalized = await Promise.all(
+            destRest.map((rest) =>
+              enforceRestaurantMetadata(
+                { ...rest },
+                fallbackCityLabel
+              )
+            )
+          );
+          cached = normalized;
         }
       }
       if (cached.length > 0) {
@@ -3200,12 +3368,39 @@ Rules:
     }
 
     const toInsert = list.slice(0, 5);
+    const scopedCityLabel = selectedCities[0] || fallbackCityLabel;
+
+    const resolveRestaurantCity = (restaurantEntry, explicitCityLabel = null) => {
+      if (explicitCityLabel && explicitCityLabel.trim()) {
+        return explicitCityLabel.trim();
+      }
+      const cityFromEntry = matchCityFromValue(
+        restaurantEntry.city ||
+          (typeof restaurantEntry.location === 'string' ? restaurantEntry.location : '')
+      );
+      if (cityFromEntry) {
+        return cityFromEntry;
+      }
+      const fromAddress = matchCityFromValue(
+        typeof restaurantEntry.address === 'string'
+          ? restaurantEntry.address.split(',').pop()
+          : ''
+      );
+      if (fromAddress) {
+        return fromAddress;
+      }
+      if (selectedCities.length > 0) {
+        return selectedCities[0];
+      }
+      return matchCityFromValue(destinationName || trip.destination || '');
+    };
 
     const suggestions = [];
     for (const r of toInsert) {
       const name = r.name || 'Unknown Restaurant';
       const address = r.address || r.location || destinationLabel || trip.destination || '';
-      const location = r.location || destinationLabel || trip.destination || '';
+      const cityValue = resolveRestaurantCity(r, scopedCityLabel);
+      const location = (destinationCountry || destinationLabel || trip.destination || '').trim();
       const cuisine_type = r.cuisine_type || 'Various';
       const meal_types = Array.isArray(r.meal_types) ? r.meal_types : [];
       const dietary_options = Array.isArray(r.dietary_options) ? r.dietary_options : [];
@@ -3230,7 +3425,8 @@ Rules:
         .from('restaurant')
         .insert({
           name,
-          location,
+          city: cityValue || null,
+          location: location || null,
           address,
           cuisine_type,
           meal_types,
@@ -3265,8 +3461,13 @@ Rules:
         console.error('Error inserting trip_restaurant_preference:', prefErr);
       }
 
+      const normalizedInserted = await enforceRestaurantMetadata(
+        { ...inserted },
+        cityValue || matchCityFromValue(address)
+      );
+
       suggestions.push({
-        ...inserted,
+        ...normalizedInserted,
         trip_restaurant_preference_id: prefRow?.trip_restaurant_preference_id,
         preference: prefRow?.preference || 'pending',
       });

@@ -738,7 +738,8 @@ router.get('/trip/:tripId', authenticateToken, async (req, res) => {
           property_token: th.hotel.property_token,
           serpapi_property_details_link: th.hotel.serpapi_property_details_link,
           search_location: th.hotel.search_location, // Include search_location for multi-city identification
-          ...(th.hotel.additional_data || {})
+          ...(th.hotel.additional_data || {}),
+          is_trip_selected: !!th.is_selected,
         };
 
         hotels.push(hotelProperty);
@@ -780,4 +781,3 @@ router.get('/trip/:tripId', authenticateToken, async (req, res) => {
 });
 
 export default router;
-

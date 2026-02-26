@@ -7,6 +7,7 @@ interface Restaurant {
   trip_restaurant_preference_id?: number;
   restaurant_id: number;
   name: string;
+  city?: string | null;
   location: string | null;
   address: string | null;
   cuisine_type: string | null;
@@ -181,12 +182,18 @@ const RestaurantSwipeCard = ({
           {/* Title and Location */}
           <div>
             <h3 className="text-xl font-bold text-white">{restaurant.name}</h3>
-            {restaurant.location && (
+            {restaurant.city || restaurant.location ? (
               <div className="mt-1 flex items-center gap-1 text-sm text-slate-400">
                 <MapPin className="h-3 w-3" />
-                <span>{restaurant.location}</span>
+                <span>
+                  {restaurant.city
+                    ? restaurant.location
+                      ? `${restaurant.city}, ${restaurant.location}`
+                      : restaurant.city
+                    : restaurant.location}
+                </span>
               </div>
-            )}
+            ) : null}
             {restaurant.address && (
               <div className="mt-1 text-xs text-slate-500">{restaurant.address}</div>
             )}

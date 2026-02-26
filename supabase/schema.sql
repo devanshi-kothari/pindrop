@@ -44,6 +44,9 @@ CREATE TABLE IF NOT EXISTS activity (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
 
+CREATE INDEX IF NOT EXISTS idx_activity_city ON activity(city);
+CREATE INDEX IF NOT EXISTS idx_activity_location ON activity(location);
+
 CREATE TABLE IF NOT EXISTS itinerary (
     itinerary_id BIGSERIAL PRIMARY KEY,
     trip_id BIGINT NOT NULL REFERENCES trip(trip_id) ON DELETE CASCADE,
@@ -143,6 +146,7 @@ CREATE TABLE IF NOT EXISTS trip_preference (
 CREATE TABLE IF NOT EXISTS restaurant (
     restaurant_id BIGSERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
+    city VARCHAR(100),
     location VARCHAR(255),
     address VARCHAR(500),
     cuisine_type VARCHAR(100),
@@ -174,6 +178,7 @@ CREATE TABLE IF NOT EXISTS trip_restaurant_preference (
 
 CREATE INDEX IF NOT EXISTS idx_trip_restaurant_preference_trip_id ON trip_restaurant_preference(trip_id);
 CREATE INDEX IF NOT EXISTS idx_restaurant_location ON restaurant(location);
+CREATE INDEX IF NOT EXISTS idx_restaurant_city ON restaurant(city);
 
 -- Trip-level feedback on reusable activities (for swipe-style selection)
 CREATE TABLE IF NOT EXISTS trip_activity_preference (
