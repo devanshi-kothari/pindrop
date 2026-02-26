@@ -6540,20 +6540,34 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
       const eligibleIndices = dailyActivities
         .map((day, idx) => (!day.travel_day ? idx : -1))
         .filter((idx) => idx >= 0);
-      const allActivities = eligibleIndices.flatMap((idx) => dailyActivities[idx].activities || []);
-      if (allActivities.length > 0 && eligibleIndices.length > 0) {
-        const redistributedBuckets = eligibleIndices.map((idx) => ({
-          index: idx,
-          activities: [],
-        }));
 
-        allActivities.forEach((activity, index) => {
-          const bucketIndex = index % redistributedBuckets.length;
-          redistributedBuckets[bucketIndex].activities.push(activity);
+      if (eligibleIndices.length > 0) {
+        const cityBuckets = new Map();
+        eligibleIndices.forEach((idx) => {
+          const cityLabel = dailyActivities[idx]?.city || null;
+          const key = cityLabel ? normalizeCityKey(cityLabel) : `__no_city__`;
+          if (!cityBuckets.has(key)) {
+            cityBuckets.set(key, []);
+          }
+          cityBuckets.get(key).push(idx);
         });
 
-        redistributedBuckets.forEach((bucket) => {
-          dailyActivities[bucket.index].activities = bucket.activities;
+        cityBuckets.forEach((indices) => {
+          const pool = indices.flatMap((idx) => dailyActivities[idx].activities || []);
+          if (pool.length === 0) {
+            return;
+          }
+          const redistributed = indices.map((idx) => ({
+            index: idx,
+            activities: [],
+          }));
+          pool.forEach((activity, index) => {
+            const bucketIndex = index % redistributed.length;
+            redistributed[bucketIndex].activities.push(activity);
+          });
+          redistributed.forEach((bucket) => {
+            dailyActivities[bucket.index].activities = bucket.activities;
+          });
         });
       }
     }
