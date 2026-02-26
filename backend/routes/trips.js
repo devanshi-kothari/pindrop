@@ -39,6 +39,9 @@ const GOOGLE_CUSTOM_SEARCH_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
 const GOOGLE_CUSTOM_SEARCH_CX = process.env.GOOGLE_CUSTOM_SEARCH_CX;
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 
+// Lightweight in-memory cache for geocoding lookups so we don't spam the Maps API
+const coordinateCache = new Map();
+
 const canonicalizeCityValue = (value) => {
   if (!value) return '';
   const trimmed = String(value).trim();
@@ -950,6 +953,585 @@ async function fetchActivityImage(activityName, destination) {
   }
 
   return null;
+}
+
+const EARTH_RADIUS_KM = 6371;
+
+const hasValidCoords = (coord) =>
+  coord &&
+  typeof coord.lat === 'number' &&
+  typeof coord.lng === 'number' &&
+  Number.isFinite(coord.lat) &&
+  Number.isFinite(coord.lng);
+
+function haversineDistanceKm(a, b) {
+  if (!hasValidCoords(a) || !hasValidCoords(b)) {
+    return Infinity;
+  }
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+
+  const sinLat = Math.sin(dLat / 2);
+  const sinLon = Math.sin(dLon / 2);
+  const h =
+    sinLat * sinLat +
+    Math.cos(lat1) * Math.cos(lat2) * sinLon * sinLon;
+  const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+  return EARTH_RADIUS_KM * c;
+}
+
+const centroidOfCoords = (coords) => {
+  if (!Array.isArray(coords) || coords.length === 0) return null;
+  const sum = coords.reduce(
+    (acc, coord) => {
+      if (!hasValidCoords(coord)) return acc;
+      return {
+        lat: acc.lat + coord.lat,
+        lng: acc.lng + coord.lng,
+        count: acc.count + 1,
+      };
+    },
+    { lat: 0, lng: 0, count: 0 },
+  );
+  if (!sum.count) return null;
+  return {
+    lat: sum.lat / sum.count,
+    lng: sum.lng / sum.count,
+  };
+};
+
+async function geocodeText(query) {
+  if (!GOOGLE_MAPS_API_KEY) return null;
+  if (!query || typeof query !== 'string') return null;
+
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return null;
+  if (coordinateCache.has(normalized)) {
+    return coordinateCache.get(normalized);
+  }
+
+  try {
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
+      normalized,
+    )}&key=${GOOGLE_MAPS_API_KEY}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error('Failed to geocode text:', res.status, res.statusText);
+      coordinateCache.set(normalized, null);
+      return null;
+    }
+    const data = await res.json();
+    const location = data?.results?.[0]?.geometry?.location || null;
+    coordinateCache.set(normalized, location || null);
+    return location || null;
+  } catch (err) {
+    console.error('Error during geocodeText:', err);
+    coordinateCache.set(normalized, null);
+    return null;
+  }
+}
+
+async function resolvePlaceCoordinates({ address, name, city, destination }) {
+  const pieces = [];
+  if (address) pieces.push(address);
+  if (!address && name) pieces.push(name);
+  if (city) pieces.push(city);
+  if (destination) pieces.push(destination);
+
+  if (pieces.length === 0) return null;
+  const query = pieces.join(', ');
+  return geocodeText(query);
+}
+
+const getHotelCoordinates = (hotel) => {
+  if (!hotel) return null;
+  const lat = typeof hotel.latitude === 'number' ? hotel.latitude : null;
+  const lng = typeof hotel.longitude === 'number' ? hotel.longitude : null;
+  if (lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng)) {
+    return { lat, lng };
+  }
+  return null;
+};
+
+const getHotelForCity = (cityName, hotelByCity, fallbackHotel) => {
+  if (!hotelByCity) return fallbackHotel || null;
+  const normalized = normalizeCityKey(cityName);
+  if (normalized && hotelByCity.has(normalized)) {
+    return hotelByCity.get(normalized);
+  }
+  return fallbackHotel || null;
+};
+
+const determineSeasonFromDate = (dateStr) => {
+  if (!dateStr) {
+    const month = new Date().getMonth();
+    if (month >= 2 && month <= 4) return 'spring';
+    if (month >= 5 && month <= 7) return 'summer';
+    if (month >= 8 && month <= 10) return 'autumn';
+    return 'winter';
+  }
+  const date = new Date(`${dateStr}T12:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return 'mixed';
+  }
+  const month = date.getMonth();
+  if (month >= 2 && month <= 4) return 'spring';
+  if (month >= 5 && month <= 7) return 'summer';
+  if (month >= 8 && month <= 10) return 'autumn';
+  return 'winter';
+};
+
+async function attachGeoToActivity(activity, { city, destination }) {
+  if (!activity) return null;
+  if (activity._geo_resolved) {
+    return activity._geo || null;
+  }
+  const coords = await resolvePlaceCoordinates({
+    address: activity.address || activity.location || null,
+    name: activity.name,
+    city,
+    destination,
+  });
+  if (coords) {
+    activity._geo = coords;
+  }
+  activity._geo_resolved = true;
+  return activity._geo || null;
+}
+
+async function attachGeoToRestaurant(restaurant, { city, destination }) {
+  if (!restaurant) return null;
+  if (restaurant._geo_resolved) {
+    return restaurant._geo || null;
+  }
+  const coords = await resolvePlaceCoordinates({
+    address: restaurant.address || restaurant.location || null,
+    name: restaurant.name,
+    city,
+    destination,
+  });
+  if (coords) {
+    restaurant._geo = coords;
+  }
+  restaurant._geo_resolved = true;
+  return restaurant._geo || null;
+}
+
+const findClosestEntryIndex = (entries, targetCoord) => {
+  if (!Array.isArray(entries) || entries.length === 0) return -1;
+  if (!hasValidCoords(targetCoord)) return 0;
+  let bestIdx = 0;
+  let bestDistance = Infinity;
+  entries.forEach((entry, idx) => {
+    if (!entry.coord || !hasValidCoords(entry.coord)) return;
+    const distance = haversineDistanceKm(targetCoord, entry.coord);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIdx = idx;
+    }
+  });
+  return bestIdx;
+};
+
+function optimizeActivityOrder(activities, anchorCoord) {
+  if (!Array.isArray(activities) || activities.length < 2) {
+    return activities;
+  }
+  const entries = activities.map((activity, index) => ({
+    activity,
+    coord: activity._geo || null,
+    index,
+  }));
+  const withCoords = entries.filter((entry) => hasValidCoords(entry.coord));
+  if (withCoords.length < 2) {
+    return activities;
+  }
+  const remaining = withCoords.slice();
+  let startIndex = 0;
+  if (hasValidCoords(anchorCoord)) {
+    startIndex = findClosestEntryIndex(remaining, anchorCoord);
+  } else {
+    const centroid = centroidOfCoords(remaining.map((entry) => entry.coord));
+    startIndex = findClosestEntryIndex(remaining, centroid);
+  }
+  const ordered = [];
+  let current = remaining.splice(Math.max(0, startIndex), 1)[0];
+  ordered.push(current.activity);
+  while (remaining.length > 0) {
+    const idx = findClosestEntryIndex(remaining, current.coord);
+    current = remaining.splice(Math.max(0, idx), 1)[0];
+    ordered.push(current.activity);
+  }
+  const withoutCoords = entries.filter((entry) => !hasValidCoords(entry.coord)).map((entry) => entry.activity);
+  return ordered.concat(withoutCoords);
+}
+
+async function enrichAndOptimizeDailyActivities(dailyActivities, { destination, hotelByCity, fallbackHotel }) {
+  if (!Array.isArray(dailyActivities)) return;
+  for (const day of dailyActivities) {
+    if (!day || !Array.isArray(day.activities) || day.activities.length === 0) continue;
+    const city = day.city || null;
+    for (const activity of day.activities) {
+      await attachGeoToActivity(activity, { city, destination });
+    }
+    if (day.activities.length >= 2) {
+      const hotel = getHotelForCity(city, hotelByCity, fallbackHotel);
+      const hotelCoord = getHotelCoordinates(hotel);
+      const optimized = optimizeActivityOrder(day.activities, hotelCoord);
+      if (Array.isArray(optimized) && optimized.length === day.activities.length) {
+        day.activities = optimized;
+      }
+    }
+  }
+}
+
+const determineSlotAnchorCoord = (dayData, slot, hotelByCity, fallbackHotel, fallbackCityLabel) => {
+  const coords = Array.isArray(dayData?.activities)
+    ? dayData.activities
+        .map((activity) => (activity && hasValidCoords(activity._geo) ? activity._geo : null))
+        .filter(Boolean)
+    : [];
+  if (coords.length > 0) {
+    if (slot === 'breakfast') return coords[0];
+    if (slot === 'lunch') return coords[Math.floor(coords.length / 2)];
+    if (slot === 'dinner') return coords[coords.length - 1];
+    return centroidOfCoords(coords);
+  }
+  const fallbackCity = dayData?.city || fallbackCityLabel;
+  const hotel = getHotelForCity(fallbackCity, hotelByCity, fallbackHotel);
+  return getHotelCoordinates(hotel);
+};
+
+const inferRestaurantCityKey = (restaurant, fallbackCities = []) => {
+  if (!restaurant) return null;
+  if (restaurant.city) {
+    const normalized = normalizeCityKey(restaurant.city);
+    if (normalized) return normalized;
+  }
+  const locationText = `${restaurant.location || ''} ${restaurant.address || ''}`.toLowerCase();
+  for (const city of fallbackCities) {
+    if (!city) continue;
+    const normalized = normalizeCityKey(city);
+    if (!normalized) continue;
+    if (locationText.includes(city.toLowerCase())) {
+      return normalized;
+    }
+  }
+  return null;
+};
+
+const restaurantIdentity = (restaurant) => {
+  if (!restaurant) return null;
+  if (restaurant.restaurant_id) {
+    return `id:${restaurant.restaurant_id}`;
+  }
+  const key = `${restaurant.name || ''}|${restaurant.address || restaurant.location || ''}`.trim();
+  return key ? `named:${key.toLowerCase()}` : null;
+};
+
+async function fetchRestaurantsForCityCatalog(cityName, limit = 60) {
+  if (!cityName) return [];
+  const selectFields =
+    'restaurant_id, name, city, location, address, cuisine_type, price_range, cost_estimate, source_url, reservation_url, image_url';
+  const cityPattern = `%${cityName}%`;
+  try {
+    const { data, error } = await supabase
+      .from('restaurant')
+      .select(selectFields)
+      .ilike('city', cityPattern)
+      .order('updated_at', { ascending: false })
+      .limit(limit);
+    if (!error && data && data.length > 0) {
+      return data;
+    }
+  } catch (err) {
+    console.error(`Error fetching restaurants for city ${cityName}:`, err);
+  }
+  try {
+    const { data: fallbackRows, error: fallbackError } = await supabase
+      .from('restaurant')
+      .select(selectFields)
+      .ilike('location', cityPattern)
+      .order('updated_at', { ascending: false })
+      .limit(limit);
+    if (fallbackError && fallbackError.code !== 'PGRST116') {
+      console.error(`Error fetching fallback restaurants for city ${cityName}:`, fallbackError);
+    }
+    return fallbackRows || [];
+  } catch (err) {
+    console.error(`Error fetching restaurants by location for ${cityName}:`, err);
+    return [];
+  }
+}
+
+async function pickRestaurantFromPool(pool, slotContext, usedSet, destination) {
+  if (!Array.isArray(pool) || pool.length === 0) return null;
+  let fallback = null;
+  let fallbackIndex = -1;
+  let best = null;
+  let bestIndex = -1;
+  let bestDistance = Infinity;
+  for (let i = 0; i < pool.length; i++) {
+    const restaurant = pool[i];
+    const identity = restaurantIdentity(restaurant);
+    if (identity && usedSet.has(identity)) {
+      continue;
+    }
+    if (slotContext.anchorCoord && hasValidCoords(slotContext.anchorCoord)) {
+      const coords = await attachGeoToRestaurant(restaurant, {
+        city: slotContext.cityLabel,
+        destination,
+      });
+      if (coords && hasValidCoords(coords)) {
+        const distance = haversineDistanceKm(slotContext.anchorCoord, coords);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = restaurant;
+          bestIndex = i;
+        }
+      }
+    }
+    if (!fallback) {
+      fallback = restaurant;
+      fallbackIndex = i;
+    }
+  }
+  const choice = best || fallback;
+  const index = best ? bestIndex : fallbackIndex;
+  if (choice && index != null && index >= 0) {
+    pool.splice(index, 1);
+    const identity = restaurantIdentity(choice);
+    if (identity) {
+      usedSet.add(identity);
+    }
+    return choice;
+  }
+  return null;
+}
+
+async function buildRestaurantCatalogForCities(cities) {
+  const catalog = new Map();
+  if (!Array.isArray(cities)) {
+    return catalog;
+  }
+  for (const city of cities) {
+    if (!city) continue;
+    const normalized = normalizeCityKey(city);
+    if (!normalized || catalog.has(normalized)) continue;
+    const rows = await fetchRestaurantsForCityCatalog(city);
+    catalog.set(normalized, rows.slice());
+  }
+  return catalog;
+}
+
+const buildMealRowFromRestaurant = (tripId, slotContext, restaurant) => ({
+  trip_id: tripId,
+  day_number: slotContext.day_number,
+  slot: slotContext.slot,
+  name: restaurant.name || 'Restaurant',
+  location: (restaurant.address || restaurant.location || '').trim() || null,
+  link: restaurant.reservation_url || restaurant.source_url || null,
+  cost: restaurant.cost_estimate != null ? parseFloat(restaurant.cost_estimate) : null,
+  finalized: false,
+});
+
+async function assignRestaurantsFromPools({
+  tripId,
+  slotContexts,
+  likedPools,
+  generalPools,
+  destination,
+}) {
+  const usedSet = new Set();
+  const mealRows = [];
+  const remaining = [];
+
+  for (const slotContext of slotContexts) {
+    if (!slotContext || !slotContext.cityLabel) {
+      remaining.push(slotContext);
+      continue;
+    }
+    const cityKey = slotContext.normalizedCity;
+    let restaurant = null;
+    if (cityKey && likedPools.has(cityKey)) {
+      restaurant = await pickRestaurantFromPool(likedPools.get(cityKey), slotContext, usedSet, destination);
+    }
+    if (!restaurant && cityKey && generalPools.has(cityKey)) {
+      restaurant = await pickRestaurantFromPool(generalPools.get(cityKey), slotContext, usedSet, destination);
+    }
+    if (restaurant) {
+      mealRows.push(buildMealRowFromRestaurant(tripId, slotContext, restaurant));
+    } else {
+      remaining.push(slotContext);
+    }
+  }
+
+  return { mealRows, remainingSlots: remaining };
+}
+
+async function requestRestaurantSuggestions({
+  cityLabel,
+  destination,
+  count,
+  restPrefs,
+  season,
+  budgetHint,
+  mealBudgetPerDay,
+}) {
+  if (!count || count <= 0) return [];
+  const cuisineTypes = restPrefs.cuisine_types || [];
+  const dietaryRestrictions = restPrefs.dietary_restrictions || [];
+  const mealTypes = restPrefs.meal_types || [];
+  const minPrice = restPrefs.min_price_range ?? null;
+  const maxPrice = restPrefs.max_price_range ?? null;
+  const customRequests = restPrefs.custom_requests || '';
+  const payload = {
+    city: cityLabel,
+    broader_destination: destination,
+    number_of_restaurants: count,
+    cuisine_types: cuisineTypes,
+    dietary_restrictions: dietaryRestrictions,
+    meal_types: mealTypes.length ? mealTypes : ['Breakfast', 'Lunch', 'Dinner'],
+    min_price_range: minPrice,
+    max_price_range: maxPrice,
+    custom_requests: customRequests,
+    season,
+    budget_note: budgetHint,
+    trip_budget_per_day: mealBudgetPerDay,
+  };
+  const systemPrompt = `You are an expert local restaurant recommender. Suggest exactly ${count} real or realistic restaurants located in ${cityLabel}${
+    destination ? ` (${destination})` : ''
+  }.
+
+Rules:
+- Return ONLY valid JSON array (no markdown) with objects containing name, address (street + city), location (neighborhood), cuisine_type, price_range ("$" to "$$$$"), cost_estimate (USD per person), link (URL), optional description, meal_types array, dietary_options array.
+- Restaurants must physically be in ${cityLabel}, prioritize neighborhoods close to main attractions.
+- Reflect the provided cuisine, dietary, price, and seasonal context.`;
+
+  let rawContent = '[]';
+  try {
+    const completion = await openaiClient.chat.completions.create({
+      model: DEFAULT_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: JSON.stringify(payload) },
+      ],
+      temperature: 0.6,
+      max_tokens: 2000,
+    });
+    rawContent = completion.choices[0]?.message?.content || '[]';
+  } catch (err) {
+    console.error('Error generating restaurant suggestions via LLM:', err);
+  }
+
+  try {
+    const cleaned = rawContent.replace(/```\w*\n?/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed)) {
+      return parsed.slice(0, count);
+    }
+    if (Array.isArray(parsed?.restaurants)) {
+      return parsed.restaurants.slice(0, count);
+    }
+  } catch (err) {
+    const match = rawContent.match(/\[[\s\S]*\]/);
+    if (match) {
+      try {
+        const parsed = JSON.parse(match[0]);
+        if (Array.isArray(parsed)) {
+          return parsed.slice(0, count);
+        }
+      } catch (parseErr) {
+        console.error('Error parsing restaurant suggestions JSON:', parseErr);
+      }
+    }
+    console.error('Failed to parse restaurant suggestions payload.');
+  }
+  return [];
+}
+
+async function generateRestaurantsForRemainingSlots({
+  tripId,
+  slots,
+  destination,
+  restPrefs,
+  season,
+  budgetHint,
+  mealBudgetPerDay,
+}) {
+  if (!Array.isArray(slots) || slots.length === 0) return [];
+  const byCity = new Map();
+  for (const slot of slots) {
+    const key = slot?.cityLabel || destination || 'general';
+    if (!byCity.has(key)) {
+      byCity.set(key, []);
+    }
+    byCity.get(key).push(slot);
+  }
+  const generatedRows = [];
+  for (const [cityLabel, citySlots] of byCity.entries()) {
+    const suggestions = await requestRestaurantSuggestions({
+      cityLabel,
+      destination,
+      count: citySlots.length,
+      restPrefs,
+      season,
+      budgetHint,
+      mealBudgetPerDay,
+    });
+    for (let i = 0; i < citySlots.length; i++) {
+      const slotContext = citySlots[i];
+      const suggestion = suggestions[i] || {};
+      const name = suggestion.name || `Restaurant in ${cityLabel}`;
+      const address = suggestion.address || `${cityLabel}, ${destination || ''}`.trim();
+      const cuisineType = suggestion.cuisine_type || 'Various';
+      const costEstimate = suggestion.cost_estimate != null ? parseFloat(suggestion.cost_estimate) : null;
+      const link = suggestion.link || suggestion.source_url || null;
+      const normalizedCity = canonicalizeCityValue(cityLabel);
+      const { data: insertedRest, error: restErr } = await supabase
+        .from('restaurant')
+        .insert({
+          name,
+          city: normalizedCity,
+          location: destination || null,
+          address: address || null,
+          cuisine_type: cuisineType,
+          meal_types: Array.isArray(suggestion.meal_types) ? suggestion.meal_types : [],
+          dietary_options: Array.isArray(suggestion.dietary_options) ? suggestion.dietary_options : [],
+          price_range: suggestion.price_range || null,
+          cost_estimate: costEstimate,
+          source: 'llm-final-itinerary',
+          source_url: link,
+          reservation_url: suggestion.reservation_url || null,
+          description: suggestion.description || null,
+          image_url: suggestion.image_url || null,
+        })
+        .select('restaurant_id, name, city, location, address, cost_estimate, source_url, reservation_url')
+        .single();
+
+      if (restErr) {
+        console.error('Error inserting generated restaurant:', restErr);
+        generatedRows.push({
+          trip_id: tripId,
+          day_number: slotContext.day_number,
+          slot: slotContext.slot,
+          name,
+          location: address,
+          link,
+          cost: costEstimate,
+          finalized: false,
+        });
+      } else if (insertedRest) {
+        generatedRows.push(
+          buildMealRowFromRestaurant(tripId, slotContext, insertedRest)
+        );
+      }
+    }
+  }
+  return generatedRows;
 }
 
 // Helper function to check if an activity matches avoid categories
@@ -5709,7 +6291,7 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
       const restIds = likedRestaurantPrefs.map((p) => p.restaurant_id).filter(Boolean);
       const { data: restRows } = await supabase
         .from('restaurant')
-        .select('restaurant_id, name, address, location, source_url, reservation_url, cost_estimate')
+        .select('restaurant_id, name, city, location, address, cuisine_type, price_range, cost_estimate, source_url, reservation_url, image_url')
         .in('restaurant_id', restIds);
       likedRestaurants = restRows || [];
     }
@@ -5976,6 +6558,12 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
       }
     }
 
+    await enrichAndOptimizeDailyActivities(dailyActivities, {
+      destination: trip.destination,
+      hotelByCity,
+      fallbackHotel,
+    });
+
     // Persist the day-by-day itinerary so we can reuse it later
     const { error: deleteItineraryError } = await supabase
       .from('itinerary')
@@ -6037,7 +6625,7 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
       }
     }
 
-    // Populate trip_meal from liked restaurants + fill remaining slots with suggestions (budget, meals/day, cuisine, preferences)
+    // Populate trip_meal with location-aware restaurants (cached first, then LLM)
     const restPrefs = tripPreferences?.restaurant_preferences || {};
     const mealsPerDay = Math.min(Math.max(restPrefs.meals_per_day ?? 2, 1), 3);
     const totalMealSlots = numDays > 0 ? mealsPerDay * numDays : 0;
@@ -6057,154 +6645,81 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
         console.error('Error clearing existing trip_meal:', deleteMealsError);
       }
 
-      const mealRows = [];
-      let likedIndex = 0;
+      const fallbackCityLabel =
+        dailyActivities.find((day) => day.city)?.city ||
+        canonicalOrderedCities[0] ||
+        trip.destination ||
+        null;
 
-      // 1) Fill with liked restaurants first (user feedback)
-      for (let i = 0; i < slotsNeeded.length && likedIndex < likedRestaurants.length; i++) {
-        const { day_number, slot } = slotsNeeded[i];
-        const rest = likedRestaurants[likedIndex++];
-        const link = rest.reservation_url || rest.source_url || null;
-        mealRows.push({
-          trip_id: tripId,
-          day_number,
-          slot,
-          name: rest.name || null,
-          location: (rest.address || rest.location || '').trim() || null,
-          link,
-          cost: rest.cost_estimate != null ? parseFloat(rest.cost_estimate) : null,
-          finalized: false,
+      const slotContexts = slotsNeeded
+        .map(({ day_number, slot }) => {
+          const dayData = dailyActivities[day_number - 1];
+          const cityLabel = dayData?.city || fallbackCityLabel;
+          if (!cityLabel) return null;
+          const normalizedCity = normalizeCityKey(cityLabel);
+          const anchorCoord = determineSlotAnchorCoord(
+            dayData,
+            slot,
+            hotelByCity,
+            fallbackHotel,
+            fallbackCityLabel,
+          );
+          return {
+            day_number,
+            slot,
+            cityLabel,
+            normalizedCity,
+            date: dayData?.date || null,
+            anchorCoord,
+          };
+        })
+        .filter(Boolean);
+
+      if (slotContexts.length > 0) {
+        const dayCities = Array.from(new Set(slotContexts.map((ctx) => ctx.cityLabel))).filter(Boolean);
+        const generalPools = await buildRestaurantCatalogForCities(dayCities);
+        const likedPools = new Map();
+        likedRestaurants.forEach((rest) => {
+          const inferredCity =
+            inferRestaurantCityKey(rest, dayCities) ||
+            (fallbackCityLabel ? normalizeCityKey(fallbackCityLabel) : null);
+          if (!inferredCity) return;
+          if (!likedPools.has(inferredCity)) {
+            likedPools.set(inferredCity, []);
+          }
+          likedPools.get(inferredCity).push(rest);
         });
-      }
 
-      // 2) Fill remaining slots with LLM suggestions (budget, cuisine, dietary, meals/day, preferences)
-      const remainingSlots = slotsNeeded.slice(mealRows.length);
-      if (remainingSlots.length > 0 && trip.destination) {
-        const cuisineTypes = restPrefs.cuisine_types || [];
-        const dietaryRestrictions = restPrefs.dietary_restrictions || [];
-        const mealTypes = restPrefs.meal_types || [];
-        const minPrice = restPrefs.min_price_range ?? null;
-        const maxPrice = restPrefs.max_price_range ?? null;
-        const customRequests = restPrefs.custom_requests || '';
-        const startDate = tripPreferences?.start_date || null;
-        const month = startDate ? new Date(startDate + 'T12:00:00').getMonth() : new Date().getMonth();
-        const season = month >= 2 && month <= 4 ? 'spring' : month >= 5 && month <= 7 ? 'summer' : month >= 8 && month <= 10 ? 'autumn' : 'winter';
-        const budgetHint = tripPreferences?.max_budget ? `Daily/trip budget considered: ~$${Math.round(tripPreferences.max_budget / numDays)} per day for meals.` : '';
-
-        const systemPrompt = `You are an expert local restaurant recommender. Suggest exactly ${remainingSlots.length} real or realistic restaurants for a trip.
-
-Rules:
-- Return ONLY valid JSON: an array of objects. No markdown, no explanation.
-- Each object MUST have: name, address (exact street address in the destination), location (neighborhood or area), cuisine_type, price_range ("$","$$","$$$", or "$$$$"), cost_estimate (number USD per person), link (URL or "https://example.com/name" if unknown).
-- Match the user's cuisine preferences, dietary restrictions, and budget (min/max price range). Consider season (e.g. winter: cozy/soups; summer: lighter/outdoor).
-- Optionally include: description (1 sentence), meal_types array, dietary_options array.`;
-
-        const userContent = JSON.stringify({
+        const { mealRows: cachedMealRows, remainingSlots } = await assignRestaurantsFromPools({
+          tripId,
+          slotContexts,
+          likedPools,
+          generalPools,
           destination: trip.destination,
-          number_of_restaurants: remainingSlots.length,
-          cuisine_types: cuisineTypes,
-          dietary_restrictions: dietaryRestrictions,
-          meal_types: mealTypes.length ? mealTypes : ['Breakfast', 'Lunch', 'Dinner'],
-          min_price_range: minPrice,
-          max_price_range: maxPrice,
-          custom_requests: customRequests,
-          season,
-          budget_note: budgetHint,
-          trip_budget_per_day: tripPreferences?.max_budget ? Math.round(tripPreferences.max_budget / numDays) : null,
         });
 
-        let rawContent = '[]';
-        try {
-          const completion = await openaiClient.chat.completions.create({
-            model: DEFAULT_MODEL,
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: userContent },
-            ],
-            temperature: 0.6,
-            max_tokens: 2000,
-          });
-          rawContent = completion.choices[0]?.message?.content || '[]';
-        } catch (llmErr) {
-          console.error('Error generating meal suggestions for final itinerary:', llmErr);
-        }
+        const mealBudgetPerDay = tripPreferences?.max_budget
+          ? Math.round(tripPreferences.max_budget / Math.max(1, numDays))
+          : null;
+        const budgetHint = mealBudgetPerDay ? `Target meal budget ~$${mealBudgetPerDay} per person.` : '';
+        const season = determineSeasonFromDate(tripPreferences?.start_date);
 
-        let suggestedList = [];
-        try {
-          const cleaned = rawContent.replace(/```\w*\n?/g, '').trim();
-          const parsed = JSON.parse(cleaned);
-          suggestedList = Array.isArray(parsed) ? parsed : (parsed?.restaurants || []);
-        } catch (e) {
-          const match = rawContent.match(/\[[\s\S]*\]/);
-          if (match) {
-            try {
-              suggestedList = JSON.parse(match[0]);
-            } catch (_) {}
+        const generatedRows = await generateRestaurantsForRemainingSlots({
+          tripId,
+          slots: remainingSlots,
+          destination: trip.destination,
+          restPrefs,
+          season,
+          budgetHint,
+          mealBudgetPerDay,
+        });
+
+        const mealRows = cachedMealRows.concat(generatedRows);
+        if (mealRows.length > 0) {
+          const { error: mealsInsertError } = await supabase.from('trip_meal').insert(mealRows);
+          if (mealsInsertError) {
+            console.error('Error inserting trip_meal:', mealsInsertError);
           }
-        }
-
-        const toUse = suggestedList.slice(0, remainingSlots.length);
-        for (let i = 0; i < toUse.length && i < remainingSlots.length; i++) {
-          const r = toUse[i];
-          const { day_number, slot } = remainingSlots[i];
-          const name = r.name || 'Restaurant';
-          const address = r.address || r.location || trip.destination || '';
-          const location = (r.location || trip.destination || '').trim() || null;
-          const cost_estimate = r.cost_estimate != null ? parseFloat(r.cost_estimate) : null;
-          const link = r.link || r.source_url || null;
-
-          const { data: insertedRest, error: restErr } = await supabase
-            .from('restaurant')
-            .insert({
-              name,
-              location,
-              address: address.trim() || null,
-              cuisine_type: r.cuisine_type || 'Various',
-              meal_types: Array.isArray(r.meal_types) ? r.meal_types : [],
-              dietary_options: Array.isArray(r.dietary_options) ? r.dietary_options : [],
-              price_range: r.price_range || null,
-              cost_estimate,
-              source: 'llm-final-itinerary',
-              source_url: link,
-              reservation_url: r.reservation_url || null,
-              description: r.description || null,
-            })
-            .select('restaurant_id, name, address, location, source_url, reservation_url, cost_estimate')
-            .single();
-
-          if (restErr || !insertedRest) {
-            console.error('Error inserting suggested restaurant:', restErr);
-            mealRows.push({
-              trip_id: tripId,
-              day_number,
-              slot,
-              name,
-              location,
-              link,
-              cost: cost_estimate,
-              finalized: false,
-            });
-          } else {
-            const rest = insertedRest;
-            const restLink = rest.reservation_url || rest.source_url || null;
-            mealRows.push({
-              trip_id: tripId,
-              day_number,
-              slot,
-              name: rest.name || name,
-              location: (rest.address || rest.location || '').trim() || null,
-              link: restLink,
-              cost: rest.cost_estimate != null ? parseFloat(rest.cost_estimate) : null,
-              finalized: false,
-            });
-          }
-        }
-      }
-
-      if (mealRows.length > 0) {
-        const { error: mealsInsertError } = await supabase.from('trip_meal').insert(mealRows);
-        if (mealsInsertError) {
-          console.error('Error inserting trip_meal:', mealsInsertError);
         }
       }
     }

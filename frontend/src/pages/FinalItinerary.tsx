@@ -175,7 +175,74 @@ type FinalItineraryData = {
 
 declare global {
   interface Window {
-    google?: any;
+    google?: typeof google;
+  }
+}
+
+declare namespace google {
+  namespace maps {
+    type LatLngLiteral = { lat: number; lng: number };
+    interface LatLng {
+      lat(): number;
+      lng(): number;
+    }
+    interface DirectionsRequest {
+      origin: LatLng | LatLngLiteral | string;
+      destination: LatLng | LatLngLiteral | string;
+      travelMode: "DRIVING" | "WALKING";
+    }
+    interface DirectionsResult {
+      routes?: Array<{
+        overview_path?: LatLng[];
+        legs?: Array<{
+          distance?: { text?: string; value?: number };
+          duration?: { text?: string; value?: number };
+        }>;
+      }>;
+    }
+    class DirectionsService {
+      route(
+        request: DirectionsRequest,
+        callback: (result: DirectionsResult | null, status: string) => void
+      ): void;
+    }
+    interface GeocoderResult {
+      geometry: { location: LatLng };
+    }
+    class Geocoder {
+      geocode(
+        request: { address: string },
+        callback: (results: GeocoderResult[] | null, status: string) => void
+      ): void;
+    }
+    class Map {
+      constructor(element: HTMLElement, options: { center: LatLngLiteral; zoom: number });
+      fitBounds(bounds: LatLngBounds): void;
+    }
+    class Marker {
+      constructor(options: { map: Map; position: LatLng | LatLngLiteral; title?: string });
+      setMap(map: Map | null): void;
+      addListener(event: string, handler: () => void): void;
+    }
+    class Polyline {
+      constructor(options: {
+        map: Map;
+        path: LatLngLiteral[];
+        strokeColor?: string;
+        strokeOpacity?: number;
+        strokeWeight?: number;
+      });
+      setMap(map: Map | null): void;
+    }
+    class LatLngBounds {
+      extend(loc: LatLng): void;
+      isEmpty(): boolean;
+    }
+    class InfoWindow {
+      setContent(content: Node | string): void;
+      open(options: { anchor?: Marker; map: Map; shouldFocus?: boolean }): void;
+      close(): void;
+    }
   }
 }
 
@@ -247,8 +314,11 @@ const minutesFromSeconds = (seconds?: number | null) => {
   return Math.round(seconds / 60);
 };
 
-const requestDirections = (directionsService: any, request: any) =>
-  new Promise<any | null>((resolve) => {
+const requestDirections = (
+  directionsService: google.maps.DirectionsService,
+  request: google.maps.DirectionsRequest
+) =>
+  new Promise<google.maps.DirectionsResult | null>((resolve) => {
     directionsService.route(request, (result, status) => {
       if (status === "OK" && result) {
         resolve(result);
@@ -259,12 +329,12 @@ const requestDirections = (directionsService: any, request: any) =>
   });
 
 const computePreferredRoute = async (
-  directionsService: any,
-  maps: any,
-  origin: any,
-  destination: any
+  directionsService: google.maps.DirectionsService,
+  maps: typeof google.maps,
+  origin: google.maps.LatLng | google.maps.LatLngLiteral | string,
+  destination: google.maps.LatLng | google.maps.LatLngLiteral | string
 ) => {
-  const baseRequest: Record<string, any> = {
+  const baseRequest: Omit<google.maps.DirectionsRequest, "travelMode"> = {
     origin,
     destination,
   };
@@ -272,7 +342,7 @@ const computePreferredRoute = async (
   let mode: "walk" | "drive" = "walk";
   let routeResult = await requestDirections(directionsService, {
     ...baseRequest,
-    travelMode: maps.TravelMode.WALKING,
+    travelMode: "WALKING",
   });
   let leg = routeResult?.routes?.[0]?.legs?.[0] ?? null;
   let durationSeconds = leg?.duration?.value ?? null;
@@ -284,7 +354,7 @@ const computePreferredRoute = async (
   if (needsDrivingFallback) {
     const drivingRoute = await requestDirections(directionsService, {
       ...baseRequest,
-      travelMode: maps.TravelMode.DRIVING,
+      travelMode: "DRIVING",
     });
     if (drivingRoute?.routes?.[0]?.legs?.[0]) {
       routeResult = drivingRoute;
@@ -1745,8 +1815,8 @@ const FinalItinerary = () => {
     if (!GOOGLE_MAPS_API_KEY) return;
 
     let cancelled = false;
-    let markers: any[] = [];
-    let polylines: any[] = [];
+    let markers: google.maps.Marker[] = [];
+    let polylines: google.maps.Polyline[] = [];
 
     const cleanupOverlays = () => {
       markers.forEach((marker) => marker.setMap(null));
@@ -1814,7 +1884,7 @@ const FinalItinerary = () => {
         };
 
         const geocodeEntry = (entry: LocationSequenceEntry) =>
-          new Promise<any | null>((resolve) => {
+          new Promise<google.maps.GeocoderResult | null>((resolve) => {
             geocoder.geocode({ address: entry.address }, (results, status) => {
               if (status === "OK" && results && results[0]) {
                 resolve(results[0]);
