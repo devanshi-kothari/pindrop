@@ -6913,20 +6913,73 @@ const ChatWindow = ({
                     </div>
                     {summaryEntries.length > 0 ? (
                       <div className="space-y-3">
-                        {summaryEntries.map((entry, index) => (
-                          <div
-                            key={`${entry.city}-${index}`}
-                            className="border border-blue-100 rounded-xl px-4 py-3 bg-blue-50/60"
-                          >
-                            <p className="text-xs font-semibold text-slate-600 mb-1">{entry.city}</p>
-                            <p className="text-sm font-semibold text-slate-900">
-                              {entry.hotel?.name || "Selected hotel"}
-                            </p>
-                            {entry.hotel?.address && (
-                              <p className="text-xs text-slate-500">{entry.hotel.address}</p>
-                            )}
-                          </div>
-                        ))}
+                        {summaryEntries.map((entry, index) => {
+                          const hotelImage =
+                            entry.hotel?.images && entry.hotel.images.length > 0
+                              ? entry.hotel.images[0].original_image || entry.hotel.images[0].thumbnail
+                              : null;
+                          const ratePerNight =
+                            entry.hotel?.rate_per_night?.extracted_lowest !== undefined &&
+                            entry.hotel?.rate_per_night?.extracted_lowest !== null
+                              ? entry.hotel.rate_per_night.extracted_lowest
+                              : entry.hotel?.rate_per_night?.lowest || null;
+                          const formattedRate =
+                            typeof ratePerNight === "number"
+                              ? `$${ratePerNight.toLocaleString(undefined, { maximumFractionDigits: 0 })} / night`
+                              : ratePerNight || null;
+                          const locationText =
+                            entry.hotel?.address ||
+                            entry.hotel?.search_location ||
+                            entry.city ||
+                            tripDestination ||
+                            "";
+
+                          return (
+                            <div
+                              key={`${entry.city}-${index}`}
+                              className="border border-blue-100 rounded-xl p-3 bg-blue-50/60 flex gap-3"
+                            >
+                              {hotelImage && (
+                                <div className="flex-shrink-0">
+                                  <img
+                                    src={hotelImage}
+                                    alt={entry.hotel?.name || "Selected hotel"}
+                                    className="w-24 h-24 object-cover rounded-lg border border-blue-100"
+                                    onError={(e) => {
+                                      (e.target as HTMLImageElement).style.display = "none";
+                                    }}
+                                  />
+                                </div>
+                              )}
+                              <div className="flex-1 min-w-0 space-y-1">
+                                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                                  {entry.city}
+                                </p>
+                                <p className="text-sm font-semibold text-slate-900 truncate">
+                                  {entry.hotel?.name || "Selected hotel"}
+                                </p>
+                                {locationText && (
+                                  <p className="text-xs text-slate-500 truncate">{locationText}</p>
+                                )}
+                                <div className="flex items-center justify-between text-xs text-slate-500">
+                                  {formattedRate ? (
+                                    <span className="text-slate-800 font-semibold">{formattedRate}</span>
+                                  ) : (
+                                    <span>Rate unavailable</span>
+                                  )}
+                                  {entry.hotel?.overall_rating && (
+                                    <span>
+                                      {entry.hotel.overall_rating.toFixed(1)} ⭐
+                                      {entry.hotel?.reviews
+                                        ? ` • ${entry.hotel.reviews.toLocaleString()} reviews`
+                                        : ""}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     ) : (
                       <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700">
