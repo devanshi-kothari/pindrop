@@ -5857,10 +5857,12 @@ Rules:
     }
     const intercityFlightsByDay = new Map();
     for (let i = 0; i < Math.min(cityTransitions.length, selectedIntercityFlights.length); i++) {
-      intercityFlightsByDay.set(cityTransitions[i].dayIndex, {
+      const transition = cityTransitions[i];
+      const attachIndex = Math.max(0, transition.dayIndex - 1);
+      intercityFlightsByDay.set(attachIndex, {
         flight: selectedIntercityFlights[i],
-        fromCity: cityTransitions[i].fromCity,
-        toCity: cityTransitions[i].toCity,
+        fromCity: transition.fromCity,
+        toCity: transition.toCity,
       });
     }
 
@@ -5935,8 +5937,8 @@ Rules:
         // Add hotel info per city
         const hotelCityKey = normalizeCityKey(dayData.city);
         const hotelForDay = hotelCityKey ? hotelByCity.get(hotelCityKey) : null;
-        const hotelDetails = hotelForDay || fallbackHotel;
-        if (hotelDetails) {
+        const hotelDetails = dayData.travel_day ? null : hotelForDay || fallbackHotel;
+        if (hotelDetails && !dayData.travel_day) {
           dayItinerary.hotel = {
             hotel_id: hotelDetails.hotel_id,
             name: hotelDetails.name,

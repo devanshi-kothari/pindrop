@@ -4854,110 +4854,6 @@ const ChatWindow = ({
             </div>
             );
           })()}
-          {hasStartedPlanning && itinerarySummary && activeTab === "summary" && (
-            <div className="flex justify-start">
-              <div className="bg-white border border-emerald-500/60 text-slate-900 rounded-lg px-4 py-3 shadow-sm max-w-[75%]">
-                <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
-                  {itinerarySummary}
-                </p>
-              </div>
-            </div>
-          )}
-          {hasStartedPlanning && itineraryDays.length > 0 && activeTab === "summary" && (
-            <div className="flex justify-center">
-              <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
-                <p className="text-xs font-semibold text-slate-600">
-                  Phase {orderedCities.length > 1 ? '7' : '6'}: Day-by-day trip sketch
-                </p>
-                {(() => {
-                  const maxIndex = itineraryDays.length - 1;
-                  const currentIndex = Math.min(itineraryCarouselIndex, maxIndex);
-                  const day = itineraryDays[currentIndex];
-                  const dateLabel = day.date
-                    ? (() => {
-                        const localDate = parseLocalDate(day.date);
-                        return localDate
-                          ? localDate.toLocaleDateString("en-US", {
-                              month: "short",
-                              day: "numeric",
-                              year: "numeric",
-                            })
-                          : null;
-                      })()
-                    : null;
-
-                  return (
-                    <>
-                      <div className="rounded-lg bg-white text-slate-900 p-3 shadow-sm space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <div>
-                            <p className="text-sm font-semibold">
-                              Day {day.day_number}
-                              {dateLabel ? ` • ${dateLabel}` : ""}
-                            </p>
-                          </div>
-                          <span className="text-[11px] text-slate-500">
-                            Sketch {currentIndex + 1} of {itineraryDays.length}
-                          </span>
-                        </div>
-                        {day.summary && (
-                          <p className="text-xs whitespace-pre-wrap">{day.summary}</p>
-                        )}
-                        {Array.isArray(day.activities) && day.activities.length > 0 && (
-                          <div className="mt-2 space-y-1">
-                            <p className="text-[11px] font-semibold text-slate-700">
-                              Planned activities
-                            </p>
-                            <ul className="space-y-1">
-                              {day.activities.map((act, idx) => (
-                                <li key={idx} className="text-xs text-slate-800">
-                                  <span className="font-medium">
-                                    {act.name || "Activity"}
-                                  </span>
-                                  {act.location && ` • ${act.location}`}
-                                  {act.duration && ` • ${act.duration}`}
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex items-center justify-between gap-2">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-7 px-2 text-xs border-blue-200 text-slate-900 bg-white hover:bg-blue-50 disabled:opacity-40"
-                          disabled={currentIndex === 0}
-                          onClick={() =>
-                            setItineraryCarouselIndex((prev) =>
-                              Math.max(0, Math.min(maxIndex, prev - 1))
-                            )
-                          }
-                        >
-                          ‹ Previous
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-7 px-2 text-xs border-blue-200 text-slate-900 bg-white hover:bg-blue-50 disabled:opacity-40"
-                          disabled={currentIndex === maxIndex}
-                          onClick={() =>
-                            setItineraryCarouselIndex((prev) =>
-                              Math.max(0, Math.min(maxIndex, prev + 1))
-                            )
-                          }
-                        >
-                          Next ›
-                        </Button>
-                      </div>
-                    </>
-                  );
-                })()}
-              </div>
-            </div>
-          )}
           {hasStartedPlanning && hasConfirmedTripSketch && activeTab === "flights" && (
             <div className="flex justify-center">
               <div className="w-full max-w-3xl bg-white border border-blue-100 text-slate-900 rounded-lg px-4 py-3 shadow-sm space-y-3">
@@ -7647,6 +7543,24 @@ const ChatWindow = ({
           {hasStartedPlanning && hasConfirmedHotels && activeTab === "summary" && (
             <div className="flex justify-center">
               <div className="w-full max-w-4xl bg-white border border-blue-100 text-slate-900 rounded-lg px-6 py-5 shadow-lg space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
+                      Phase {orderedCities.length > 1 ? "7" : "6"}: Final itinerary
+                    </p>
+                    <p className="text-sm text-slate-500">
+                      Review your day-by-day plan, or regenerate it with the latest preferences.
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    className="h-8 px-4 bg-blue-500 text-white disabled:opacity-60"
+                    onClick={generateFinalItinerary}
+                    disabled={isGeneratingFinalItinerary}
+                  >
+                    {isGeneratingFinalItinerary ? "Regenerating..." : "Regenerate Itinerary"}
+                  </Button>
+                </div>
                 {isGeneratingFinalItinerary ? (
                   <div className="flex items-center gap-3 py-8">
                     <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-emerald-400"></div>
