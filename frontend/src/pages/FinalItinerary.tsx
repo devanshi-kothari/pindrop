@@ -131,6 +131,22 @@ type ChronoRow =
       reorderable: boolean;
     };
 
+type TravelSegment = {
+  fromLabel: string;
+  toLabel: string;
+  distanceText: string;
+  durationText: string;
+  durationMinutes: number | null;
+  mode: "walk" | "drive";
+};
+
+type LocationSequenceEntry = {
+  label: string;
+  address: string;
+  description?: string | null;
+  kind: "activity" | "meal" | "hotel" | "fallback";
+};
+
 type DragContext =
   | { kind: "activity"; dayNumber: number; sourceIndex: number }
   | { kind: "meal"; dayNumber: number; sourceSlot: MealSlot };
@@ -141,6 +157,9 @@ const mealSlotLabels: Record<MealSlot, string> = {
   lunch: "Lunch",
   dinner: "Dinner",
 };
+
+const WALKING_THRESHOLD_MINUTES = 30;
+const WALKING_THRESHOLD_SECONDS = WALKING_THRESHOLD_MINUTES * 60;
 
 type FinalItineraryData = {
   trip_id: number;
@@ -220,6 +239,76 @@ const formatMoney = (value: number) =>
     maximumFractionDigits: 2,
   });
 
+const minutesFromSeconds = (seconds?: number | null) => {
+  if (typeof seconds !== "number" || Number.isNaN(seconds)) {
+    return null;
+  }
+  return Math.round(seconds / 60);
+};
+
+const requestDirections = (
+  directionsService: google.maps.DirectionsService,
+  request: google.maps.DirectionsRequest
+) =>
+  new Promise<google.maps.DirectionsResult | null>((resolve) => {
+    directionsService.route(request, (result, status) => {
+      if (status === "OK" && result) {
+        resolve(result);
+      } else {
+        resolve(null);
+      }
+    });
+  });
+
+const computePreferredRoute = async (
+  directionsService: google.maps.DirectionsService,
+  maps: typeof google.maps,
+  origin: google.maps.LatLng | google.maps.LatLngLiteral | string,
+  destination: google.maps.LatLng | google.maps.LatLngLiteral | string
+) => {
+  const baseRequest: Omit<google.maps.DirectionsRequest, "travelMode"> = {
+    origin,
+    destination,
+  };
+
+  let mode: "walk" | "drive" = "walk";
+  let routeResult = await requestDirections(directionsService, {
+    ...baseRequest,
+    travelMode: maps.TravelMode.WALKING,
+  });
+  let leg = routeResult?.routes?.[0]?.legs?.[0] ?? null;
+  let durationSeconds = leg?.duration?.value ?? null;
+
+  const needsDrivingFallback =
+    !routeResult ||
+    (typeof durationSeconds === "number" && durationSeconds > WALKING_THRESHOLD_SECONDS);
+
+  if (needsDrivingFallback) {
+    const drivingRoute = await requestDirections(directionsService, {
+      ...baseRequest,
+      travelMode: maps.TravelMode.DRIVING,
+    });
+    if (drivingRoute?.routes?.[0]?.legs?.[0]) {
+      routeResult = drivingRoute;
+      leg = drivingRoute.routes[0].legs[0];
+      durationSeconds = leg.duration?.value ?? null;
+      mode = "drive";
+    }
+  }
+
+  if (!routeResult || !leg) {
+    return null;
+  }
+
+  return {
+    mode,
+    distanceText: leg.distance?.text || "",
+    durationText: leg.duration?.text || "",
+    durationMinutes: minutesFromSeconds(durationSeconds),
+    overviewPath: routeResult.routes?.[0]?.overview_path || [],
+  };
+};
+
 const FinalItinerary = () => {
   const { tripId } = useParams<{ tripId: string }>();
   const navigate = useNavigate();
@@ -239,9 +328,7 @@ const FinalItinerary = () => {
   const [activeTab, setActiveTab] = useState<"overview" | "map" | "budget" | "calendar">("overview");
   const [selectedMapDayIndex, setSelectedMapDayIndex] = useState(0);
   const mapRef = useRef<HTMLDivElement | null>(null);
-  const [travelInfoByDay, setTravelInfoByDay] = useState<
-    Record<number, { segments: { fromLabel: string; toLabel: string; distanceText: string; durationText: string }[] }>
-  >({});
+  const [travelInfoByDay, setTravelInfoByDay] = useState<Record<number, { segments: TravelSegment[] }>>({});
   const [mealsByDay, setMealsByDay] = useState<Record<number, Partial<Record<MealSlot, MealInfo>>>>({});
   const [editingMeal, setEditingMeal] = useState<{ dayNumber: number; slot: MealSlot } | null>(null);
   const [mealForm, setMealForm] = useState<{ name: string; location: string; link: string; cost: string }>({
@@ -1276,6 +1363,55 @@ const FinalItinerary = () => {
     [mealsByDay]
   );
 
+  const buildLocationSequence = useCallback(
+    (day: FinalItineraryDay): LocationSequenceEntry[] => {
+      const rows = buildChronoRows(day);
+      const stops: LocationSequenceEntry[] = [];
+
+      rows.forEach((row) => {
+        if (row.kind === "activity" && row.activity) {
+          const address = row.activity.address || row.activity.location || "";
+          if (address) {
+            stops.push({
+              label: row.activity.name || row.slotLabel,
+              address,
+              description: row.activity.description || null,
+              kind: "activity",
+            });
+          }
+        } else if (row.kind === "meal" && row.meal?.location) {
+          stops.push({
+            label: row.meal.name || row.slotLabel,
+            address: row.meal.location,
+            kind: "meal",
+          });
+        }
+      });
+
+      if (!day.travel_day && day.hotel?.location && stops.length > 0) {
+        const hotelLabel = day.hotel.name || "Hotel";
+        return [
+          { label: hotelLabel, address: day.hotel.location, kind: "hotel" },
+          ...stops,
+          { label: `${hotelLabel} (return)`, address: day.hotel.location, kind: "hotel" },
+        ];
+      }
+
+      if (stops.length === 0 && itinerary?.destination) {
+        return [
+          {
+            label: itinerary.destination,
+            address: itinerary.destination,
+            kind: "fallback",
+          },
+        ];
+      }
+
+      return stops;
+    },
+    [buildChronoRows, itinerary?.destination]
+  );
+
   const getMealOrderForDay = useCallback(
     (dayNumber: number) =>
       mealSlotOrder.filter((slot) => {
@@ -1516,18 +1652,97 @@ const FinalItinerary = () => {
   };
 
   useEffect(() => {
-    if (!itinerary || activeTab !== "map") return;
+    if (!itinerary || !hasLoadedMeals) return;
     if (!GOOGLE_MAPS_API_KEY) return;
 
     let cancelled = false;
 
+    const computeSegmentsForTrip = async () => {
+      try {
+        await loadGoogleMapsApi();
+        if (cancelled || !window.google || !window.google.maps) return;
+
+        const maps = window.google.maps;
+        const directionsService = new maps.DirectionsService();
+        const nextInfo: Record<number, TravelSegment[]> = {};
+
+        for (const day of itinerary.days) {
+          const sequence = buildLocationSequence(day);
+          if (sequence.length < 2) {
+            continue;
+          }
+          const segments: TravelSegment[] = [];
+          for (let i = 0; i < sequence.length - 1; i++) {
+            if (cancelled) return;
+            const from = sequence[i];
+            const to = sequence[i + 1];
+            const routeDetails = await computePreferredRoute(
+              directionsService,
+              maps,
+              from.address,
+              to.address
+            );
+            if (cancelled) return;
+            if (!routeDetails) continue;
+            segments.push({
+              fromLabel: from.label,
+              toLabel: to.label,
+              distanceText: routeDetails.distanceText,
+              durationText: routeDetails.durationText,
+              durationMinutes: routeDetails.durationMinutes,
+              mode: routeDetails.mode,
+            });
+          }
+          if (segments.length > 0) {
+            nextInfo[day.day_number] = segments;
+          }
+        }
+
+        if (cancelled) return;
+        setTravelInfoByDay((prev) => {
+          const updated = { ...prev };
+          itinerary.days.forEach((day) => {
+            const segments = nextInfo[day.day_number];
+            if (segments && segments.length > 0) {
+              updated[day.day_number] = { segments };
+            } else {
+              delete updated[day.day_number];
+            }
+          });
+          return updated;
+        });
+      } catch (error) {
+        console.error("Error computing travel segments:", error);
+      }
+    };
+
+    void computeSegmentsForTrip();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [itinerary, hasLoadedMeals, buildLocationSequence]);
+
+  useEffect(() => {
+    if (!itinerary || activeTab !== "map") return;
+    if (!GOOGLE_MAPS_API_KEY) return;
+
+    let cancelled = false;
+    let markers: google.maps.Marker[] = [];
+    let polylines: google.maps.Polyline[] = [];
+
+    const cleanupOverlays = () => {
+      markers.forEach((marker) => marker.setMap(null));
+      polylines.forEach((polyline) => polyline.setMap(null));
+      markers = [];
+      polylines = [];
+    };
+
     const initMap = async () => {
       try {
         await loadGoogleMapsApi();
-        if (cancelled) return;
-        if (!window.google || !window.google.maps) return;
+        if (cancelled || !window.google || !window.google.maps) return;
 
-        // Wait for the map container to be mounted and visible
         if (!mapRef.current) {
           setTimeout(() => {
             if (!cancelled) {
@@ -1538,59 +1753,22 @@ const FinalItinerary = () => {
         }
 
         const day = itinerary.days[selectedMapDayIndex] || itinerary.days[0];
-        const map = new window.google.maps.Map(mapRef.current, {
+        if (!day) return;
+
+        const sequence = buildLocationSequence(day);
+        if (sequence.length === 0) return;
+
+        const maps = window.google.maps;
+        const map = new maps.Map(mapRef.current, {
           center: { lat: 0, lng: 0 },
           zoom: 12,
         });
-        const geocoder = new window.google.maps.Geocoder();
-        const distanceMatrix = new window.google.maps.DistanceMatrixService();
-        const bounds = new window.google.maps.LatLngBounds();
+        const geocoder = new maps.Geocoder();
+        const directionsService = new maps.DirectionsService();
+        const bounds = new maps.LatLngBounds();
+        const infoWindow = new maps.InfoWindow();
 
-        const locations: {
-          label: string;
-          address: string;
-          description?: string | null;
-          kind?: "activity" | "meal" | "hotel" | "fallback";
-        }[] = [];
-
-        (day.activities || []).forEach((a) => {
-          const addr = a.address || a.location || itinerary.destination || null;
-          if (addr) {
-            locations.push({
-              label: a.name || "Activity",
-              address: addr,
-              description: a.description || null,
-              kind: "activity",
-            });
-          }
-        });
-
-        const meals = mealsByDay[day.day_number];
-        if (meals) {
-          (["breakfast", "lunch", "dinner"] as MealSlot[]).forEach((slot) => {
-            const meal = meals[slot];
-            if (meal?.location) {
-              locations.push({
-                label: meal.name || slot.charAt(0).toUpperCase() + slot.slice(1),
-                address: meal.location,
-                kind: "meal",
-              });
-            }
-          });
-        }
-
-        if (day.hotel?.location) {
-          locations.push({ label: day.hotel.name || "Hotel", address: day.hotel.location, kind: "hotel" });
-        }
-
-        // If no specific locations, fall back to itinerary destination
-        if (locations.length === 0 && itinerary.destination) {
-          locations.push({ label: itinerary.destination, address: itinerary.destination, kind: "fallback" });
-        }
-
-        const infoWindow = new window.google.maps.InfoWindow();
-
-        const buildInfoContent = (loc: (typeof locations)[number]) => {
+        const buildInfoContent = (loc: LocationSequenceEntry) => {
           const wrapper = document.createElement("div");
           const title = document.createElement("div");
           title.textContent = loc.label;
@@ -1617,60 +1795,84 @@ const FinalItinerary = () => {
           return wrapper;
         };
 
-        locations.forEach((loc) => {
-          geocoder.geocode({ address: loc.address }, (results: any, status: any) => {
-            if (status === "OK" && results && results[0]) {
-              const position = results[0].geometry.location;
-              const marker = new window.google.maps.Marker({
-                map,
-                position,
-                title: loc.label,
-              });
-              marker.addListener("mouseover", () => {
-                infoWindow.setContent(buildInfoContent(loc));
-                infoWindow.open({ anchor: marker, map, shouldFocus: false });
-              });
-              marker.addListener("mouseout", () => {
-                infoWindow.close();
-              });
-              bounds.extend(position);
-              map.fitBounds(bounds);
-            }
+        const geocodeEntry = (entry: LocationSequenceEntry) =>
+          new Promise<google.maps.GeocoderResult | null>((resolve) => {
+            geocoder.geocode({ address: entry.address }, (results, status) => {
+              if (status === "OK" && results && results[0]) {
+                resolve(results[0]);
+              } else {
+                resolve(null);
+              }
+            });
           });
-        });
 
-        // Also compute travel time/distance between consecutive locations using Distance Matrix
-        if (locations.length > 1) {
-          distanceMatrix.getDistanceMatrix(
-            {
-              origins: locations.map((l) => l.address),
-              destinations: locations.map((l) => l.address),
-              travelMode: window.google.maps.TravelMode.DRIVING,
-              unitSystem: window.google.maps.UnitSystem.IMPERIAL,
-            },
-            (response: any, status: any) => {
-              if (status !== "OK" || !response?.rows) return;
-              const segments: { fromLabel: string; toLabel: string; distanceText: string; durationText: string }[] = [];
-              for (let i = 0; i < locations.length - 1; i++) {
-                const row = response.rows[i];
-                const element = row?.elements?.[i + 1];
-                if (element && element.status === "OK") {
-                  segments.push({
-                    fromLabel: locations[i].label,
-                    toLabel: locations[i + 1].label,
-                    distanceText: element.distance?.text || "",
-                    durationText: element.duration?.text || "",
-                  });
-                }
-              }
-              if (segments.length > 0) {
-                setTravelInfoByDay((prev) => ({
-                  ...prev,
-                  [day.day_number]: { segments },
-                }));
-              }
-            }
+        cleanupOverlays();
+        for (const entry of sequence) {
+          if (cancelled) return;
+          const geocoded = await geocodeEntry(entry);
+          if (!geocoded) continue;
+          const position = geocoded.geometry.location;
+          const marker = new maps.Marker({
+            map,
+            position,
+            title: entry.label,
+          });
+          marker.addListener("mouseover", () => {
+            infoWindow.setContent(buildInfoContent(entry));
+            infoWindow.open({ anchor: marker, map, shouldFocus: false });
+          });
+          marker.addListener("mouseout", () => {
+            infoWindow.close();
+          });
+          markers.push(marker);
+          bounds.extend(position);
+        }
+
+        if (!bounds.isEmpty()) {
+          map.fitBounds(bounds);
+        }
+
+        const segments: TravelSegment[] = [];
+        for (let i = 0; i < sequence.length - 1; i++) {
+          if (cancelled) return;
+          const from = sequence[i];
+          const to = sequence[i + 1];
+          const routeDetails = await computePreferredRoute(
+            directionsService,
+            maps,
+            from.address,
+            to.address
           );
+          if (!routeDetails) continue;
+          if (routeDetails.overviewPath.length > 0) {
+            const path = routeDetails.overviewPath.map((latLng) => ({
+              lat: latLng.lat(),
+              lng: latLng.lng(),
+            }));
+            const polyline = new maps.Polyline({
+              map,
+              path,
+              strokeColor: routeDetails.mode === "drive" ? "#fb923c" : "#60a5fa",
+              strokeOpacity: 0.9,
+              strokeWeight: routeDetails.mode === "drive" ? 5 : 4,
+            });
+            polylines.push(polyline);
+          }
+          segments.push({
+            fromLabel: from.label,
+            toLabel: to.label,
+            distanceText: routeDetails.distanceText,
+            durationText: routeDetails.durationText,
+            durationMinutes: routeDetails.durationMinutes,
+            mode: routeDetails.mode,
+          });
+        }
+
+        if (!cancelled && segments.length > 0) {
+          setTravelInfoByDay((prev) => ({
+            ...prev,
+            [day.day_number]: { segments },
+          }));
         }
       } catch (e) {
         console.error("Error initializing Google Maps:", e);
@@ -1684,8 +1886,9 @@ const FinalItinerary = () => {
     return () => {
       cancelled = true;
       window.clearTimeout(timeoutId);
+      cleanupOverlays();
     };
-  }, [itinerary, activeTab, selectedMapDayIndex, mealsByDay]);
+  }, [itinerary, activeTab, selectedMapDayIndex, buildLocationSequence]);
 
   useEffect(() => {
     if (!tripId) return;
@@ -3808,17 +4011,34 @@ const FinalItinerary = () => {
                                     (s) => s.fromLabel === fromLabel && s.toLabel === toLabel
                                   );
                                   if (!seg) return null;
+                                  const modeBadge =
+                                    seg.mode === "drive" ? { icon: "🚗", label: "Drive" } : seg.mode === "walk"
+                                      ? { icon: "🚶", label: "Walk" }
+                                      : { icon: "↔︎", label: "Transit" };
+                                  const durationLabel =
+                                    typeof seg.durationMinutes === "number"
+                                      ? `${seg.durationMinutes} min`
+                                      : seg.durationText || "Time n/a";
+                                  const distanceLabel = seg.distanceText ? ` • ${seg.distanceText}` : "";
+
                                   return (
                                     <div
                                       key={`transit-${idx}`}
                                       className="flex items-center gap-2 rounded-md border border-dashed border-slate-200 bg-slate-50 px-2 py-1 text-[10px] text-slate-600"
                                     >
-                                      <span className="inline-flex rounded-full bg-slate-200 px-1.5 py-0.5 text-[9px] font-semibold text-slate-700">
-                                        Transit
+                                      <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-1.5 py-0.5 text-[9px] font-semibold text-slate-700">
+                                        <span>{modeBadge.icon}</span>
+                                        {modeBadge.label}
                                       </span>
-                                      <span>
-                                        {seg.fromLabel} → {seg.toLabel}: {seg.durationText} ({seg.distanceText})
-                                      </span>
+                                      <div className="flex flex-col text-[10px] text-slate-600">
+                                        <span className="font-semibold text-slate-700">
+                                          {seg.fromLabel} → {seg.toLabel}
+                                        </span>
+                                        <span className="text-slate-500">
+                                          {durationLabel}
+                                          {distanceLabel}
+                                        </span>
+                                      </div>
                                     </div>
                                   );
                                 };
