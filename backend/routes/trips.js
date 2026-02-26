@@ -5174,6 +5174,67 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
       });
     }
 
+    const canonicalizeCityValue = (value) => {
+      if (!value) return '';
+      const trimmed = String(value).trim();
+      if (!trimmed) return '';
+      const noParens = trimmed.replace(/\(.*?\)/g, ' ');
+      const primary = noParens.split(',')[0] || noParens;
+      return primary.trim();
+    };
+    const normalizeCityKey = (value) => canonicalizeCityValue(value).toLowerCase();
+    const parseDateKey = (value) => {
+      if (!value) return null;
+      const asDate = new Date(value);
+      if (!Number.isNaN(asDate.getTime())) {
+        const yyyy = asDate.getFullYear();
+        const mm = String(asDate.getMonth() + 1).padStart(2, '0');
+        const dd = String(asDate.getDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
+      }
+      const match = String(value).match(/(\d{4})-(\d{2})-(\d{2})/);
+      if (match) {
+        return `${match[1]}-${match[2]}-${match[3]}`;
+      }
+      return null;
+    };
+    const extractArrivalInfo = (flight) => {
+      if (!flight || !Array.isArray(flight.flights) || flight.flights.length === 0) {
+        return null;
+      }
+      const lastLeg = flight.flights[flight.flights.length - 1] || {};
+      const arrivalValue =
+        lastLeg?.arrival_airport?.time ||
+        lastLeg?.arrival_airport?.date ||
+        lastLeg?.arrival?.time ||
+        lastLeg?.arrival?.date ||
+        lastLeg?.arrival_time ||
+        lastLeg?.arrival_date ||
+        null;
+      if (!arrivalValue) return null;
+      const dateKey = parseDateKey(arrivalValue);
+      const arrivalDateObj = new Date(arrivalValue);
+      const hour = Number.isNaN(arrivalDateObj.getTime()) ? null : arrivalDateObj.getHours();
+      return { dateKey, hour };
+    };
+    const extractDepartureInfo = (flight) => {
+      if (!flight || !Array.isArray(flight.flights) || flight.flights.length === 0) {
+        return null;
+      }
+      const firstLeg = flight.flights[0] || {};
+      const departureValue =
+        firstLeg?.departure_airport?.time ||
+        firstLeg?.departure_airport?.date ||
+        firstLeg?.departure?.time ||
+        firstLeg?.departure?.date ||
+        firstLeg?.departure_time ||
+        firstLeg?.departure_date ||
+        null;
+      if (!departureValue) return null;
+      const dateKey = parseDateKey(departureValue);
+      return { dateKey };
+    };
+
     // Load user profile
     const { data: userProfile } = await supabase
       .from('app_user')
@@ -5187,10 +5248,12 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
       .select(`
         flight_id,
         is_selected,
+        created_at,
         flight:flight(*)
       `)
       .eq('trip_id', tripId)
-      .eq('is_selected', true);
+      .eq('is_selected', true)
+      .order('created_at', { ascending: true });
 
     const selectedOutboundFlight = tripFlights?.find(tf => tf.flight?.flight_type === 'outbound')?.flight || null;
     const selectedReturnFlight = tripFlights?.find(tf => tf.flight?.flight_type === 'return')?.flight || null;
@@ -5210,6 +5273,23 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
     // For single-city trips, we'll have just one
     const selectedHotels = (tripHotels || []).map(th => th.hotel).filter(Boolean);
     const selectedHotel = selectedHotels[0] || null;
+    const hotelByCity = new Map();
+    selectedHotels.forEach((hotel) => {
+      const key = normalizeCityKey(hotel?.search_location || hotel?.location || hotel?.city);
+      if (key) {
+        hotelByCity.set(key, hotel);
+      }
+    });
+    const fallbackHotel = selectedHotel;
+
+    const selectedIntercityFlights = (tripFlights || [])
+      .filter((tf) => tf.flight?.flight_type === 'intercity')
+      .sort((a, b) => {
+        const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return aTime - bTime;
+      })
+      .map((tf) => tf.flight);
 
     // Get liked activities
     const { data: likedActivityPrefs } = await supabase
@@ -5279,34 +5359,140 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
       `[final-itinerary] Date calculation: start=${tripPreferences.start_date}, end=${tripPreferences.end_date}, calculated=${calculatedNumDays}, using=${numDays}`,
     );
 
+    const outboundArrivalInfo = extractArrivalInfo(selectedOutboundFlight);
+    const returnDepartureInfo = extractDepartureInfo(selectedReturnFlight);
+    const arrivalDateKey = outboundArrivalInfo?.dateKey || null;
+    let activitiesStartDateKey = calendarDates[0];
+    if (arrivalDateKey) {
+      const firstDate = calendarDates[0];
+      const lastDate = calendarDates[calendarDates.length - 1];
+      if (arrivalDateKey < firstDate) {
+        activitiesStartDateKey = firstDate;
+      } else if (arrivalDateKey > lastDate) {
+        activitiesStartDateKey = lastDate;
+      } else {
+        activitiesStartDateKey = arrivalDateKey;
+      }
+    }
+    let activityStartIndex = calendarDates.findIndex((date) => date === activitiesStartDateKey);
+    if (activityStartIndex === -1) {
+      activityStartIndex = 0;
+    }
+    const effectiveActivitySlots = Math.max(1, numDays - Math.min(activityStartIndex, numDays));
+
+    const orderedCitiesList = Array.isArray(tripPreferences?.ordered_cities)
+      ? tripPreferences.ordered_cities.filter((c) => typeof c === 'string' && c.trim())
+      : [];
+    const canonicalOrderedCities =
+      orderedCitiesList.length > 0
+        ? orderedCitiesList.map((city) => canonicalizeCityValue(city)).filter(Boolean)
+        : [canonicalizeCityValue(trip.destination) || trip.destination || 'Destination'];
+    const cityDaysPref =
+      tripPreferences?.city_days && typeof tripPreferences.city_days === 'object'
+        ? tripPreferences.city_days
+        : {};
+    const normalizedCityDays = new Map();
+    Object.entries(cityDaysPref).forEach(([key, value]) => {
+      const normalized = normalizeCityKey(key);
+      const num = Number(value);
+      if (normalized && Number.isFinite(num) && num > 0) {
+        normalizedCityDays.set(normalized, num);
+      }
+    });
+    const cityAllocations = [];
+    let remainingSlots = Math.max(0, numDays - activityStartIndex);
+    canonicalOrderedCities.forEach((city, index) => {
+      if (remainingSlots <= 0) return;
+      const normalized = normalizeCityKey(city);
+      let daysForCity = normalizedCityDays.get(normalized);
+      if (!Number.isFinite(daysForCity) || daysForCity <= 0) {
+        const slotsRemaining = canonicalOrderedCities.length - index;
+        daysForCity = Math.max(1, Math.floor(remainingSlots / Math.max(1, slotsRemaining)));
+      }
+      daysForCity = Math.min(daysForCity, remainingSlots);
+      cityAllocations.push({ city, normalized, days: daysForCity });
+      remainingSlots -= daysForCity;
+    });
+    if (remainingSlots > 0) {
+      if (cityAllocations.length > 0) {
+        cityAllocations[cityAllocations.length - 1].days += remainingSlots;
+      } else {
+        const fallbackCity = canonicalizeCityValue(trip.destination) || trip.destination || 'Destination';
+        cityAllocations.push({
+          city: fallbackCity,
+          normalized: normalizeCityKey(fallbackCity),
+          days: remainingSlots,
+        });
+      }
+    }
+    const dayCityByIndex = Array(numDays).fill(null);
+    let allocationPointer = 0;
+    cityAllocations.forEach(({ city, days }) => {
+      for (let i = 0; i < days; i++) {
+        const globalIndex = activityStartIndex + allocationPointer;
+        if (globalIndex >= numDays) break;
+        dayCityByIndex[globalIndex] = city;
+        allocationPointer++;
+      }
+    });
+    if (allocationPointer < numDays - activityStartIndex && cityAllocations.length > 0) {
+      const fallbackCity = cityAllocations[cityAllocations.length - 1].city;
+      for (
+        let idx = activityStartIndex + allocationPointer;
+        idx < numDays;
+        idx++
+      ) {
+        dayCityByIndex[idx] = fallbackCity;
+      }
+    }
+
     // Generate activities for each day
     const dailyActivities = [];
     const budgetPerDay = tripPreferences.max_budget ? tripPreferences.max_budget / numDays : null;
 
     // Determine target activities per day based on pace
     const targetActivitiesPerDay = tripPreferences.pace === 'packed' ? 4 : tripPreferences.pace === 'balanced' ? 3 : 2;
+    const likedPerDay =
+      likedActivities.length > 0 ? Math.ceil(likedActivities.length / Math.max(1, effectiveActivitySlots)) : 0;
+    let likedPointer = 0;
 
     for (let day = 0; day < numDays; day++) {
       const dateStr = calendarDates[day] || calendarDates[calendarDates.length - 1];
+      const isBeforeArrival = day < activityStartIndex;
+      const dayCity = dayCityByIndex[day] || null;
+
+      if (isBeforeArrival) {
+        dailyActivities.push({
+          day_number: day + 1,
+          date: dateStr,
+          activities: [],
+          city: dayCity,
+          travel_day: true,
+        });
+        continue;
+      }
 
       // Get activities for this day (distribute liked activities + generate new ones)
       const dayActivities = [];
 
-      // Distribute liked activities across days (but don't rely on them for all days)
-      if (likedActivities.length > 0) {
-        const activitiesPerDay = Math.ceil(likedActivities.length / numDays);
-        const startIdx = day * activitiesPerDay;
-        const endIdx = Math.min(startIdx + activitiesPerDay, likedActivities.length);
-        const dayLikedActivities = likedActivities.slice(startIdx, endIdx);
-        dayActivities.push(...dayLikedActivities.map(a => ({
-          ...a,
-          source: 'user_selected',
-        })));
+      if (likedPerDay > 0 && likedPointer < likedActivities.length) {
+        const dayLikedActivities = likedActivities.slice(likedPointer, likedPointer + likedPerDay);
+        likedPointer += likedPerDay;
+        dayActivities.push(
+          ...dayLikedActivities.map((a) => ({
+            ...a,
+            source: 'user_selected',
+          }))
+        );
+      }
+
+      let todaysTarget = targetActivitiesPerDay;
+      if (day === activityStartIndex && outboundArrivalInfo?.hour != null && outboundArrivalInfo.hour >= 12) {
+        todaysTarget = Math.max(1, Math.ceil(targetActivitiesPerDay / 2));
       }
 
       // ALWAYS generate activities to reach target, regardless of how many liked activities we have
-      // This ensures every day has activities even if user only liked a couple
-      const neededActivities = Math.max(0, targetActivitiesPerDay - dayActivities.length);
+      const neededActivities = Math.max(0, todaysTarget - dayActivities.length);
 
       if (neededActivities > 0 && trip.destination) {
         // Generate search query for this day - vary it slightly per day for diversity
@@ -5333,7 +5519,8 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
               item,
               trip.destination,
               tripPreferences,
-              userProfile
+              userProfile,
+              { city: dayCity }
             );
 
             if (activity && !dayActivities.find(a => a.activity_id === activity.activity_id)) {
@@ -5366,12 +5553,13 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
             for (const item of generalFiltered) {
               if (dayActivities.length >= targetActivitiesPerDay) break;
 
-              const activity = await upsertReusableActivityFromSearchItem(
-                item,
-                trip.destination,
-                tripPreferences,
-                userProfile
-              );
+            const activity = await upsertReusableActivityFromSearchItem(
+              item,
+              trip.destination,
+              tripPreferences,
+              userProfile,
+              { city: dayCity }
+            );
 
               if (activity && !dayActivities.find(a => a.activity_id === activity.activity_id)) {
                 dayActivities.push({
@@ -5386,33 +5574,39 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
         }
       }
 
-      console.log(`[final-itinerary] Day ${day + 1} (${dateStr}): ${dayActivities.length} activities (target: ${targetActivitiesPerDay})`);
+      console.log(
+        `[final-itinerary] Day ${day + 1} (${dateStr}): ${dayActivities.length} activities (target: ${todaysTarget})`
+      );
 
       dailyActivities.push({
         day_number: day + 1,
         date: dateStr,
         activities: dayActivities,
+        city: dayCity,
+        travel_day: false,
       });
     }
 
     // Redistribute activities evenly across days (round-robin) so later days are not empty
     if (dailyActivities.length > 0) {
-      const allActivities = dailyActivities.flatMap((day) => day.activities || []);
-      if (allActivities.length > 0) {
-        const redistributed = dailyActivities.map((day) => ({
-          ...day,
+      const eligibleIndices = dailyActivities
+        .map((day, idx) => (!day.travel_day ? idx : -1))
+        .filter((idx) => idx >= 0);
+      const allActivities = eligibleIndices.flatMap((idx) => dailyActivities[idx].activities || []);
+      if (allActivities.length > 0 && eligibleIndices.length > 0) {
+        const redistributedBuckets = eligibleIndices.map((idx) => ({
+          index: idx,
           activities: [],
         }));
 
         allActivities.forEach((activity, index) => {
-          const dayIndex = index % redistributed.length;
-          redistributed[dayIndex].activities.push(activity);
+          const bucketIndex = index % redistributedBuckets.length;
+          redistributedBuckets[bucketIndex].activities.push(activity);
         });
 
-        // Replace with redistributed layout
-        for (let i = 0; i < dailyActivities.length; i++) {
-          dailyActivities[i].activities = redistributed[i].activities;
-        }
+        redistributedBuckets.forEach((bucket) => {
+          dailyActivities[bucket.index].activities = bucket.activities;
+        });
       }
     }
 
@@ -5482,12 +5676,10 @@ router.post('/:tripId/generate-final-itinerary', authenticateToken, async (req, 
     const mealsPerDay = Math.min(Math.max(restPrefs.meals_per_day ?? 2, 1), 3);
     const totalMealSlots = numDays > 0 ? mealsPerDay * numDays : 0;
     const slotOrder = ['breakfast', 'lunch', 'dinner'].slice(0, mealsPerDay);
-    const slotsToFill = [];
-    for (let d = 1; d <= numDays; d++) {
-      for (const slot of slotOrder) {
-        slotsToFill.push({ day_number: d, slot });
-      }
-    }
+    const slotsToFill = calendarDates
+      .map((date, idx) => ({ day_number: idx + 1, date }))
+      .filter((entry) => !activitiesStartDateKey || entry.date >= activitiesStartDateKey)
+      .flatMap((entry) => slotOrder.map((slot) => ({ day_number: entry.day_number, slot })));
     const slotsNeeded = slotsToFill.slice(0, totalMealSlots);
 
     if (slotsNeeded.length > 0) {
@@ -5651,6 +5843,27 @@ Rules:
       }
     }
 
+    const cityTransitions = [];
+    for (let i = 1; i < dailyActivities.length; i++) {
+      const prevCity = dailyActivities[i - 1]?.city;
+      const currentCity = dailyActivities[i]?.city;
+      if (prevCity && currentCity && prevCity !== currentCity) {
+        cityTransitions.push({
+          dayIndex: i,
+          fromCity: prevCity,
+          toCity: currentCity,
+        });
+      }
+    }
+    const intercityFlightsByDay = new Map();
+    for (let i = 0; i < Math.min(cityTransitions.length, selectedIntercityFlights.length); i++) {
+      intercityFlightsByDay.set(cityTransitions[i].dayIndex, {
+        flight: selectedIntercityFlights[i],
+        fromCity: cityTransitions[i].fromCity,
+        toCity: cityTransitions[i].toCity,
+      });
+    }
+
     // Build final itinerary structure
     const itinerary = {
       trip_id: tripId,
@@ -5676,6 +5889,8 @@ Rules:
             description: a.description,
             source: a.source || 'generated',
           })),
+          city: dayData.city || null,
+          travel_day: !!dayData.travel_day,
         };
 
         // Add flight info for first and last day
@@ -5690,8 +5905,8 @@ Rules:
           };
         }
 
-        // Check if this is the last day by comparing date to end_date (more reliable than index)
-        const isLastDay = dayData.date === tripPreferences.end_date || index === dailyActivities.length - 1;
+        const returnDateKey = returnDepartureInfo?.dateKey || tripPreferences.end_date;
+        const isLastDay = dayData.date === returnDateKey || index === dailyActivities.length - 1;
         if (isLastDay && selectedReturnFlight) {
           dayItinerary.return_flight = {
             departure_id: selectedReturnFlight.departure_id,
@@ -5703,18 +5918,35 @@ Rules:
           };
         }
 
-        // Add hotel info (same for all days)
-        if (selectedHotel) {
+        const intercityAssignment = intercityFlightsByDay.get(index);
+        if (intercityAssignment?.flight) {
+          dayItinerary.intercity_flight = {
+            departure_id: intercityAssignment.flight.departure_id,
+            arrival_id: intercityAssignment.flight.arrival_id,
+            price: intercityAssignment.flight.price,
+            total_duration: intercityAssignment.flight.total_duration,
+            flights: intercityAssignment.flight.flights,
+            layovers: intercityAssignment.flight.layovers,
+            from_city: intercityAssignment.fromCity,
+            to_city: intercityAssignment.toCity,
+          };
+        }
+
+        // Add hotel info per city
+        const hotelCityKey = normalizeCityKey(dayData.city);
+        const hotelForDay = hotelCityKey ? hotelByCity.get(hotelCityKey) : null;
+        const hotelDetails = hotelForDay || fallbackHotel;
+        if (hotelDetails) {
           dayItinerary.hotel = {
-            hotel_id: selectedHotel.hotel_id,
-            name: selectedHotel.name,
-            location: selectedHotel.location,
-            rate_per_night: selectedHotel.rate_per_night_lowest,
-            rate_per_night_formatted: selectedHotel.rate_per_night_formatted,
-            link: selectedHotel.link,
-            overall_rating: selectedHotel.overall_rating,
-            check_in_time: selectedHotel.check_in_time,
-            check_out_time: selectedHotel.check_out_time,
+            hotel_id: hotelDetails.hotel_id,
+            name: hotelDetails.name,
+            location: hotelDetails.location,
+            rate_per_night: hotelDetails.rate_per_night_lowest,
+            rate_per_night_formatted: hotelDetails.rate_per_night_formatted,
+            link: hotelDetails.link,
+            overall_rating: hotelDetails.overall_rating,
+            check_in_time: hotelDetails.check_in_time,
+            check_out_time: hotelDetails.check_out_time,
           };
         }
 
