@@ -138,6 +138,7 @@ type TravelSegment = {
   durationText: string;
   durationMinutes: number | null;
   mode: "walk" | "drive";
+  path?: { lat: number; lng: number }[];
 };
 
 type LocationSequenceEntry = {
@@ -246,11 +247,8 @@ const minutesFromSeconds = (seconds?: number | null) => {
   return Math.round(seconds / 60);
 };
 
-const requestDirections = (
-  directionsService: google.maps.DirectionsService,
-  request: google.maps.DirectionsRequest
-) =>
-  new Promise<google.maps.DirectionsResult | null>((resolve) => {
+const requestDirections = (directionsService: any, request: any) =>
+  new Promise<any | null>((resolve) => {
     directionsService.route(request, (result, status) => {
       if (status === "OK" && result) {
         resolve(result);
@@ -261,12 +259,12 @@ const requestDirections = (
   });
 
 const computePreferredRoute = async (
-  directionsService: google.maps.DirectionsService,
-  maps: typeof google.maps,
-  origin: google.maps.LatLng | google.maps.LatLngLiteral | string,
-  destination: google.maps.LatLng | google.maps.LatLngLiteral | string
+  directionsService: any,
+  maps: any,
+  origin: any,
+  destination: any
 ) => {
-  const baseRequest: Omit<google.maps.DirectionsRequest, "travelMode"> = {
+  const baseRequest: Record<string, any> = {
     origin,
     destination,
   };
@@ -300,12 +298,18 @@ const computePreferredRoute = async (
     return null;
   }
 
+  const pathPoints =
+    routeResult.routes?.[0]?.overview_path?.map((latLng) => ({
+      lat: latLng.lat(),
+      lng: latLng.lng(),
+    })) || [];
+
   return {
     mode,
     distanceText: leg.distance?.text || "",
     durationText: leg.duration?.text || "",
     durationMinutes: minutesFromSeconds(durationSeconds),
-    overviewPath: routeResult.routes?.[0]?.overview_path || [],
+    path: pathPoints,
   };
 };
 
@@ -339,6 +343,7 @@ const FinalItinerary = () => {
   });
   const [dragContext, setDragContext] = useState<DragContext | null>(null);
   const [dragHoverKey, setDragHoverKey] = useState<string | null>(null);
+  const [selectedMapSegment, setSelectedMapSegment] = useState<{ dayNumber: number; index: number } | null>(null);
 
   type ChatMessage = {
     role: "user" | "assistant";
@@ -1521,8 +1526,10 @@ const FinalItinerary = () => {
         return;
       }
       if (kind === "activity") {
+        if (dragContext.kind !== "activity") return;
         moveActivityWithinDay(dayNumber, dragContext.sourceIndex, targetIndex);
       } else {
+        if (dragContext.kind !== "meal") return;
         moveMealWithinDay(dayNumber, dragContext.sourceSlot, targetIndex);
       }
       setDragContext(null);
@@ -1534,6 +1541,15 @@ const FinalItinerary = () => {
   const handleDragEnd = useCallback(() => {
     setDragContext(null);
     setDragHoverKey(null);
+  }, []);
+
+  const toggleMapSegment = useCallback((dayNumber: number, index: number) => {
+    setSelectedMapSegment((prev) => {
+      if (prev && prev.dayNumber === dayNumber && prev.index === index) {
+        return null;
+      }
+      return { dayNumber, index };
+    });
   }, []);
 
 
@@ -1691,6 +1707,7 @@ const FinalItinerary = () => {
               durationText: routeDetails.durationText,
               durationMinutes: routeDetails.durationMinutes,
               mode: routeDetails.mode,
+              path: routeDetails.path,
             });
           }
           if (segments.length > 0) {
@@ -1728,8 +1745,8 @@ const FinalItinerary = () => {
     if (!GOOGLE_MAPS_API_KEY) return;
 
     let cancelled = false;
-    let markers: google.maps.Marker[] = [];
-    let polylines: google.maps.Polyline[] = [];
+    let markers: any[] = [];
+    let polylines: any[] = [];
 
     const cleanupOverlays = () => {
       markers.forEach((marker) => marker.setMap(null));
@@ -1758,15 +1775,16 @@ const FinalItinerary = () => {
         const sequence = buildLocationSequence(day);
         if (sequence.length === 0) return;
 
+        const dayNumber = day.day_number;
         const maps = window.google.maps;
         const map = new maps.Map(mapRef.current, {
           center: { lat: 0, lng: 0 },
           zoom: 12,
         });
         const geocoder = new maps.Geocoder();
+        const infoWindow = new maps.InfoWindow();
         const directionsService = new maps.DirectionsService();
         const bounds = new maps.LatLngBounds();
-        const infoWindow = new maps.InfoWindow();
 
         const buildInfoContent = (loc: LocationSequenceEntry) => {
           const wrapper = document.createElement("div");
@@ -1796,7 +1814,7 @@ const FinalItinerary = () => {
         };
 
         const geocodeEntry = (entry: LocationSequenceEntry) =>
-          new Promise<google.maps.GeocoderResult | null>((resolve) => {
+          new Promise<any | null>((resolve) => {
             geocoder.geocode({ address: entry.address }, (results, status) => {
               if (status === "OK" && results && results[0]) {
                 resolve(results[0]);
@@ -1832,47 +1850,83 @@ const FinalItinerary = () => {
           map.fitBounds(bounds);
         }
 
-        const segments: TravelSegment[] = [];
-        for (let i = 0; i < sequence.length - 1; i++) {
+        const existingSegments = travelInfoByDay[dayNumber]?.segments || [];
+        const mergedSegments = [...existingSegments];
+        let segmentsChanged = false;
+
+        const pairs = sequence.slice(0, -1).map((from, idx) => ({
+          index: idx,
+          from,
+          to: sequence[idx + 1],
+        }));
+
+        const activePairs =
+          selectedMapSegment && selectedMapSegment.dayNumber === dayNumber
+            ? pairs.filter((pair) => pair.index === selectedMapSegment.index)
+            : pairs;
+
+        const segmentsForMap: TravelSegment[] = [];
+
+        for (const pair of activePairs) {
           if (cancelled) return;
-          const from = sequence[i];
-          const to = sequence[i + 1];
-          const routeDetails = await computePreferredRoute(
-            directionsService,
-            maps,
-            from.address,
-            to.address
-          );
-          if (!routeDetails) continue;
-          if (routeDetails.overviewPath.length > 0) {
-            const path = routeDetails.overviewPath.map((latLng) => ({
-              lat: latLng.lat(),
-              lng: latLng.lng(),
-            }));
-            const polyline = new maps.Polyline({
-              map,
-              path,
-              strokeColor: routeDetails.mode === "drive" ? "#fb923c" : "#60a5fa",
-              strokeOpacity: 0.9,
-              strokeWeight: routeDetails.mode === "drive" ? 5 : 4,
-            });
-            polylines.push(polyline);
+          let segment = mergedSegments[pair.index];
+          const labelsMatch =
+            segment?.fromLabel === pair.from.label && segment?.toLabel === pair.to.label;
+          const needsRoute =
+            !segment || !labelsMatch || !segment.path || segment.path.length === 0;
+          if (needsRoute) {
+            const routeDetails = await computePreferredRoute(
+              directionsService,
+              maps,
+              pair.from.address,
+              pair.to.address
+            );
+            if (!routeDetails) continue;
+            segment = {
+              fromLabel: pair.from.label,
+              toLabel: pair.to.label,
+              distanceText: routeDetails.distanceText,
+              durationText: routeDetails.durationText,
+              durationMinutes: routeDetails.durationMinutes,
+              mode: routeDetails.mode,
+              path: routeDetails.path,
+            };
+            mergedSegments[pair.index] = segment;
+            segmentsChanged = true;
           }
-          segments.push({
-            fromLabel: from.label,
-            toLabel: to.label,
-            distanceText: routeDetails.distanceText,
-            durationText: routeDetails.durationText,
-            durationMinutes: routeDetails.durationMinutes,
-            mode: routeDetails.mode,
-          });
+          if (segment) {
+            segmentsForMap.push(segment);
+          }
         }
 
-        if (!cancelled && segments.length > 0) {
-          setTravelInfoByDay((prev) => ({
-            ...prev,
-            [day.day_number]: { segments },
-          }));
+        const highlightSelection =
+          selectedMapSegment && selectedMapSegment.dayNumber === dayNumber;
+        segmentsForMap.forEach((segment) => {
+          if (!segment.path || segment.path.length === 0) return;
+          const polyline = new maps.Polyline({
+            map,
+            path: segment.path,
+            strokeColor: segment.mode === "drive" ? "#fb923c" : "#60a5fa",
+            strokeOpacity: highlightSelection ? 1 : 0.9,
+            strokeWeight: segment.mode === "drive" ? 5 : 4,
+          });
+          polylines.push(polyline);
+        });
+
+        if (!cancelled && segmentsChanged) {
+          setTravelInfoByDay((prev) => {
+            const prevSegments = prev[dayNumber]?.segments || [];
+            const nextSegments = [...prevSegments];
+            mergedSegments.forEach((seg, idx) => {
+              if (seg) {
+                nextSegments[idx] = seg;
+              }
+            });
+            return {
+              ...prev,
+              [dayNumber]: { segments: nextSegments },
+            };
+          });
         }
       } catch (e) {
         console.error("Error initializing Google Maps:", e);
@@ -1888,13 +1942,28 @@ const FinalItinerary = () => {
       window.clearTimeout(timeoutId);
       cleanupOverlays();
     };
-  }, [itinerary, activeTab, selectedMapDayIndex, buildLocationSequence]);
+  }, [
+    itinerary,
+    activeTab,
+    selectedMapDayIndex,
+    buildLocationSequence,
+    travelInfoByDay,
+    selectedMapSegment,
+  ]);
 
   useEffect(() => {
     if (!tripId) return;
     void loadPersistedMeals();
     void loadPersistedExpenses();
   }, [tripId]);
+
+  useEffect(() => {
+    const day = itinerary?.days[selectedMapDayIndex];
+    if (!day) return;
+    if (selectedMapSegment && selectedMapSegment.dayNumber !== day.day_number) {
+      setSelectedMapSegment(null);
+    }
+  }, [itinerary, selectedMapDayIndex, selectedMapSegment]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -2626,9 +2695,14 @@ const FinalItinerary = () => {
                                   );
                                 }
 
-                                const meal = row.meal;
-                                const slot = row.slot;
-                                const slotLabel = row.slotLabel;
+                                if (row.kind !== "meal") {
+                                  return null;
+                                }
+
+                                const mealRow = row;
+                                const meal = mealRow.meal;
+                                const slot = mealRow.slot;
+                                const slotLabel = mealRow.slotLabel;
                                 const mealOrder = getMealOrderForDay(day.day_number);
                                 const allowMealDrag = row.reorderable && mealOrder.length > 1;
 
@@ -2665,9 +2739,9 @@ const FinalItinerary = () => {
                                 };
 
                                 const handleMealDrop = (event: DragEvent<HTMLDivElement>) => {
-                                  if (!isDraggingSameDay || row.mealPosition === undefined) return;
+                                  if (!isDraggingSameDay || mealRow.mealPosition === undefined) return;
                                   event.preventDefault();
-                                  handleDrop(day.day_number, "meal", row.mealPosition);
+                                  handleDrop(day.day_number, "meal", mealRow.mealPosition);
                                 };
 
                                 if (!meal || !meal.name) {
@@ -2918,68 +2992,178 @@ const FinalItinerary = () => {
                     </TabsContent>
 
                     <TabsContent value="map" className="mt-0">
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                          <p className="text-xs font-semibold text-slate-600">
-                            Day map: activities, hotel, and nearby points
-                          </p>
-                          <div className="flex items-center gap-2 text-xs">
-                            <span className="text-slate-500">Day:</span>
-                            <select
-                              className="h-7 rounded border border-blue-200 bg-white px-2 text-xs text-slate-700"
-                              value={selectedMapDayIndex}
-                              onChange={(e) => setSelectedMapDayIndex(Number(e.target.value))}
-                            >
-                              {itinerary.days.map((d, idx) => (
-                                <option key={d.day_number} value={idx}>
-                                  Day {d.day_number}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        </div>
-                        <div className="rounded-md border border-blue-100 bg-blue-50/60 p-3 text-xs text-slate-700">
-                          {(() => {
-                            const day = itinerary.days[selectedMapDayIndex] || itinerary.days[0];
-                            const activities = day.activities || [];
-                            if (activities.length === 0) {
-                              return <p className="text-slate-500">No activities added for this day yet.</p>;
-                            }
-                            return (
-                              <div className="space-y-2">
-                                <p className="font-semibold text-slate-800">Activities shown on the map</p>
-                                <ul className="space-y-1">
-                                  {activities.map((act, idx) => (
-                                    <li key={`${act.activity_id || idx}`} className="text-[11px]">
-                                      <span className="font-semibold text-slate-800">
-                                        {idx + 1}. {act.name || "Activity"}
-                                      </span>
-                                      {act.description && (
-                                        <span className="block text-slate-600">{act.description}</span>
-                                      )}
-                                      {(act.address || act.location) && (
-                                        <span className="block text-slate-500">
-                                          📍 {act.address || act.location}
-                                        </span>
-                                      )}
-                                    </li>
-                                  ))}
-                                </ul>
+                      {(() => {
+                        const day = itinerary.days[selectedMapDayIndex] || itinerary.days[0];
+                        if (!day) {
+                          return (
+                            <p className="text-xs text-slate-500">
+                              Select a day to see its map and travel breakdown.
+                            </p>
+                          );
+                        }
+
+                        const dayNumber = day.day_number;
+                        const sequence = buildLocationSequence(day);
+                        const segments = travelInfoByDay[dayNumber]?.segments || [];
+                        const activeSegmentIndex =
+                          selectedMapSegment && selectedMapSegment.dayNumber === dayNumber
+                            ? selectedMapSegment.index
+                            : null;
+
+                        const kindLabel: Record<LocationSequenceEntry["kind"], string> = {
+                          activity: "Activity",
+                          meal: "Meal",
+                          hotel: "Hotel",
+                          fallback: "Destination",
+                        };
+
+                        return (
+                          <div className="space-y-4">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                              <div>
+                                <p className="text-xs font-semibold text-slate-600">
+                                  Day map: follow the full chronology or spotlight a single hop
+                                </p>
+                                <p className="text-[11px] text-slate-500">
+                                  Click a connector below to isolate that leg on the map.
+                                </p>
                               </div>
-                            );
-                          })()}
-                        </div>
-                        {!GOOGLE_MAPS_API_KEY && (
-                          <p className="text-[11px] text-rose-500">
-                            Google Maps API key is not configured. Please set GOOGLE_MAPS_API_KEY/VITE_GOOGLE_MAPS_API_KEY to
-                            see the map.
-                          </p>
-                        )}
-                        <div
-                          ref={mapRef}
-                          className="mt-2 h-[360px] w-full rounded-md border border-blue-100 bg-blue-50/40"
-                        />
-                      </div>
+                              <div className="flex items-center gap-2 text-xs">
+                                <span className="text-slate-500">Day:</span>
+                                <select
+                                  className="h-7 rounded border border-blue-200 bg-white px-2 text-xs text-slate-700"
+                                  value={selectedMapDayIndex}
+                                  onChange={(e) => setSelectedMapDayIndex(Number(e.target.value))}
+                                >
+                                  {itinerary.days.map((d, idx) => (
+                                    <option key={d.day_number} value={idx}>
+                                      Day {d.day_number}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+
+                            <div className="grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
+                              <div className="rounded-md border border-blue-100 bg-blue-50/60 p-3 text-xs text-slate-700">
+                                <div className="flex items-center justify-between gap-2 mb-2">
+                                  <p className="font-semibold text-slate-800">Chronology</p>
+                                  {activeSegmentIndex !== null && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-6 px-2 text-[10px]"
+                                      onClick={() => setSelectedMapSegment(null)}
+                                    >
+                                      Show full day
+                                    </Button>
+                                  )}
+                                </div>
+                                {sequence.length <= 1 ? (
+                                  <p className="text-[11px] text-slate-500">
+                                    Add at least two stops (meals, activities, or hotel) to see routes.
+                                  </p>
+                                ) : (
+                                  <ol className="space-y-3">
+                                    {sequence.map((stop, idx) => {
+                                      const stopKey = `${stop.label}-${idx}`;
+                                      return (
+                                        <li key={stopKey}>
+                                          <div className="rounded-md border border-blue-100 bg-white px-3 py-2">
+                                            <p className="text-[10px] uppercase tracking-wide text-slate-400">
+                                              {kindLabel[stop.kind]}
+                                            </p>
+                                            <p className="text-sm font-semibold text-slate-900">{stop.label}</p>
+                                            <p className="text-[11px] text-slate-500">{stop.address}</p>
+                                          </div>
+                                          {idx < sequence.length - 1 && (
+                                            <div className="ml-2 border-l border-dashed border-slate-300 pl-3 py-2">
+                                              {(() => {
+                                                const seg = segments[idx];
+                                                const isSelected = activeSegmentIndex === idx;
+                                                const durationLabel = seg
+                                                  ? typeof seg.durationMinutes === "number"
+                                                    ? `${seg.durationMinutes} min`
+                                                    : seg.durationText || "Travel time pending"
+                                                  : "Calculating route…";
+                                                const distanceLabel = seg?.distanceText || null;
+                                                const modeLabel =
+                                                  seg?.mode === "drive"
+                                                    ? "Drive"
+                                                    : seg?.mode === "walk"
+                                                    ? "Walk"
+                                                    : "Transit";
+                                                return (
+                                                  <div
+                                                    className={`flex items-start justify-between gap-3 rounded-md px-2 py-1 ${
+                                                      isSelected
+                                                        ? "border border-blue-200 bg-white"
+                                                        : "border border-transparent"
+                                                    }`}
+                                                  >
+                                                    <div className="text-[11px] text-slate-600">
+                                                      {seg ? (
+                                                        <>
+                                                          <span className="font-semibold text-slate-800">
+                                                            {modeLabel} • {durationLabel}
+                                                          </span>
+                                                          <br />
+                                                          <span className="text-slate-500">
+                                                            {distanceLabel ? `Distance: ${distanceLabel}` : "Distance pending"}
+                                                          </span>
+                                                        </>
+                                                      ) : (
+                                                        <span className="text-slate-400 italic">{durationLabel}</span>
+                                                      )}
+                                                    </div>
+                                                    <Button
+                                                      variant={isSelected ? "default" : "outline"}
+                                                      size="sm"
+                                                      className="h-6 px-2 text-[10px]"
+                                                      onClick={() => toggleMapSegment(dayNumber, idx)}
+                                                    >
+                                                      {isSelected ? "Showing route" : "Show on map"}
+                                                    </Button>
+                                                  </div>
+                                                );
+                                              })()}
+                                            </div>
+                                          )}
+                                        </li>
+                                      );
+                                    })}
+                                  </ol>
+                                )}
+                              </div>
+
+                              <div className="space-y-2">
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                  <div className="flex flex-wrap items-center gap-4 text-[11px] text-slate-600">
+                                    <span className="flex items-center gap-1">
+                                      <span className="h-1.5 w-8 rounded-full bg-sky-400" />
+                                      Walking
+                                    </span>
+                                    <span className="flex items-center gap-1">
+                                      <span className="h-1.5 w-8 rounded-full bg-orange-400" />
+                                      Driving
+                                    </span>
+                                  </div>
+                                </div>
+                                {!GOOGLE_MAPS_API_KEY && (
+                                  <p className="text-[11px] text-rose-500">
+                                    Google Maps API key is not configured. Set GOOGLE_MAPS_API_KEY / VITE_GOOGLE_MAPS_API_KEY
+                                    to load the map.
+                                  </p>
+                                )}
+                                <div
+                                  ref={mapRef}
+                                  className="h-[360px] w-full rounded-md border border-blue-100 bg-blue-50/40"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </TabsContent>
 
                     <TabsContent value="budget" className="mt-0">
@@ -3882,7 +4066,7 @@ const FinalItinerary = () => {
                     <TabsContent value="calendar" className="mt-0">
                       <div className="mb-3 p-2 bg-slate-50 rounded-md border border-slate-200">
                         <p className="text-xs text-slate-600">
-                          <span className="font-semibold">Read-only view</span> — This calendar shows your itinerary in chronological order. 
+                          <span className="font-semibold">Read-only view</span> — This calendar shows your itinerary in chronological order.
                           To make changes, use the <span className="font-semibold">Editable Overview</span> tab.
                         </p>
                       </div>
