@@ -2674,7 +2674,9 @@ router.get('/:tripId/activities', authenticateToken, async (req, res) => {
     const { data: activitiesRaw, error: activitiesError } = await supabase
       .from('activity')
       .select(
-        'activity_id, name, location, city, category, duration, cost_estimate, rating, tags, source, source_url'
+        // Include image_url, description, and price_range so the frontend
+        // cards can render images and richer details.
+        'activity_id, name, location, city, address, category, duration, cost_estimate, rating, tags, source, source_url, image_url, description, price_range'
       )
       .in('activity_id', activityIds);
 
