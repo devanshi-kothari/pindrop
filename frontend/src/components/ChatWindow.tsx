@@ -843,11 +843,40 @@ const ChatWindow = ({
 
   useEffect(() => {
     if (activities.length === 0) return;
+
+    const expectedCities =
+      orderedCities.length > 0
+        ? orderedCities
+        : tripPreferences?.ordered_cities?.length
+        ? tripPreferences.ordered_cities
+        : tripPreferences?.selected_cities?.length
+        ? tripPreferences.selected_cities
+        : [];
+
+    const dedupedExpectedCities: string[] = [];
+    const seenCityTokens = new Set<string>();
+    expectedCities.forEach((city) => {
+      const normalized = normalizeCityToken(city);
+      if (normalized && !seenCityTokens.has(normalized)) {
+        seenCityTokens.add(normalized);
+        dedupedExpectedCities.push(city);
+      }
+    });
+
+    if (dedupedExpectedCities.length > 1) {
+      const hasCoverage = dedupedExpectedCities.every((city) =>
+        activities.some((activity) => doesEntryMatchCity(activity.city, activity.location, city))
+      );
+      if (!hasCoverage) {
+        return;
+      }
+    }
+
     const pending = activities.filter((a) => a.preference === "pending").length;
     if (pending === 0 && !hasConfirmedActivities) {
       setHasConfirmedActivities(true);
     }
-  }, [activities, hasConfirmedActivities]);
+  }, [activities, orderedCities, tripPreferences, hasConfirmedActivities]);
 
 
   const loadRestaurants = useCallback(
@@ -886,11 +915,40 @@ const ChatWindow = ({
     if (!hasStartedRestaurants) {
       setHasStartedRestaurants(true);
     }
+
+    const expectedCities =
+      orderedCities.length > 0
+        ? orderedCities
+        : tripPreferences?.ordered_cities?.length
+        ? tripPreferences.ordered_cities
+        : tripPreferences?.selected_cities?.length
+        ? tripPreferences.selected_cities
+        : [];
+
+    const dedupedExpectedCities: string[] = [];
+    const seenCityTokens = new Set<string>();
+    expectedCities.forEach((city) => {
+      const normalized = normalizeCityToken(city);
+      if (normalized && !seenCityTokens.has(normalized)) {
+        seenCityTokens.add(normalized);
+        dedupedExpectedCities.push(city);
+      }
+    });
+
+    if (dedupedExpectedCities.length > 1) {
+      const hasCoverage = dedupedExpectedCities.every((city) =>
+        restaurants.some((restaurant) => doesEntryMatchCity(restaurant.city, restaurant.location, city))
+      );
+      if (!hasCoverage) {
+        return;
+      }
+    }
+
     const pending = restaurants.filter((r) => r.preference === "pending").length;
     if (pending === 0 && !hasConfirmedRestaurants) {
       setHasConfirmedRestaurants(true);
     }
-  }, [restaurants, hasStartedRestaurants, hasConfirmedRestaurants]);
+  }, [restaurants, orderedCities, tripPreferences, hasStartedRestaurants, hasConfirmedRestaurants]);
 
   const loadRestaurantPreferences = useCallback(async (id: number) => {
     try {
