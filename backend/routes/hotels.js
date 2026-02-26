@@ -33,6 +33,9 @@ router.get('/search', authenticateToken, async (req, res) => {
 
     if (cachedHotels && cachedHotels.length > 0) {
       const normalizedHotels = cachedHotels.map((row) => ({
+        // Include the hotel_id so the frontend can associate existing hotels
+        // with trips without creating duplicate hotel rows.
+        hotel_id: row.hotel_id,
         ...(row.additional_data || {}),
         name: row.name,
         type: row.type,
@@ -340,7 +343,44 @@ router.post('/save', authenticateToken, async (req, res) => {
       const hotelProperty = properties[i];
       console.log(`Processing hotel option ${i + 1} of ${properties.length}: ${hotelProperty.name}`);
 
-      // Extract known fields from hotel property
+      // If this property already has a hotel_id (coming from the cache),
+      // don't insert a duplicate hotel row. Just associate it with the trip.
+      if (hotelProperty.hotel_id) {
+        const existingHotelId = hotelProperty.hotel_id;
+        console.log(`Linking existing hotel_id ${existingHotelId} to trip ${trip_id} without inserting new hotel row.`);
+
+        const { error: tripHotelError } = await supabase
+          .from('trip_hotel')
+          .upsert(
+            [
+              {
+                trip_id: trip_id,
+                hotel_id: existingHotelId,
+                is_selected: false,
+              },
+            ],
+            {
+              onConflict: 'trip_id,hotel_id',
+            }
+          );
+
+        if (tripHotelError) {
+          console.error(
+            `Error associating existing hotel ${i + 1} with trip in trip_hotel table:`,
+            tripHotelError
+          );
+          console.error('trip_id:', trip_id, 'hotel_id:', existingHotelId);
+        } else {
+          console.log(
+            `Successfully associated existing hotel ${i + 1} (hotel_id: ${existingHotelId}) with trip ${trip_id} in trip_hotel table`
+          );
+          savedHotelIds.push(existingHotelId);
+        }
+
+        continue;
+      }
+
+      // Extract known fields from hotel property for new inserts
       const hotelData = {
         name: hotelProperty.name || null,
         type: hotelProperty.type || null,
@@ -384,14 +424,22 @@ router.post('/save', authenticateToken, async (req, res) => {
         serpapi_property_details_link: hotelProperty.serpapi_property_details_link || null,
         // Search parameters
         search_location: searchParamsObj.location || null,
-        check_in_date: searchParamsObj.check_in_date ? new Date(searchParamsObj.check_in_date).toISOString().split('T')[0] : null,
-        check_out_date: searchParamsObj.check_out_date ? new Date(searchParamsObj.check_out_date).toISOString().split('T')[0] : null,
+        check_in_date: searchParamsObj.check_in_date
+          ? new Date(searchParamsObj.check_in_date).toISOString().split('T')[0]
+          : null,
+        check_out_date: searchParamsObj.check_out_date
+          ? new Date(searchParamsObj.check_out_date).toISOString().split('T')[0]
+          : null,
         currency: searchParamsObj.currency || 'USD',
         // Additional hotel data that doesn't fit in columns
-        additional_data: {} // Can store any other fields if needed
+        additional_data: {}, // Can store any other fields if needed
       };
 
-      console.log(`Saving hotel: ${hotelData.name}, price: ${hotelData.total_rate_formatted || hotelData.rate_per_night_formatted}`);
+      console.log(
+        `Saving hotel: ${hotelData.name}, price: ${
+          hotelData.total_rate_formatted || hotelData.rate_per_night_formatted
+        }`
+      );
 
       // Insert hotel into hotel table
       const { data: hotel, error: hotelError } = await supabase
@@ -408,25 +456,37 @@ router.post('/save', authenticateToken, async (req, res) => {
 
       if (hotel?.hotel_id) {
         savedHotelIds.push(hotel.hotel_id);
-        console.log(`Successfully saved hotel ${i + 1} to hotel table with hotel_id: ${hotel.hotel_id}`);
+        console.log(
+          `Successfully saved hotel ${i + 1} to hotel table with hotel_id: ${hotel.hotel_id}`
+        );
 
         // Associate hotel with trip in trip_hotel table
         // Use upsert to handle duplicates (if hotel already associated with trip)
         const { error: tripHotelError } = await supabase
           .from('trip_hotel')
-          .upsert([{
-            trip_id: trip_id,
-            hotel_id: hotel.hotel_id,
-            is_selected: false
-          }], {
-            onConflict: 'trip_id,hotel_id'
-          });
+          .upsert(
+            [
+              {
+                trip_id: trip_id,
+                hotel_id: hotel.hotel_id,
+                is_selected: false,
+              },
+            ],
+            {
+              onConflict: 'trip_id,hotel_id',
+            }
+          );
 
         if (tripHotelError) {
-          console.error(`Error associating hotel ${i + 1} with trip in trip_hotel table:`, tripHotelError);
+          console.error(
+            `Error associating hotel ${i + 1} with trip in trip_hotel table:`,
+            tripHotelError
+          );
           console.error('trip_id:', trip_id, 'hotel_id:', hotel.hotel_id);
         } else {
-          console.log(`Successfully associated hotel ${i + 1} (hotel_id: ${hotel.hotel_id}) with trip ${trip_id} in trip_hotel table`);
+          console.log(
+            `Successfully associated hotel ${i + 1} (hotel_id: ${hotel.hotel_id}) with trip ${trip_id} in trip_hotel table`
+          );
         }
       } else {
         console.error(`Hotel ${i + 1} was inserted but no hotel_id was returned`);

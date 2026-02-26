@@ -70,6 +70,10 @@ interface TripPreferences {
   safety_notes: string;
   accessibility_notes: string;
   custom_requests: string;
+  // Phase completion flags persisted per trip so planner can resume
+  has_confirmed_hotels?: boolean;
+  has_confirmed_activities?: boolean;
+  has_confirmed_restaurants?: boolean;
 }
 
 const ChatWindow = ({
@@ -401,6 +405,9 @@ const ChatWindow = ({
       safety_notes: "",
       accessibility_notes: "",
       custom_requests: "",
+      has_confirmed_hotels: false,
+      has_confirmed_activities: false,
+      has_confirmed_restaurants: false,
     };
   };
 
@@ -655,13 +662,32 @@ const ChatWindow = ({
 
         if (response.ok && result.success && result.preferences) {
           const loaded = result.preferences;
-          setTripPreferences({
+          const normalized: TripPreferences = {
+            ...buildDefaultPreferencesFromProfile(),
             ...loaded,
             selected_cities: Array.isArray(loaded?.selected_cities) ? loaded.selected_cities : [],
             ordered_cities: Array.isArray(loaded?.ordered_cities) ? loaded.ordered_cities : [],
             city_days: loaded?.city_days || {},
             has_confirmed_multi_city: !!loaded?.has_confirmed_multi_city,
-          });
+            has_confirmed_hotels: !!loaded?.has_confirmed_hotels,
+            has_confirmed_activities: !!loaded?.has_confirmed_activities,
+            has_confirmed_restaurants: !!loaded?.has_confirmed_restaurants,
+          };
+          setTripPreferences(normalized);
+
+          // Hydrate phase flags from persisted preferences so planner resumes correctly
+          if (normalized.has_confirmed_hotels) {
+            setHasConfirmedHotels(true);
+            setHasStartedPlanning(true);
+          }
+          if (normalized.has_confirmed_activities) {
+            setHasConfirmedActivities(true);
+            setHasStartedPlanning(true);
+          }
+          if (normalized.has_confirmed_restaurants) {
+            setHasConfirmedRestaurants(true);
+            setHasStartedPlanning(true);
+          }
         } else {
           // Seed with defaults from user profile if no preferences yet
           setTripPreferences(buildDefaultPreferencesFromProfile());
@@ -955,7 +981,20 @@ const ChatWindow = ({
       const result = await response.json();
 
       if (response.ok && result.success) {
-        setTripPreferences(result.preferences);
+        // Normalize saved preferences to keep TripPreferences shape consistent
+        const saved = result.preferences || {};
+        const normalized: TripPreferences = {
+          ...buildDefaultPreferencesFromProfile(),
+          ...saved,
+          selected_cities: Array.isArray(saved?.selected_cities) ? saved.selected_cities : [],
+          ordered_cities: Array.isArray(saved?.ordered_cities) ? saved.ordered_cities : [],
+          city_days: saved?.city_days || {},
+          has_confirmed_multi_city: !!saved?.has_confirmed_multi_city,
+          has_confirmed_hotels: !!saved?.has_confirmed_hotels,
+          has_confirmed_activities: !!saved?.has_confirmed_activities,
+          has_confirmed_restaurants: !!saved?.has_confirmed_restaurants,
+        };
+        setTripPreferences(normalized);
       } else {
         console.error("Failed to save preferences:", result.message);
       }
@@ -2295,11 +2334,8 @@ const ChatWindow = ({
         const hotelsToSet = result.properties.slice(0, 5);
         setHotelsByCity(prev => ({ ...prev, [cityIndex]: hotelsToSet }));
 
-        // Save hotels to database
+        // Save/link hotels in database for this trip so they can be restored later
         try {
-          if (result.source === "cache") {
-            return;
-          }
           const saveResponse = await fetch(getApiUrl("api/hotels/save"), {
             method: "POST",
             headers: {
@@ -3959,7 +3995,7 @@ const ChatWindow = ({
                     size="sm"
                     className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
                     disabled={!allCityAnswered}
-                    onClick={() => {
+                    onClick={async () => {
                       if (currentActivityCityIndex < orderedCities.length - 1) {
                         const nextCityIndex = currentActivityCityIndex + 1;
                         setCurrentActivityCityIndex(nextCityIndex);
@@ -3967,6 +4003,8 @@ const ChatWindow = ({
                         return;
                       }
                       setHasConfirmedActivities(true);
+                      // Persist that activities phase is confirmed so we can resume later
+                      await savePreferences({ has_confirmed_activities: true });
                       setCurrentRestaurantCityIndex(0);
                       setActiveTab("restaurants");
                     }}
@@ -4478,7 +4516,7 @@ const ChatWindow = ({
                     size="sm"
                     className="h-7 px-3 bg-blue-500 hover:bg-blue-600 text-xs text-white disabled:opacity-60"
                     disabled={!allCityAnswered}
-                    onClick={() => {
+                    onClick={async () => {
                       if (currentRestaurantCityIndex < orderedCities.length - 1) {
                         const nextCityIndex = currentRestaurantCityIndex + 1;
                         setCurrentRestaurantCityIndex(nextCityIndex);
@@ -4486,6 +4524,8 @@ const ChatWindow = ({
                         return;
                       }
                       setHasConfirmedRestaurants(true);
+                      // Persist that restaurants phase is confirmed so we can resume later
+                      await savePreferences({ has_confirmed_restaurants: true });
                       // Navigate to summary or final itinerary
                       setActiveTab("summary");
                     }}
@@ -7113,7 +7153,7 @@ const ChatWindow = ({
                       className="h-7 px-3 border-blue-200 text-slate-900 hover:bg-blue-50 disabled:opacity-40"
                       disabled={currentHotelCityIndex === 0}
                       onClick={() => {
-                        setCurrentHotelCityIndex(prev => prev - 1);
+                        setCurrentHotelCityIndex((prev) => prev - 1);
                       }}
                     >
                       ← Previous
@@ -7125,25 +7165,27 @@ const ChatWindow = ({
                       onClick={async () => {
                         if (isLastSegment) {
                           // All hotels booked, continue to activities
-                            setHasConfirmedHotels(true);
-                            
+                          setHasConfirmedHotels(true);
+                          // Persist that hotels phase is confirmed so we can resume later
+                          await savePreferences({ has_confirmed_hotels: true });
+
                           // Generate activities when moving from hotels to activities
                           if (!tripId) return;
 
                           await generateActivities(
                             orderedCities.length > 0 ? [orderedCities[0]] : tripDestination ? [tripDestination] : undefined
                           );
-                          
-                            // Start with the first city
-                            setCurrentActivityCityIndex(0);
-                            // Navigate to activities tab
+
+                          // Start with the first city
+                          setCurrentActivityCityIndex(0);
+                          // Navigate to activities tab
                           setActiveTab("activities");
                         } else {
                           // Move to next city
-                          setCurrentHotelCityIndex(prev => prev + 1);
+                          setCurrentHotelCityIndex((prev) => prev + 1);
                         }
-                        }}
-                      >
+                      }}
+                    >
                         {isGeneratingActivities
                           ? useTestActivities
                             ? "Loading test activities..."

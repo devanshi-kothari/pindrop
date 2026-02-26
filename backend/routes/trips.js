@@ -1767,6 +1767,10 @@ router.put('/:tripId/preferences', authenticateToken, async (req, res) => {
       safety_notes,
       accessibility_notes,
       custom_requests,
+      // Phase completion flags
+      has_confirmed_hotels,
+      has_confirmed_activities,
+      has_confirmed_restaurants,
     } = req.body;
 
     // Ensure the trip belongs to the user
@@ -1852,6 +1856,16 @@ router.put('/:tripId/preferences', authenticateToken, async (req, res) => {
     if (safety_notes !== undefined) preferenceData.safety_notes = safety_notes;
     if (accessibility_notes !== undefined) preferenceData.accessibility_notes = accessibility_notes;
     if (custom_requests !== undefined) preferenceData.custom_requests = custom_requests;
+    // Phase completion flags (only update when explicitly provided)
+    if (has_confirmed_hotels !== undefined) {
+      preferenceData.has_confirmed_hotels = !!has_confirmed_hotels;
+    }
+    if (has_confirmed_activities !== undefined) {
+      preferenceData.has_confirmed_activities = !!has_confirmed_activities;
+    }
+    if (has_confirmed_restaurants !== undefined) {
+      preferenceData.has_confirmed_restaurants = !!has_confirmed_restaurants;
+    }
 
     let result;
 

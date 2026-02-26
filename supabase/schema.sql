@@ -131,6 +131,10 @@ CREATE TABLE IF NOT EXISTS trip_preference (
     custom_requests TEXT,
     -- Restaurant/dining preferences (JSON: cuisine_types, dietary_restrictions, meals_per_day, meal_types, min_price_range, max_price_range, custom_requests)
     restaurant_preferences JSONB,
+    -- Phase completion flags so the planner can resume where the user left off
+    has_confirmed_hotels BOOLEAN DEFAULT FALSE,
+    has_confirmed_activities BOOLEAN DEFAULT FALSE,
+    has_confirmed_restaurants BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
