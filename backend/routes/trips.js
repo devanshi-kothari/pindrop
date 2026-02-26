@@ -894,11 +894,14 @@ function matchesAvoidCategory(activityName, activityCategory, snippet, avoidCate
 }
 
 async function upsertReusableActivityFromSearchItem(item, destination, preferences = null, userProfile = null, opts = {}) {
-  // Keep location as the broader trip destination (e.g. "Italy")
-  // and store precise street address separately in the "address" column.
+  // Store location as "City, Destination" when city is known so cached lookups can match by city.
   // opts.city: when set (multi-city), which selected city this activity is for.
-  const location = destination || null;
+  const baseDestination = destination || null;
   const city = opts && typeof opts.city === 'string' && opts.city.trim() ? opts.city.trim() : null;
+  const location =
+    city && baseDestination
+      ? `${city}, ${baseDestination}`
+      : city || baseDestination;
   let address = null;
   const snippet = item.snippet || '';
   const originalLink = item.link || '';
@@ -1134,18 +1137,54 @@ Category:`;
   }
 
   // Try to find an existing reusable activity with the same name/location/source (and city when multi-city)
-  let existingQuery = supabase
-    .from('activity')
-    .select('*')
-    .eq('name', name)
-    .eq('location', location)
-    .eq('source', 'google-search');
+  let existing = null;
+  let existingError = null;
   if (city != null) {
-    existingQuery = existingQuery.eq('city', city);
+    const { data: exactMatch, error: exactError } = await supabase
+      .from('activity')
+      .select('*')
+      .eq('name', name)
+      .eq('location', location)
+      .eq('source', 'google-search')
+      .eq('city', city)
+      .maybeSingle();
+    if (exactError && exactError.code !== 'PGRST116') {
+      existingError = exactError;
+    }
+    if (exactMatch) {
+      existing = exactMatch;
+    } else {
+      const { data: fallbackMatch, error: fallbackError } = await supabase
+        .from('activity')
+        .select('*')
+        .eq('name', name)
+        .eq('location', baseDestination || location)
+        .eq('source', 'google-search')
+        .is('city', null)
+        .maybeSingle();
+      if (fallbackError && fallbackError.code !== 'PGRST116') {
+        existingError = fallbackError;
+      }
+      if (fallbackMatch) {
+        existing = fallbackMatch;
+      }
+    }
   } else {
-    existingQuery = existingQuery.is('city', null);
+    const { data: fallbackMatch, error: fallbackError } = await supabase
+      .from('activity')
+      .select('*')
+      .eq('name', name)
+      .eq('location', location)
+      .eq('source', 'google-search')
+      .is('city', null)
+      .maybeSingle();
+    if (fallbackError && fallbackError.code !== 'PGRST116') {
+      existingError = fallbackError;
+    }
+    if (fallbackMatch) {
+      existing = fallbackMatch;
+    }
   }
-  const { data: existing, error: existingError } = await existingQuery.maybeSingle();
 
   if (existingError) {
     console.error('Error checking for existing activity:', existingError);
@@ -1163,7 +1202,12 @@ Category:`;
     if (finalLink && finalLink !== existing.source_url && !isLowQualityLink(finalLink)) {
       updateData.source_url = finalLink;
     }
-    if (city != null && (existing.city == null || existing.city === '')) updateData.city = city;
+    if (city != null && (existing.city == null || existing.city === '' || existing.city !== city)) {
+      updateData.city = city;
+    }
+    if (location && existing.location !== location) {
+      updateData.location = location;
+    }
 
     if (Object.keys(updateData).length > 0) {
       const { data: updated, error: updateError } = await supabase
@@ -1987,6 +2031,8 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       });
     }
 
+    const destinationName = (trip.destination || '').trim();
+
     // Load user profile & trip preferences to enrich the search query
     const { data: userProfile } = await supabase
       .from('app_user')
@@ -2026,6 +2072,50 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
       if (!value) return '';
       return String(value).trim().toLowerCase();
     };
+    const canonicalizeCityValue = (value) => {
+      if (!value) return '';
+      const trimmed = String(value).trim();
+      if (!trimmed) return '';
+      const noParens = trimmed.replace(/\(.*?\)/g, ' ');
+      const primary = noParens.split(',')[0] || noParens;
+      return primary.trim();
+    };
+    const enforceActivityMetadata = async (activityRow, preferredCity = null) => {
+      if (!activityRow || !activityRow.activity_id) return activityRow;
+      const canonicalPreferred = preferredCity
+        ? canonicalizeCityValue(preferredCity)
+        : '';
+      const preferredCityLabel = canonicalPreferred || preferredCity || null;
+      const updates = {};
+      if (preferredCityLabel && activityRow.city !== preferredCityLabel) {
+        updates.city = preferredCityLabel;
+        activityRow.city = preferredCityLabel;
+      }
+      if (preferredCityLabel) {
+        const preferredLocation = destinationName
+          ? `${preferredCityLabel}, ${destinationName}`
+          : preferredCityLabel;
+        if (
+          preferredLocation &&
+          activityRow.location !== preferredLocation
+        ) {
+          updates.location = preferredLocation;
+          activityRow.location = preferredLocation;
+        }
+      }
+      if (Object.keys(updates).length === 0) {
+        return activityRow;
+      }
+      try {
+        await supabase
+          .from('activity')
+          .update(updates)
+          .eq('activity_id', activityRow.activity_id);
+      } catch (metaErr) {
+        console.error('Error updating activity metadata:', metaErr);
+      }
+      return activityRow;
+    };
     const expandCityVariants = (value) => {
       if (!value) return [];
       const trimmed = String(value).trim();
@@ -2064,9 +2154,13 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
             }
             for (const act of data || []) {
               if (seen.has(act.activity_id)) continue;
-              seen.set(act.activity_id, {
-                ...act,
-                city: act.city || cityValue || variant,
+              const normalized = await enforceActivityMetadata(
+                { ...act },
+                cityValue || variant
+              );
+              seen.set(normalized.activity_id, {
+                ...normalized,
+                city: normalized.city || cityValue || variant,
               });
             }
           } catch (cacheErr) {
@@ -2094,11 +2188,17 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
           .or(`city.ilike.%${city}%,location.ilike.%${city}%`);
 
         if (!cityError && cityActivities && cityActivities.length > 0) {
-          // Ensure city field is set properly
-            const withCity = cityActivities.map((a) => ({
+          const normalized = await Promise.all(
+            cityActivities.map((a) => enforceActivityMetadata({ ...a }, city))
+          );
+          const withCity = normalized.map((a) => ({
             ...a,
             city: a.city || city,
-            location: a.location || city || trip.destination || null,
+            location:
+              a.location ||
+              (destinationName ? `${city}, ${destinationName}` : city) ||
+              trip.destination ||
+              null,
           }));
           activitiesByCity.set(city, withCity);
           console.log(`[activities][testMode] Found ${cityActivities.length} activities for "${city}"`);
@@ -2283,16 +2383,19 @@ router.post('/:tripId/generate-activities', authenticateToken, async (req, res) 
     /** @type {{ query: string; scope: string }[]} */
     let queryEntries = [];
 
-    // Multi-city: always build explicit per-city queries so we split activities by city
-    if (cities.length >= 2) {
+    const hasExplicitCitySelections = selectedCities.length > 0;
+    // Build explicit per-city queries whenever the user has selected cities (even if single-city)
+    if (hasExplicitCitySelections || cities.length >= 2) {
       for (const city of cities) {
-        const scopedCity = trip.destination ? `${city}, ${trip.destination}` : city;
+        const scopedCity = destinationName ? `${city}, ${destinationName}` : city;
         const q = scopedCity.includes(' ')
           ? `things to do in "${scopedCity}"`
           : `things to do in ${scopedCity}`;
         queryEntries.push({ query: q, scope: city });
       }
-      console.log(`[activities] Multi-city: ${cities.length} cities → ${queryEntries.length} per-city queries`);
+      console.log(
+        `[activities] Per-city query mode (${hasExplicitCitySelections ? 'explicit selection' : 'suggested cities'}): ${cities.length} cities → ${queryEntries.length} queries`
+      );
     } else {
       // Single city/destination: use LLM for query diversification, then fallback if needed
       let queryResult = null;
@@ -3021,21 +3124,80 @@ router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res)
       return raw;
     };
 
+    const primarySelectedCity =
+      selectedCities.length > 0 ? canonicalizeCity(selectedCities[0]) || selectedCities[0].trim() : null;
     const destinationLabel =
-      selectedCities.length > 0 && destinationName
-        ? `${selectedCities[0]}, ${destinationName}`
-        : destinationName;
+      primarySelectedCity && destinationName ? `${primarySelectedCity}, ${destinationName}` : destinationName;
     const destinationCountry =
       canonicalizeCountry(destinationName) ||
       canonicalizeCountry(trip.destination) ||
       destinationName ||
       trip.destination ||
       '';
-    const fallbackCityLabel =
+    const fallbackCityLabelRaw =
       (selectedCities[0] && selectedCities[0].trim()) ||
       (destinationLabel && destinationLabel.split(',')[0].trim()) ||
       (trip.destination && trip.destination.trim()) ||
       null;
+    const fallbackCityLabel = canonicalizeCity(fallbackCityLabelRaw) || fallbackCityLabelRaw || null;
+    const generationCitiesSource =
+      selectedCities.length > 0
+        ? selectedCities
+        : [fallbackCityLabel || destinationLabel || trip.destination || 'Destination'];
+    const generationCities = generationCitiesSource
+      .map((city) => canonicalizeCity(city) || city)
+      .filter((city) => city && city.trim().length > 0);
+    if (generationCities.length === 0 && fallbackCityLabel) {
+      generationCities.push(fallbackCityLabel);
+    }
+
+    const safeMealsPerDay = Math.max(1, Number(mealsPerDay) || 2);
+    const cityDaysPref =
+      tripPreferences?.city_days &&
+      typeof tripPreferences.city_days === 'object' &&
+      !Array.isArray(tripPreferences.city_days)
+        ? tripPreferences.city_days
+        : {};
+    const normalizedCityDays = new Map();
+    Object.entries(cityDaysPref || {}).forEach(([key, value]) => {
+      const normalized = canonicalizeCity(key).toLowerCase();
+      const num = Number(value);
+      if (Number.isFinite(num) && num > 0) {
+        normalizedCityDays.set(normalized, num);
+      }
+    });
+    const totalTripDays = (() => {
+      if (tripPreferences?.start_date && tripPreferences?.end_date) {
+        const start = new Date(tripPreferences.start_date);
+        const end = new Date(tripPreferences.end_date);
+        if (!Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && end >= start) {
+          const diffMs = end.getTime() - start.getTime();
+          return Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24)) + 1);
+        }
+      }
+      const numDaysPref = Number(tripPreferences?.num_days);
+      if (Number.isFinite(numDaysPref) && numDaysPref > 0) {
+        return Math.max(1, numDaysPref);
+      }
+      return Math.max(generationCities.length, 1);
+    })();
+    const defaultDays = Math.max(1, Math.floor(totalTripDays / generationCities.length));
+    const remainderDays = totalTripDays % generationCities.length;
+
+    const cityTargets = new Map();
+    const cityDaysLookup = new Map();
+    generationCities.forEach((city, index) => {
+      const normalized = canonicalizeCity(city).toLowerCase();
+      let daysForCity = normalizedCityDays.get(normalized);
+      if (!Number.isFinite(daysForCity) || daysForCity <= 0) {
+        daysForCity = defaultDays + (index < remainderDays ? 1 : 0);
+        if (daysForCity <= 0) daysForCity = 1;
+      }
+      const baseTarget = safeMealsPerDay * Math.max(1, daysForCity);
+      const buffer = Math.max(1, Math.ceil(safeMealsPerDay / 2));
+      cityTargets.set(city, baseTarget + buffer);
+      cityDaysLookup.set(city, daysForCity);
+    });
 
     const normalizedSelectedCities = selectedCities
       .map((city) => ({
@@ -3084,6 +3246,248 @@ router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res)
         }
       }
       return { data, error };
+    };
+    const ensureTripRestaurantPreference = async (restaurantId) => {
+      if (!restaurantId) return null;
+      try {
+        const { data: existingPref, error: existingPrefError } = await supabase
+          .from('trip_restaurant_preference')
+          .select('*')
+          .eq('trip_id', tripId)
+          .eq('restaurant_id', restaurantId)
+          .maybeSingle();
+        if (existingPrefError) {
+          console.error('Error checking existing trip_restaurant_preference:', existingPrefError);
+        }
+        if (existingPref) {
+          return existingPref;
+        }
+        const { data: insertedPref, error: insertPrefError } = await supabase
+          .from('trip_restaurant_preference')
+          .insert({ trip_id: tripId, restaurant_id: restaurantId, preference: 'pending' })
+          .select()
+          .single();
+        if (insertPrefError) {
+          console.error('Error inserting trip_restaurant_preference:', insertPrefError);
+          return null;
+        }
+        return insertedPref;
+      } catch (prefError) {
+        console.error('Unexpected error ensuring trip_restaurant_preference:', prefError);
+        return null;
+      }
+    };
+
+    const materializeRestaurantRow = async (restaurantRow, explicitCityLabel = null) => {
+      if (!restaurantRow) return null;
+      const normalized = await enforceRestaurantMetadata({ ...restaurantRow }, explicitCityLabel);
+      if (!normalized?.restaurant_id) return null;
+      const prefRow = await ensureTripRestaurantPreference(normalized.restaurant_id);
+      return {
+        ...normalized,
+        trip_restaurant_preference_id: prefRow?.trip_restaurant_preference_id,
+        preference: prefRow?.preference || 'pending',
+      };
+    };
+
+    const callLLMForCity = async (cityLabel, count, daysInCity = 1) => {
+      if (count <= 0) return [];
+      const cityContext = cityLabel || fallbackCityLabel || trip.destination || 'destination';
+      const locationContext = destinationName ? `${cityContext}, ${destinationName}` : cityContext;
+      const systemPrompt = `You are an expert local food and restaurant recommender. Given a city, traveler preferences, and seasonality, suggest exactly ${count} real or plausible restaurants located in that city. Each restaurant must include name, address, location/neighborhood, cuisine_type, price_range ("$", "$$", "$$$", "$$$$"), cost_estimate (USD per person), and a link (menu, official site, or placeholder https://example.com/restaurant-name). You may optionally add description, meal_types, dietary_options, rating, review_count, tags, hours. Focus on places locals actually visit.`;
+
+      const userContent = JSON.stringify({
+        destination: locationContext || trip.destination,
+        city: cityContext,
+        country: destinationName || trip.destination,
+        number_of_restaurants: count,
+        cuisine_types: cuisineTypes,
+        dietary_restrictions: dietaryRestrictions,
+        meal_types: mealTypes.length ? mealTypes : ['Breakfast', 'Lunch', 'Dinner'],
+        meals_per_day: safeMealsPerDay,
+        days_in_city: Math.max(1, daysInCity),
+        custom_requests,
+        season,
+        trip_budget: tripPreferences?.max_budget || userProfile?.budget_preference,
+      });
+
+      try {
+        const completion = await openaiClient.chat.completions.create({
+          model: DEFAULT_MODEL,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userContent },
+          ],
+          temperature: 0.6,
+          max_tokens: 2000,
+        });
+        const rawContent = completion.choices[0]?.message?.content || '[]';
+        const cleaned = rawContent.replace(/```\w*\n?/g, '').trim();
+        let parsed;
+        try {
+          parsed = JSON.parse(cleaned);
+        } catch (parseError) {
+          const match = rawContent.match(/\[[\s\S]*\]/);
+          parsed = match ? JSON.parse(match[0]) : [];
+        }
+        if (Array.isArray(parsed)) return parsed;
+        if (Array.isArray(parsed?.restaurants)) return parsed.restaurants;
+        return [];
+      } catch (llmError) {
+        console.error(`Error calling LLM for restaurants in ${cityLabel}:`, llmError);
+        return [];
+      }
+    };
+
+    const resolveRestaurantCity = (restaurantEntry, explicitCityLabel = null) => {
+      const preferCity = canonicalizeCity(
+        explicitCityLabel && explicitCityLabel.trim() ? explicitCityLabel : null
+      );
+      if (preferCity) {
+        return preferCity;
+      }
+      const fromEntry = matchCityFromValue(
+        restaurantEntry?.city ||
+          (typeof restaurantEntry?.location === 'string' ? restaurantEntry.location : '')
+      );
+      if (fromEntry) {
+        return canonicalizeCity(fromEntry) || fromEntry;
+      }
+      const fromAddress = matchCityFromValue(
+        typeof restaurantEntry?.address === 'string'
+          ? restaurantEntry.address.split(',').pop()
+          : ''
+      );
+      if (fromAddress) {
+        return canonicalizeCity(fromAddress) || fromAddress;
+      }
+      if (selectedCities.length > 0) {
+        const candidate = selectedCities.find((city) => typeof city === 'string' && city.trim());
+        if (candidate) {
+          return canonicalizeCity(candidate) || candidate;
+        }
+      }
+      return (
+        canonicalizeCity(destinationName || trip.destination || fallbackCityLabel || '') ||
+        fallbackCityLabel ||
+        null
+      );
+    };
+
+    const insertRestaurantFromLLM = async (restaurantEntry, explicitCityLabel = null) => {
+      try {
+        const name = restaurantEntry.name || 'Unknown Restaurant';
+        const address =
+          restaurantEntry.address ||
+          restaurantEntry.location ||
+          destinationLabel ||
+          trip.destination ||
+          '';
+        const cityValue = resolveRestaurantCity(restaurantEntry, explicitCityLabel);
+        const location = destinationCountry || destinationLabel || trip.destination || '';
+        const cuisine_type = restaurantEntry.cuisine_type || 'Various';
+        const meal_types = Array.isArray(restaurantEntry.meal_types) ? restaurantEntry.meal_types : [];
+        const dietary_options = Array.isArray(restaurantEntry.dietary_options) ? restaurantEntry.dietary_options : [];
+        const price_range = restaurantEntry.price_range || (restaurantEntry.cost_estimate <= 15 ? '$' : restaurantEntry.cost_estimate <= 30 ? '$$' : restaurantEntry.cost_estimate <= 60 ? '$$$' : '$$$$');
+        const cost_estimate = restaurantEntry.cost_estimate != null ? parseFloat(restaurantEntry.cost_estimate) : null;
+        const rating = restaurantEntry.rating != null ? parseFloat(restaurantEntry.rating) : null;
+        const review_count = restaurantEntry.review_count != null ? parseInt(restaurantEntry.review_count, 10) : null;
+        const tags = Array.isArray(restaurantEntry.tags) ? restaurantEntry.tags : [];
+        const source_url = restaurantEntry.link || restaurantEntry.website || restaurantEntry.url || restaurantEntry.source_url || null;
+        const reservation_url = restaurantEntry.reservation_url || restaurantEntry.reservation_link || restaurantEntry.book_url || null;
+        const description = restaurantEntry.description || null;
+        const hours = restaurantEntry.hours || null;
+        const image_url =
+          restaurantEntry.image_url ||
+          restaurantEntry.image ||
+          restaurantEntry.photo_url ||
+          restaurantEntry.thumbnail ||
+          restaurantEntry.thumbnail_url ||
+          null;
+
+        const { data: inserted, error: insertErr } = await supabase
+          .from('restaurant')
+          .insert({
+            name,
+            city: cityValue || null,
+            location: location || null,
+            address,
+            cuisine_type,
+            meal_types,
+            dietary_options,
+            price_range,
+            cost_estimate,
+            rating,
+            review_count,
+            tags,
+            source: 'llm',
+            source_url: source_url || null,
+            reservation_url: reservation_url || null,
+            description,
+            hours,
+            image_url,
+          })
+          .select()
+          .single();
+
+        if (insertErr || !inserted) {
+          console.error('Error inserting restaurant from LLM:', insertErr);
+          return null;
+        }
+        return inserted;
+      } catch (insertError) {
+        console.error('Unexpected error inserting restaurant from LLM:', insertError);
+        return null;
+      }
+    };
+
+    const collectRestaurantsForCity = async (cityLabel, targetCount, seenIds, daysInCity = 1) => {
+      const selections = [];
+      const desiredCount = Math.max(targetCount, safeMealsPerDay);
+      const addRestaurantRow = async (restaurantRow, overrideCity = cityLabel) => {
+        if (!restaurantRow) return;
+        if (restaurantRow.restaurant_id && seenIds.has(restaurantRow.restaurant_id)) return;
+        const attached = await materializeRestaurantRow(restaurantRow, overrideCity);
+        if (attached) {
+          if (attached.restaurant_id) {
+            seenIds.add(attached.restaurant_id);
+          }
+          selections.push(attached);
+        }
+      };
+
+      const { data: cachedRows, error: cachedError } = await fetchRestaurantsForScope(cityLabel, desiredCount * 2);
+      if (!cachedError && cachedRows) {
+        for (const rest of cachedRows) {
+          if (selections.length >= desiredCount) break;
+          await addRestaurantRow(rest, cityLabel);
+        }
+      }
+
+      if (selections.length < desiredCount) {
+        const needed = desiredCount - selections.length;
+        const llmEntries = await callLLMForCity(cityLabel, needed + Math.max(1, Math.ceil(safeMealsPerDay / 2)), daysInCity);
+        for (const entry of llmEntries) {
+          if (selections.length >= desiredCount) break;
+          const inserted = await insertRestaurantFromLLM(entry, cityLabel);
+          if (inserted) {
+            await addRestaurantRow(inserted, cityLabel);
+          }
+        }
+      }
+
+      if (selections.length < desiredCount && destinationCountry) {
+        const fallbackNeeded = desiredCount - selections.length;
+        const { data: fallbackRows, error: fallbackError } = await fetchRestaurantsForScope(null, fallbackNeeded * 2, destinationCountry);
+        if (!fallbackError && fallbackRows) {
+          for (const rest of fallbackRows) {
+            if (selections.length >= desiredCount) break;
+            await addRestaurantRow(rest, cityLabel);
+          }
+        }
+      }
+
+      return selections;
     };
 
     const matchCityFromValue = (value) => {
@@ -3193,289 +3597,119 @@ router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res)
       if (baseRestaurants.length === 0) {
         console.log('[restaurants][testMode] No existing restaurants in DB; falling back to LLM generation.');
       } else {
-        const shuffled = [...baseRestaurants].sort(() => Math.random() - 0.5);
-        const selected = shuffled.slice(0, 5);
+        const groupedByCity = new Map();
+        baseRestaurants.forEach((rest) => {
+          const key =
+            rest.city ||
+            matchCityFromValue(rest.location || rest.address || '') ||
+            fallbackCityLabel ||
+            generationCities[0];
+          if (!groupedByCity.has(key)) groupedByCity.set(key, []);
+          groupedByCity.get(key).push(rest);
+        });
+
+        const perCityCounts = new Map();
+        generationCities.forEach((city) => perCityCounts.set(city, 0));
         const suggestions = [];
 
-        for (const rest of selected) {
-          const { data: existingPref } = await supabase
-            .from('trip_restaurant_preference')
-            .select('*')
-            .eq('trip_id', tripId)
-            .eq('restaurant_id', rest.restaurant_id)
-            .maybeSingle();
-
-          if (!existingPref) {
-            await supabase
-              .from('trip_restaurant_preference')
-              .insert({ trip_id: tripId, restaurant_id: rest.restaurant_id, preference: 'pending' });
+        for (const city of generationCities) {
+          const needed = cityTargets.get(city) || safeMealsPerDay;
+          const pool = groupedByCity.get(city) || [];
+          let idx = 0;
+          while (idx < pool.length && (perCityCounts.get(city) || 0) < needed) {
+            const attached = await materializeRestaurantRow(pool[idx], city);
+            idx++;
+            if (attached) {
+              suggestions.push(attached);
+              perCityCounts.set(city, (perCityCounts.get(city) || 0) + 1);
+            }
           }
+        }
 
-          const { data: prefRow } = await supabase
-            .from('trip_restaurant_preference')
-            .select('*')
-            .eq('trip_id', tripId)
-            .eq('restaurant_id', rest.restaurant_id)
-            .maybeSingle();
-
-          suggestions.push({
-            ...rest,
-            trip_restaurant_preference_id: prefRow?.trip_restaurant_preference_id,
-            preference: prefRow?.preference || 'pending',
+        if (suggestions.length === 0) {
+          return res.status(200).json({
+            success: true,
+            restaurants: [],
+            message: 'No restaurants available in test mode. Please seed more data.',
           });
         }
 
         return res.status(200).json({
           success: true,
           restaurants: suggestions,
-          message: 'Test mode: loaded existing restaurants.',
+          message: 'Test mode: loaded existing restaurants per city.',
         });
       }
     }
 
-    const systemPrompt = `You are an expert local food and restaurant recommender. Given a trip destination (use city + country to avoid ambiguous city names), user preferences (cuisines, dietary restrictions, meal types, budget), and the travel season, suggest exactly 5 real or realistic restaurants.
+    const citiesToProcess =
+      generationCities.length > 0
+        ? generationCities
+        : [fallbackCityLabel || destinationLabel || trip.destination || 'Destination'];
+    const seenRestaurantIds = new Set();
+    const citySummaries = [];
+    const aggregatedSuggestions = [];
 
-Rules:
-- Return ONLY valid JSON. No markdown, no explanation.
-- Each restaurant MUST have: name, address (exact street address in the destination), location (neighborhood or area name), cuisine_type (single string), price_range (one of "$", "$$", "$$$", "$$$$"), cost_estimate (number in USD per person for a typical meal), link (URL to menu or reservation or official site; use a placeholder like "https://example.com/restaurant-name" if unknown).
-- Optionally include: description (1 sentence), meal_types (array e.g. ["Breakfast","Lunch","Dinner"]), dietary_options (array e.g. ["Vegetarian","Gluten-free"]), rating (1-5 number), review_count (number), tags (array of strings), hours (string).
-- Consider the season: in winter suggest cozy spots, soups, comfort food; in summer lighter fare, outdoor seating; spring/autumn seasonal ingredients.
-- Respect dietary_restrictions and cuisine_types. Stay within budget (min_price_range / max_price_range if provided).
-- Prefer well-known or plausible real places in the destination.`;
+    for (const cityLabelRaw of citiesToProcess) {
+      const cityLabel =
+        canonicalizeCity(cityLabelRaw) ||
+        canonicalizeCity(fallbackCityLabel || destinationLabel || trip.destination || '') ||
+        (fallbackCityLabel || destinationLabel || trip.destination || 'Destination');
+      const target = cityTargets.get(cityLabelRaw) || cityTargets.get(cityLabel) || safeMealsPerDay;
+      const daysInCity =
+        cityDaysLookup.get(cityLabelRaw) ||
+        cityDaysLookup.get(cityLabel) ||
+        Math.max(1, Math.ceil(totalTripDays / citiesToProcess.length));
 
-    const userContent = JSON.stringify({
-      destination: destinationLabel || trip.destination,
-      country: destinationName || null,
-      cities: selectedCities,
-      cuisine_types: cuisineTypes,
-      dietary_restrictions: dietaryRestrictions,
-      meal_types: mealTypes.length ? mealTypes : ['Breakfast', 'Lunch', 'Dinner'],
-      meals_per_day: mealsPerDay,
-      min_price_range: minPrice,
-      max_price_range: maxPrice,
-      custom_requests: customRequests,
-      season,
-      trip_budget: tripPreferences?.max_budget || userProfile?.budget_preference,
-    });
-
-    let rawContent;
-    try {
-      const completion = await openaiClient.chat.completions.create({
-        model: DEFAULT_MODEL,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userContent },
-        ],
-        temperature: 0.6,
-        max_tokens: 2000,
-      });
-      rawContent = completion.choices[0]?.message?.content || '[]';
-    } catch (llmError) {
-      console.error('Error calling LLM for restaurants:', llmError);
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to generate restaurant suggestions',
-        error: llmError.message,
-      });
-    }
-
-    let parsed;
-    try {
-      const cleaned = rawContent.replace(/```\w*\n?/g, '').trim();
-      parsed = JSON.parse(cleaned);
-    } catch (e) {
-      const match = rawContent.match(/\[[\s\S]*\]/);
-      parsed = match ? JSON.parse(match[0]) : [];
-    }
-
-    let list = Array.isArray(parsed) ? parsed : (parsed?.restaurants ? parsed.restaurants : []);
-
-    if (list.length === 0) {
-      console.log('[restaurants] No LLM restaurants returned, falling back to cached restaurants.');
-      let cached = [];
-      if (selectedCities.length > 0) {
-        for (const city of selectedCities) {
-          const { data: cityRest, error: cityErr } = await fetchRestaurantsForScope(city, 10);
-          if (!cityErr && cityRest && cityRest.length > 0) {
-            const normalized = await Promise.all(
-              cityRest.map((rest) =>
-                enforceRestaurantMetadata(
-                  { ...rest },
-                  city
-                )
-              )
-            );
-            cached = [...cached, ...normalized];
-          }
-        }
-      }
-      if (cached.length === 0 && destinationCountry) {
-        const { data: destRest, error: destErr } = await fetchRestaurantsForScope(
-          null,
-          10,
-          destinationCountry
-        );
-        if (!destErr && destRest && destRest.length > 0) {
-          const normalized = await Promise.all(
-            destRest.map((rest) =>
-              enforceRestaurantMetadata(
-                { ...rest },
-                fallbackCityLabel
-              )
-            )
-          );
-          cached = normalized;
-        }
-      }
-      if (cached.length > 0) {
-        const deduped = new Map(cached.map((r) => [r.restaurant_id, r]));
-        const cachedSuggestions = Array.from(deduped.values()).slice(0, 5);
-        const suggestions = [];
-        for (const rest of cachedSuggestions) {
-          const { data: existingPref } = await supabase
-            .from('trip_restaurant_preference')
-            .select('*')
-            .eq('trip_id', tripId)
-            .eq('restaurant_id', rest.restaurant_id)
-            .maybeSingle();
-
-          if (!existingPref) {
-            await supabase
-              .from('trip_restaurant_preference')
-              .insert({ trip_id: tripId, restaurant_id: rest.restaurant_id, preference: 'pending' });
-          }
-
-          const { data: prefRow } = await supabase
-            .from('trip_restaurant_preference')
-            .select('*')
-            .eq('trip_id', tripId)
-            .eq('restaurant_id', rest.restaurant_id)
-            .maybeSingle();
-
-          suggestions.push({
-            ...rest,
-            trip_restaurant_preference_id: prefRow?.trip_restaurant_preference_id,
-            preference: prefRow?.preference || 'pending',
-          });
-        }
-
-        return res.status(200).json({
-          success: true,
-          restaurants: suggestions,
-          message: 'Loaded cached restaurants.',
-        });
-      }
-    }
-
-    const toInsert = list.slice(0, 5);
-    const scopedCityLabel = selectedCities[0] || fallbackCityLabel;
-
-    const resolveRestaurantCity = (restaurantEntry, explicitCityLabel = null) => {
-      if (explicitCityLabel && explicitCityLabel.trim()) {
-        return explicitCityLabel.trim();
-      }
-      const cityFromEntry = matchCityFromValue(
-        restaurantEntry.city ||
-          (typeof restaurantEntry.location === 'string' ? restaurantEntry.location : '')
+      const perCityRestaurants = await collectRestaurantsForCity(
+        cityLabel,
+        target,
+        seenRestaurantIds,
+        daysInCity
       );
-      if (cityFromEntry) {
-        return cityFromEntry;
-      }
-      const fromAddress = matchCityFromValue(
-        typeof restaurantEntry.address === 'string'
-          ? restaurantEntry.address.split(',').pop()
-          : ''
-      );
-      if (fromAddress) {
-        return fromAddress;
-      }
-      if (selectedCities.length > 0) {
-        return selectedCities[0];
-      }
-      return matchCityFromValue(destinationName || trip.destination || '');
-    };
-
-    const suggestions = [];
-    for (const r of toInsert) {
-      const name = r.name || 'Unknown Restaurant';
-      const address = r.address || r.location || destinationLabel || trip.destination || '';
-      const cityValue = resolveRestaurantCity(r, scopedCityLabel);
-      const location = (destinationCountry || destinationLabel || trip.destination || '').trim();
-      const cuisine_type = r.cuisine_type || 'Various';
-      const meal_types = Array.isArray(r.meal_types) ? r.meal_types : [];
-      const dietary_options = Array.isArray(r.dietary_options) ? r.dietary_options : [];
-      const price_range = r.price_range || (r.cost_estimate <= 15 ? '$' : r.cost_estimate <= 30 ? '$$' : r.cost_estimate <= 60 ? '$$$' : '$$$$');
-      const cost_estimate = r.cost_estimate != null ? parseFloat(r.cost_estimate) : null;
-      const rating = r.rating != null ? parseFloat(r.rating) : null;
-      const review_count = r.review_count != null ? parseInt(r.review_count, 10) : null;
-      const tags = Array.isArray(r.tags) ? r.tags : [];
-      const source_url = r.link || r.website || r.url || r.source_url || null;
-      const reservation_url = r.reservation_url || r.reservation_link || r.book_url || null;
-      const description = r.description || null;
-      const hours = r.hours || null;
-      const image_url =
-        r.image_url ||
-        r.image ||
-        r.photo_url ||
-        r.thumbnail ||
-        r.thumbnail_url ||
-        null;
-
-      const { data: inserted, error: insertErr } = await supabase
-        .from('restaurant')
-        .insert({
-          name,
-          city: cityValue || null,
-          location: location || null,
-          address,
-          cuisine_type,
-          meal_types,
-          dietary_options,
-          price_range,
-          cost_estimate,
-          rating,
-          review_count,
-          tags,
-          source: 'llm',
-          source_url: source_url || null,
-          reservation_url: reservation_url || null,
-          description,
-          hours,
-          image_url,
-        })
-        .select()
-        .single();
-
-      if (insertErr || !inserted) {
-        console.error('Error inserting restaurant:', insertErr);
-        continue;
-      }
-
-      const { data: prefRow, error: prefErr } = await supabase
-        .from('trip_restaurant_preference')
-        .insert({ trip_id: tripId, restaurant_id: inserted.restaurant_id, preference: 'pending' })
-        .select()
-        .single();
-
-      if (prefErr) {
-        console.error('Error inserting trip_restaurant_preference:', prefErr);
-      }
-
-      const normalizedInserted = await enforceRestaurantMetadata(
-        { ...inserted },
-        cityValue || matchCityFromValue(address)
-      );
-
-      suggestions.push({
-        ...normalizedInserted,
-        trip_restaurant_preference_id: prefRow?.trip_restaurant_preference_id,
-        preference: prefRow?.preference || 'pending',
+      citySummaries.push({
+        city: cityLabel,
+        requested: target,
+        returned: perCityRestaurants.length,
       });
+      if (perCityRestaurants.length > 0) {
+        aggregatedSuggestions.push(...perCityRestaurants);
+      }
     }
+
+    if (aggregatedSuggestions.length === 0 && fallbackCityLabel) {
+      const fallbackTarget = Math.max(
+        safeMealsPerDay,
+        safeMealsPerDay * Math.max(1, Math.round(totalTripDays / Math.max(1, citiesToProcess.length)))
+      );
+      const fallbackResults = await collectRestaurantsForCity(
+        fallbackCityLabel,
+        fallbackTarget,
+        seenRestaurantIds,
+        Math.max(1, totalTripDays)
+      );
+      citySummaries.push({
+        city: fallbackCityLabel,
+        requested: fallbackTarget,
+        returned: fallbackResults.length,
+        fallback: true,
+      });
+      aggregatedSuggestions.push(...fallbackResults);
+    }
+
+    const missingCities = citySummaries.filter((entry) => entry.returned === 0);
+    const responseMessage =
+      aggregatedSuggestions.length === 0
+        ? 'No restaurants were found for the requested cities.'
+        : missingCities.length > 0
+        ? `Missing restaurants for: ${missingCities.map((c) => c.city).join(', ')}`
+        : undefined;
 
     res.status(200).json({
       success: true,
-      restaurants: suggestions,
+      restaurants: aggregatedSuggestions,
+      city_restaurant_counts: citySummaries,
+      message: responseMessage,
     });
   } catch (error) {
     console.error('Error generating restaurants:', error);

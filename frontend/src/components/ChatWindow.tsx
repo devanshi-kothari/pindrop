@@ -298,6 +298,15 @@ const ChatWindow = ({
       computeLocalHotelSummary();
     }
   }, [hasConfirmedHotels, computeLocalHotelSummary]);
+  useEffect(() => {
+    if (savedHotelSelections.length === 0) return;
+    if (!hasStartedHotels) {
+      setHasStartedHotels(true);
+    }
+    if (!hasConfirmedHotels) {
+      setHasConfirmedHotels(true);
+    }
+  }, [savedHotelSelections.length, hasStartedHotels, hasConfirmedHotels]);
   const [finalItinerary, setFinalItinerary] = useState<any | null>(null);
   const [isGeneratingFinalItinerary, setIsGeneratingFinalItinerary] = useState(false);
   const [hasAttemptedFinalItinerary, setHasAttemptedFinalItinerary] = useState(false);
@@ -2930,32 +2939,42 @@ const ChatWindow = ({
         const flightsResult = await flightsResponse.json();
         if (flightsResponse.ok && flightsResult.success) {
             // Restore airport codes if available
-          if (flightsResult.departure_id) {
-            console.log("Restoring departure airport code:", flightsResult.departure_id);
-            setDepartureId(flightsResult.departure_id);
+          const safeString = (value: unknown) =>
+            typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+
+          const restoredDepartureId = safeString(flightsResult.departure_id);
+          if (restoredDepartureId) {
+            console.log("Restoring departure airport code:", restoredDepartureId);
+            setDepartureId(restoredDepartureId);
             setHasFetchedDepartureCodes(true);
-            setDepartureAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.departure_id]));
-            setSelectedDepartureAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.departure_id]));
+            setDepartureAirportCodes((prev) => (prev.length > 0 ? prev : [restoredDepartureId]));
+            setSelectedDepartureAirportCodes((prev) => (prev.length > 0 ? prev : [restoredDepartureId]));
           }
-          if (flightsResult.arrival_id) {
-            console.log("Restoring arrival airport code:", flightsResult.arrival_id);
-            setArrivalId(flightsResult.arrival_id);
+
+          const restoredArrivalId = safeString(flightsResult.arrival_id);
+          if (restoredArrivalId) {
+            console.log("Restoring arrival airport code:", restoredArrivalId);
+            setArrivalId(restoredArrivalId);
             setHasFetchedArrivalCodes(true);
-            setArrivalAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.arrival_id]));
-            setSelectedArrivalAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.arrival_id]));
+            setArrivalAirportCodes((prev) => (prev.length > 0 ? prev : [restoredArrivalId]));
+            setSelectedArrivalAirportCodes((prev) => (prev.length > 0 ? prev : [restoredArrivalId]));
           }
-          if (flightsResult.return_arrival_id) {
-            console.log("Restoring return arrival airport code:", flightsResult.return_arrival_id);
-            setReturnArrivalId(flightsResult.return_arrival_id);
+
+          const restoredReturnArrivalId = safeString(flightsResult.return_arrival_id);
+          if (restoredReturnArrivalId) {
+            console.log("Restoring return arrival airport code:", restoredReturnArrivalId);
+            setReturnArrivalId(restoredReturnArrivalId);
             setHasFetchedReturnArrivalCodes(true);
-            setReturnArrivalAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.return_arrival_id]));
-            setSelectedReturnArrivalAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.return_arrival_id]));
+            setReturnArrivalAirportCodes((prev) => (prev.length > 0 ? prev : [restoredReturnArrivalId]));
+            setSelectedReturnArrivalAirportCodes((prev) => (prev.length > 0 ? prev : [restoredReturnArrivalId]));
           }
-          if (flightsResult.return_departure_id) {
-            console.log("Restoring return departure airport code:", flightsResult.return_departure_id);
-            setReturnDepartureId(flightsResult.return_departure_id);
-            setReturnDepartureAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.return_departure_id]));
-            setSelectedReturnDepartureAirportCodes((prev) => (prev.length > 0 ? prev : [flightsResult.return_departure_id]));
+
+          const restoredReturnDepartureId = safeString(flightsResult.return_departure_id);
+          if (restoredReturnDepartureId) {
+            console.log("Restoring return departure airport code:", restoredReturnDepartureId);
+            setReturnDepartureId(restoredReturnDepartureId);
+            setReturnDepartureAirportCodes((prev) => (prev.length > 0 ? prev : [restoredReturnDepartureId]));
+            setSelectedReturnDepartureAirportCodes((prev) => (prev.length > 0 ? prev : [restoredReturnDepartureId]));
           }
 
           // Restore outbound flights
@@ -3335,6 +3354,57 @@ const ChatWindow = ({
       return null;
     }
     return new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate());
+  };
+
+  const getReturnDepartureDate = (): Date | null => {
+    if (selectedReturnIndex === null || !returnFlights[selectedReturnIndex]) {
+      return null;
+    }
+    const selectedFlight = returnFlights[selectedReturnIndex];
+    const flightLegs = selectedFlight?.flights || [];
+    if (flightLegs.length === 0) {
+      return null;
+    }
+    const firstLeg = flightLegs[0];
+    const departureTime =
+      firstLeg?.departure_airport?.time ||
+      firstLeg?.departure_airport?.date ||
+      firstLeg?.departure?.time ||
+      firstLeg?.departure?.date ||
+      firstLeg?.departure_time ||
+      firstLeg?.departure_date ||
+      null;
+    if (!departureTime) {
+      return null;
+    }
+    const parsed = new Date(departureTime);
+    if (Number.isNaN(parsed.getTime())) {
+      return null;
+    }
+    return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+  };
+
+  const getTripEndDate = (): Date | null => {
+    const returnDeparture = getReturnDepartureDate();
+    if (returnDeparture) {
+      return returnDeparture;
+    }
+    if (tripPreferences?.end_date) {
+      const end = new Date(tripPreferences.end_date);
+      if (!Number.isNaN(end.getTime())) {
+        return end;
+      }
+    }
+    if (tripPreferences?.start_date && tripPreferences?.num_days) {
+      const start = new Date(tripPreferences.start_date);
+      const numDays = Number(tripPreferences.num_days);
+      if (!Number.isNaN(start.getTime()) && Number.isFinite(numDays) && numDays > 0) {
+        const end = new Date(start);
+        end.setDate(end.getDate() + (numDays - 1));
+        return end;
+      }
+    }
+    return null;
   };
 
   // Derived helpers for dates / num_days validation and UX
@@ -6981,8 +7051,7 @@ const ChatWindow = ({
             const currentSegment = hotelSegments[currentHotelCityIndex] || null;
             const totalSegments = hotelSegments.length;
             const isLastSegment = currentHotelCityIndex === totalSegments - 1;
-            const showHotelSelection =
-              !hasConfirmedHotels || isEditingHotels || (hotels.length === 0 && savedHotelSelections.length === 0);
+            const showHotelSelection = !hasConfirmedHotels || isEditingHotels;
 
             if (!showHotelSelection) {
               const summaryEntries = savedHotelSelections.length > 0
@@ -7106,7 +7175,7 @@ const ChatWindow = ({
               
               // For return destination, use end_date as check-out
               if (currentSegment?.isReturn) {
-                const endDate = tripPreferences?.end_date ? new Date(tripPreferences.end_date) : null;
+                const endDate = getTripEndDate();
                 if (endDate) {
                   // Check-in is the day before end_date (or same day if it's just one night)
                   const checkIn = new Date(endDate);
@@ -7130,7 +7199,7 @@ const ChatWindow = ({
               const cityCheckOut = new Date(cityCheckIn);
               cityCheckOut.setDate(cityCheckOut.getDate() + daysInCity);
               
-              const itineraryEnd = tripPreferences?.end_date ? new Date(tripPreferences.end_date) : null;
+              const itineraryEnd = getTripEndDate();
               if (itineraryEnd && cityCheckOut > itineraryEnd) {
                 cityCheckOut.setTime(itineraryEnd.getTime());
               }

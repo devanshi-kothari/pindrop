@@ -56,6 +56,11 @@ const RestaurantSwipeCard = ({
   const [isDragging, setIsDragging] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
 
+  const latestOnSwipe = useRef(onSwipe);
+  useEffect(() => {
+    latestOnSwipe.current = onSwipe;
+  }, [onSwipe]);
+
   const SWIPE_THRESHOLD = 100;
   const ROTATION_FACTOR = 0.1;
   const { x: offsetX, y: offsetY } = dragOffset;
@@ -66,9 +71,9 @@ const RestaurantSwipeCard = ({
     const absY = Math.abs(offsetY);
     if (absX > SWIPE_THRESHOLD || absY > SWIPE_THRESHOLD) {
       if (absX > absY) {
-        onSwipe(offsetX > 0 ? "right" : "left");
+        latestOnSwipe.current?.(offsetX > 0 ? "right" : "left");
       } else if (offsetY < -SWIPE_THRESHOLD) {
-        onSwipe("up");
+        latestOnSwipe.current?.("up");
       }
       setDragOffset({ x: 0, y: 0 });
       return;
@@ -76,7 +81,7 @@ const RestaurantSwipeCard = ({
     if (offsetX !== 0 || offsetY !== 0) {
       setDragOffset({ x: 0, y: 0 });
     }
-  }, [isDragging, offsetX, offsetY, onSwipe]);
+  }, [isDragging, offsetX, offsetY]);
 
   const handleTouchStart = (e: React.TouchEvent) => {
     const touch = e.touches[0];
