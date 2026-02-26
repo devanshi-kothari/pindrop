@@ -7612,6 +7612,35 @@ const ChatWindow = ({
               </div>
                           )}
 
+                          {/* Intercity Flight */}
+                          {day.intercity_flight && (
+                            <div className="bg-blue-50 rounded-md p-3 border border-blue-200">
+                              <div className="flex items-center gap-2 mb-2">
+                                <span className="text-blue-600 text-sm font-semibold">
+                                  ✈️ Intercity Flight
+                                </span>
+                                {(day.intercity_flight.from_city || day.intercity_flight.to_city) && (
+                                  <span className="text-xs text-slate-500">
+                                    {day.intercity_flight.from_city || "City"} → {day.intercity_flight.to_city || "City"}
+                                  </span>
+                                )}
+                                {day.intercity_flight.price && (
+                                  <span className="text-xs text-slate-600">
+                                    ${day.intercity_flight.price.toLocaleString()}
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-600">
+                                {day.intercity_flight.departure_id} → {day.intercity_flight.arrival_id}
+                                {day.intercity_flight.total_duration && (
+                                  <span className="text-slate-500 ml-2">
+                                    • {Math.floor(day.intercity_flight.total_duration / 60)}h {day.intercity_flight.total_duration % 60}m
+                                  </span>
+                                )}
+                              </p>
+                            </div>
+                          )}
+
                           {/* Hotel */}
                           {day.hotel && (
                             <div className="bg-yellow-50 rounded-md p-3 border border-yellow-200">

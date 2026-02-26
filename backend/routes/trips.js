@@ -5856,11 +5856,20 @@ Rules:
       }
     }
     const intercityFlightsByDay = new Map();
+    const findDayIndexForFlight = (flight) => {
+      const info = extractDepartureInfo(flight);
+      if (!info?.dateKey) return null;
+      const idx = dailyActivities.findIndex((day) => day.date === info.dateKey);
+      return idx >= 0 ? idx : null;
+    };
     for (let i = 0; i < Math.min(cityTransitions.length, selectedIntercityFlights.length); i++) {
       const transition = cityTransitions[i];
-      const attachIndex = Math.max(0, transition.dayIndex - 1);
+      const flight = selectedIntercityFlights[i];
+      const dateIndex = findDayIndexForFlight(flight);
+      const fallbackIndex = Math.max(0, transition.dayIndex - 1);
+      const attachIndex = dateIndex != null ? dateIndex : fallbackIndex;
       intercityFlightsByDay.set(attachIndex, {
-        flight: selectedIntercityFlights[i],
+        flight,
         fromCity: transition.fromCity,
         toCity: transition.toCity,
       });
