@@ -7130,6 +7130,11 @@ const ChatWindow = ({
               const cityCheckOut = new Date(cityCheckIn);
               cityCheckOut.setDate(cityCheckOut.getDate() + daysInCity);
               
+              const itineraryEnd = tripPreferences?.end_date ? new Date(tripPreferences.end_date) : null;
+              if (itineraryEnd && cityCheckOut > itineraryEnd) {
+                cityCheckOut.setTime(itineraryEnd.getTime());
+              }
+              
               return { checkIn: cityCheckIn, checkOut: cityCheckOut };
             };
             
