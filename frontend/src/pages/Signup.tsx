@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -74,6 +75,15 @@ type SignupFormValues = z.infer<typeof signupSchema>;
 const Signup = () => {
   const navigate = useNavigate();
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [restaurantPreferences, setRestaurantPreferences] = useState({
+    mealsPerDay: 2,
+    mealTypes: [] as string[],
+    cuisineTypes: [] as string[],
+    dietaryRestrictions: [] as string[],
+    minPriceRange: null as string | null,
+    maxPriceRange: null as string | null,
+    customRequests: "",
+  });
   const {
     register,
     handleSubmit,
@@ -117,6 +127,27 @@ const Signup = () => {
       }
       if (data.liked_tags && data.liked_tags.length > 0) {
         payload.liked_tags = data.liked_tags;
+      }
+
+      const hasRestaurantPrefs =
+        restaurantPreferences.cuisineTypes.length > 0 ||
+        restaurantPreferences.dietaryRestrictions.length > 0 ||
+        restaurantPreferences.mealTypes.length > 0 ||
+        restaurantPreferences.minPriceRange ||
+        restaurantPreferences.maxPriceRange ||
+        restaurantPreferences.customRequests.trim().length > 0;
+
+      if (hasRestaurantPrefs) {
+        payload.restaurant_meals_per_day = restaurantPreferences.mealsPerDay;
+        payload.restaurant_meal_types = restaurantPreferences.mealTypes;
+        payload.restaurant_cuisine_types = restaurantPreferences.cuisineTypes;
+        payload.restaurant_dietary_restrictions = restaurantPreferences.dietaryRestrictions;
+        payload.restaurant_min_price_range = restaurantPreferences.minPriceRange;
+        payload.restaurant_max_price_range = restaurantPreferences.maxPriceRange;
+        payload.restaurant_custom_requests =
+          restaurantPreferences.customRequests.trim().length > 0
+            ? restaurantPreferences.customRequests.trim()
+            : null;
       }
 
       const response = await fetch(getApiUrl("api/auth/signup"), {
@@ -312,6 +343,237 @@ const Signup = () => {
                       </div>
                     ))}
                   </div>
+                </div>
+              </div>
+
+              {/* Food & Restaurant Preferences */}
+              <div className="space-y-4 pb-4 border-b">
+                <h3 className="text-lg font-semibold">Food &amp; Restaurant Preferences</h3>
+                <p className="text-sm text-muted-foreground">
+                  These help us suggest better restaurants for your trips (all optional).
+                </p>
+
+                <div className="space-y-2.5">
+                  <Label htmlFor="signup-meals-per-day" className="text-sm font-medium">
+                    Number of meals per day you usually eat out
+                  </Label>
+                  <Select
+                    value={restaurantPreferences.mealsPerDay.toString()}
+                    onValueChange={(value) =>
+                      setRestaurantPreferences((prev) => ({
+                        ...prev,
+                        mealsPerDay: parseInt(value, 10),
+                      }))
+                    }
+                  >
+                    <SelectTrigger id="signup-meals-per-day" className="h-11">
+                      <SelectValue placeholder="Select" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">1 meal</SelectItem>
+                      <SelectItem value="2">2 meals</SelectItem>
+                      <SelectItem value="3">3 meals</SelectItem>
+                      <SelectItem value="4">4+ meals</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2.5">
+                  <Label className="text-sm font-medium">
+                    Types of meals you enjoy (select all that apply)
+                  </Label>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-2">
+                    {["Breakfast", "Brunch", "Lunch", "Dinner", "Cafe", "Dessert", "Late Night"].map(
+                      (mealType) => {
+                        const checked = restaurantPreferences.mealTypes.includes(mealType);
+                        return (
+                          <div key={mealType} className="flex items-center space-x-2">
+                            <Checkbox
+                              id={`signup-meal-${mealType}`}
+                              checked={checked}
+                              onCheckedChange={() =>
+                                setRestaurantPreferences((prev) => {
+                                  const set = new Set(prev.mealTypes);
+                                  if (set.has(mealType)) set.delete(mealType);
+                                  else set.add(mealType);
+                                  return { ...prev, mealTypes: Array.from(set) };
+                                })
+                              }
+                            />
+                            <Label
+                              htmlFor={`signup-meal-${mealType}`}
+                              className="text-sm font-normal cursor-pointer"
+                            >
+                              {mealType}
+                            </Label>
+                          </div>
+                        );
+                      }
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-2.5">
+                  <Label className="text-sm font-medium">
+                    Favorite cuisines (select all that apply)
+                  </Label>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-2">
+                    {[
+                      "Italian",
+                      "French",
+                      "Japanese",
+                      "Chinese",
+                      "Mexican",
+                      "Thai",
+                      "Indian",
+                      "Mediterranean",
+                      "American",
+                      "Spanish",
+                      "Greek",
+                      "Korean",
+                      "Vietnamese",
+                      "Middle Eastern",
+                      "Caribbean",
+                      "Brazilian",
+                      "Fusion",
+                      "Other",
+                    ].map((cuisine) => {
+                      const checked = restaurantPreferences.cuisineTypes.includes(cuisine);
+                      return (
+                        <div key={cuisine} className="flex items-center space-x-2">
+                          <Checkbox
+                            id={`signup-cuisine-${cuisine}`}
+                            checked={checked}
+                            onCheckedChange={() =>
+                              setRestaurantPreferences((prev) => {
+                                const set = new Set(prev.cuisineTypes);
+                                if (set.has(cuisine)) set.delete(cuisine);
+                                else set.add(cuisine);
+                                return { ...prev, cuisineTypes: Array.from(set) };
+                              })
+                            }
+                          />
+                          <Label
+                            htmlFor={`signup-cuisine-${cuisine}`}
+                            className="text-sm font-normal cursor-pointer"
+                          >
+                            {cuisine}
+                          </Label>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="space-y-2.5">
+                  <Label className="text-sm font-medium">
+                    Dietary restrictions (select all that apply)
+                  </Label>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-2">
+                    {[
+                      "Vegetarian",
+                      "Vegan",
+                      "Gluten-free",
+                      "Halal",
+                      "Kosher",
+                      "Dairy-free",
+                      "Nut-free",
+                      "Pescatarian",
+                      "Keto",
+                      "Paleo",
+                    ].map((restriction) => {
+                      const checked = restaurantPreferences.dietaryRestrictions.includes(restriction);
+                      return (
+                        <div key={restriction} className="flex items-center space-x-2">
+                          <Checkbox
+                            id={`signup-dietary-${restriction}`}
+                            checked={checked}
+                            onCheckedChange={() =>
+                              setRestaurantPreferences((prev) => {
+                                const set = new Set(prev.dietaryRestrictions);
+                                if (set.has(restriction)) set.delete(restriction);
+                                else set.add(restriction);
+                                return { ...prev, dietaryRestrictions: Array.from(set) };
+                              })
+                            }
+                          />
+                          <Label
+                            htmlFor={`signup-dietary-${restriction}`}
+                            className="text-sm font-normal cursor-pointer"
+                          >
+                            {restriction}
+                          </Label>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-2.5">
+                    <Label className="text-sm font-medium">Minimum price range</Label>
+                    <Select
+                      value={restaurantPreferences.minPriceRange || "any"}
+                      onValueChange={(value) =>
+                        setRestaurantPreferences((prev) => ({
+                          ...prev,
+                          minPriceRange: value === "any" ? null : value,
+                        }))
+                      }
+                    >
+                      <SelectTrigger className="h-11">
+                        <SelectValue placeholder="Any" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="any">Any</SelectItem>
+                        <SelectItem value="$">$</SelectItem>
+                        <SelectItem value="$$">$$</SelectItem>
+                        <SelectItem value="$$$">$$$</SelectItem>
+                        <SelectItem value="$$$$">$$$$</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2.5">
+                    <Label className="text-sm font-medium">Maximum price range</Label>
+                    <Select
+                      value={restaurantPreferences.maxPriceRange || "any"}
+                      onValueChange={(value) =>
+                        setRestaurantPreferences((prev) => ({
+                          ...prev,
+                          maxPriceRange: value === "any" ? null : value,
+                        }))
+                      }
+                    >
+                      <SelectTrigger className="h-11">
+                        <SelectValue placeholder="Any" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="any">Any</SelectItem>
+                        <SelectItem value="$">$</SelectItem>
+                        <SelectItem value="$$">$$</SelectItem>
+                        <SelectItem value="$$$">$$$</SelectItem>
+                        <SelectItem value="$$$$">$$$$</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="space-y-2.5">
+                  <Label htmlFor="signup-custom-requests" className="text-sm font-medium">
+                    Additional restaurant preferences or requests
+                  </Label>
+                  <Textarea
+                    id="signup-custom-requests"
+                    placeholder="E.g., prefer outdoor seating, love wine bars, need strong vegetarian options..."
+                    value={restaurantPreferences.customRequests}
+                    onChange={(e) =>
+                      setRestaurantPreferences((prev) => ({
+                        ...prev,
+                        customRequests: e.target.value,
+                      }))
+                    }
+                    className="min-h-[80px]"
+                  />
                 </div>
               </div>
 

@@ -9,7 +9,22 @@ const router = express.Router();
 // Signup route
 router.post('/signup', async (req, res) => {
   try {
-    const { name, email, password, home_location, budget_preference, travel_style, liked_tags } = req.body;
+    const {
+      name,
+      email,
+      password,
+      home_location,
+      budget_preference,
+      travel_style,
+      liked_tags,
+      restaurant_meals_per_day,
+      restaurant_meal_types,
+      restaurant_cuisine_types,
+      restaurant_dietary_restrictions,
+      restaurant_min_price_range,
+      restaurant_max_price_range,
+      restaurant_custom_requests,
+    } = req.body;
 
     // Validate required fields
     if (!name || !email || !password) {
@@ -80,11 +95,47 @@ router.post('/signup', async (req, res) => {
       userData.liked_tags = liked_tags;
     }
 
-    // Insert user into database
+    // Restaurant preference fields (flat columns)
+    if (restaurant_meals_per_day !== undefined && restaurant_meals_per_day !== null) {
+      userData.restaurant_meals_per_day =
+        typeof restaurant_meals_per_day === 'number'
+          ? restaurant_meals_per_day
+          : parseInt(restaurant_meals_per_day, 10);
+    }
+    if (Array.isArray(restaurant_meal_types)) {
+      userData.restaurant_meal_types = restaurant_meal_types;
+    }
+    if (Array.isArray(restaurant_cuisine_types)) {
+      userData.restaurant_cuisine_types = restaurant_cuisine_types;
+    }
+    if (Array.isArray(restaurant_dietary_restrictions)) {
+      userData.restaurant_dietary_restrictions = restaurant_dietary_restrictions;
+    }
+    if (restaurant_min_price_range !== undefined) {
+      userData.restaurant_min_price_range =
+        restaurant_min_price_range === null || restaurant_min_price_range === ''
+          ? null
+          : restaurant_min_price_range;
+    }
+    if (restaurant_max_price_range !== undefined) {
+      userData.restaurant_max_price_range =
+        restaurant_max_price_range === null || restaurant_max_price_range === ''
+          ? null
+          : restaurant_max_price_range;
+    }
+    if (restaurant_custom_requests !== undefined) {
+      userData.restaurant_custom_requests =
+        typeof restaurant_custom_requests === 'string' && restaurant_custom_requests.trim().length > 0
+          ? restaurant_custom_requests.trim()
+          : null;
+    }
+
     const { data: newUser, error: insertError } = await supabase
       .from('app_user')
       .insert([userData])
-      .select('user_id, name, email, home_location, budget_preference, travel_style, liked_tags, created_at')
+      .select(
+        'user_id, name, email, home_location, budget_preference, travel_style, liked_tags, restaurant_meals_per_day, restaurant_meal_types, restaurant_cuisine_types, restaurant_dietary_restrictions, restaurant_min_price_range, restaurant_max_price_range, restaurant_custom_requests, created_at'
+      )
       .single();
 
     if (insertError) {
@@ -135,7 +186,9 @@ router.post('/login', async (req, res) => {
     // Find user by email
     const { data: user, error: fetchError } = await supabase
       .from('app_user')
-      .select('user_id, name, email, password_hash, home_location, budget_preference, travel_style, liked_tags, created_at')
+      .select(
+        'user_id, name, email, password_hash, home_location, budget_preference, travel_style, liked_tags, restaurant_meals_per_day, restaurant_meal_types, restaurant_cuisine_types, restaurant_dietary_restrictions, restaurant_min_price_range, restaurant_max_price_range, restaurant_custom_requests, created_at'
+      )
       .eq('email', email)
       .single();
 

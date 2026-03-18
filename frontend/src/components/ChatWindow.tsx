@@ -231,15 +231,9 @@ const ChatWindow = ({
   const [isUpdatingRestaurantPreference, setIsUpdatingRestaurantPreference] = useState<
     Record<number, boolean>
   >({});
-  const [restaurantFormData, setRestaurantFormData] = useState({
-    mealsPerDay: 2,
-    mealTypes: [] as string[],
-    cuisineTypes: [] as string[],
-    dietaryRestrictions: [] as string[],
-    otherDietaryRestriction: "",
-    minPriceRange: null as string | null,
-    maxPriceRange: null as string | null,
-  });
+  const [restaurantFormData, setRestaurantFormData] = useState(() =>
+    buildDefaultRestaurantPreferencesFromProfile()
+  );
   const [isSavingRestaurantPreferences, setIsSavingRestaurantPreferences] = useState(false);
   const [hasConfirmedRestaurants, setHasConfirmedRestaurants] = useState(false);
   const [orderedCities, setOrderedCities] = useState<string[]>([]); // Ordered list of cities for flight booking
@@ -420,6 +414,64 @@ const ChatWindow = ({
     } catch {
       return null;
     }
+  };
+
+  const buildDefaultRestaurantPreferencesFromProfile = () => {
+    const profile = getStoredUserProfile();
+
+    const base = {
+      mealsPerDay: 2,
+      mealTypes: [] as string[],
+      cuisineTypes: [] as string[],
+      dietaryRestrictions: [] as string[],
+      otherDietaryRestriction: "",
+      minPriceRange: null as string | null,
+      maxPriceRange: null as string | null,
+    };
+
+    if (!profile) {
+      return base;
+    }
+
+    const mealsPerDayRaw = profile.restaurant_meals_per_day;
+    const mealsPerDay =
+      typeof mealsPerDayRaw === "number"
+        ? mealsPerDayRaw
+        : mealsPerDayRaw != null
+        ? parseInt(mealsPerDayRaw, 10)
+        : base.mealsPerDay;
+
+    const mealTypes = Array.isArray(profile.restaurant_meal_types)
+      ? profile.restaurant_meal_types
+      : base.mealTypes;
+
+    const cuisineTypes = Array.isArray(profile.restaurant_cuisine_types)
+      ? profile.restaurant_cuisine_types
+      : base.cuisineTypes;
+
+    const dietaryRestrictions = Array.isArray(profile.restaurant_dietary_restrictions)
+      ? profile.restaurant_dietary_restrictions
+      : base.dietaryRestrictions;
+
+    const minPriceRange =
+      profile.restaurant_min_price_range === null || profile.restaurant_min_price_range === undefined
+        ? base.minPriceRange
+        : profile.restaurant_min_price_range;
+
+    const maxPriceRange =
+      profile.restaurant_max_price_range === null || profile.restaurant_max_price_range === undefined
+        ? base.maxPriceRange
+        : profile.restaurant_max_price_range;
+
+    return {
+      ...base,
+      mealsPerDay,
+      mealTypes,
+      cuisineTypes,
+      dietaryRestrictions,
+      minPriceRange,
+      maxPriceRange,
+    };
   };
 
   const buildDefaultPreferencesFromProfile = (): TripPreferences => {
