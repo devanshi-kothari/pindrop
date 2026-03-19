@@ -406,7 +406,7 @@ const ChatWindow = ({
     return new Date(year, month - 1, day);
   };
 
-  const getStoredUserProfile = () => {
+  function getStoredUserProfile() {
     try {
       const raw = localStorage.getItem("user");
       if (!raw) return null;
@@ -414,9 +414,9 @@ const ChatWindow = ({
     } catch {
       return null;
     }
-  };
+  }
 
-  const buildDefaultRestaurantPreferencesFromProfile = () => {
+  function buildDefaultRestaurantPreferencesFromProfile() {
     const profile = getStoredUserProfile();
 
     const base = {
@@ -472,7 +472,7 @@ const ChatWindow = ({
       minPriceRange,
       maxPriceRange,
     };
-  };
+  }
 
   const buildDefaultPreferencesFromProfile = (): TripPreferences => {
     const profile = getStoredUserProfile();
@@ -2364,6 +2364,9 @@ const ChatWindow = ({
           const params = new URLSearchParams({
             departure_id: departureCode,
             arrival_id: arrivalCode,
+            // Backend needs the outbound departure_token to run live return-flight lookup.
+            // (Without this, /api/flights/return returns no options unless cached.)
+            departure_token: departureToken,
             outbound_date: tripPreferences.start_date,
             return_date: tripPreferences.end_date,
           });
@@ -2397,19 +2400,28 @@ const ChatWindow = ({
         console.log("other_flights:", result.other_flights);
         console.log("Response status:", response.status);
         if (response.ok && result.success) {
-          if (Array.isArray(result.best_flights) && result.best_flights.length > 0) {
-            flightsToSet.push(...result.best_flights);
+          const bestFlightsRaw = result.best_flights;
+          const otherFlightsRaw = result.other_flights;
+
+          const bestFlights = Array.isArray(bestFlightsRaw)
+            ? bestFlightsRaw
+            : bestFlightsRaw
+              ? [bestFlightsRaw]
+              : [];
+          const otherFlights = Array.isArray(otherFlightsRaw)
+            ? otherFlightsRaw
+            : otherFlightsRaw
+              ? [otherFlightsRaw]
+              : [];
+
+          const flightsToUse = bestFlights.length > 0 ? bestFlights : otherFlights;
+
+          if (flightsToUse.length > 0) {
+            flightsToSet.push(...flightsToUse);
             if (result.source === "cache") {
-              cachedReturnFlights.push(...result.best_flights);
+              cachedReturnFlights.push(...flightsToUse);
             } else {
-              apiReturnFlights.push(...result.best_flights);
-            }
-          } else if (Array.isArray(result.other_flights) && result.other_flights.length > 0) {
-            flightsToSet.push(...result.other_flights);
-            if (result.source === "cache") {
-              cachedReturnFlights.push(...result.other_flights);
-            } else {
-              apiReturnFlights.push(...result.other_flights);
+              apiReturnFlights.push(...flightsToUse);
             }
           }
         } else {
@@ -6155,6 +6167,10 @@ const ChatWindow = ({
                           onClick={async () => {
                             const selectedFlight = bestFlights[selectedOutboundIndex];
                             if (selectedFlight?.departure_token) {
+                              // Clear UI state so fresh options are guaranteed to render
+                              setReturnFlights([]);
+                              setSelectedReturnIndex(null);
+
                               // Clear cache for this departure_token to force a new API call
                               setReturnFlightsCache(prev => {
                                 const newCache = { ...prev };

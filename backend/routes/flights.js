@@ -110,6 +110,20 @@ router.get('/search', authenticateToken, async (req, res) => {
     console.log('SerpAPI response status:', response.status);
     console.log('SerpAPI response keys:', Object.keys(data));
 
+    // SerpAPI can return HTTP 200 while still embedding an `error` field.
+    // In that case, `best_flights` / `other_flights` won't exist and we should
+    // surface the error to the frontend.
+    if (data?.error) {
+      console.error('SerpAPI returned error payload:', data.error);
+      return res.status(200).json({
+        success: false,
+        message: typeof data.error === "string" ? data.error : data.error?.message || "SerpAPI error",
+        best_flights: [],
+        other_flights: [],
+        raw_data: data,
+      });
+    }
+
     if (!response.ok) {
       console.error('SerpAPI error:', data);
       return res.status(response.status).json({
@@ -256,6 +270,18 @@ router.get('/return', authenticateToken, async (req, res) => {
     const data = await response.json();
 
     console.log('SerpAPI return response status:', response.status);
+
+    // SerpAPI can return HTTP 200 while still embedding an `error` field.
+    if (data?.error) {
+      console.error('SerpAPI returned error payload (return flights):', data.error);
+      return res.status(200).json({
+        success: false,
+        message: typeof data.error === "string" ? data.error : data.error?.message || "SerpAPI error",
+        best_flights: [],
+        other_flights: [],
+        raw_data: data,
+      });
+    }
 
     if (!response.ok) {
       console.error('SerpAPI error:', data);
