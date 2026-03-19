@@ -2297,6 +2297,7 @@ router.put('/:tripId', authenticateToken, async (req, res) => {
     const userId = req.user.userId;
     const tripId = parseInt(req.params.tripId);
     const { title, destination, trip_status, image_url } = req.body;
+    const allowedTripStatuses = ['draft', 'planned', 'archived'];
 
     // First verify the trip belongs to the user
     const { data: existingTrip, error: checkError } = await supabase
@@ -2349,7 +2350,15 @@ router.put('/:tripId', authenticateToken, async (req, res) => {
       }
     }
 
-    if (trip_status !== undefined) updateData.trip_status = trip_status;
+    if (trip_status !== undefined) {
+      if (!allowedTripStatuses.includes(trip_status)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid trip_status. Must be draft, planned, or archived.'
+        });
+      }
+      updateData.trip_status = trip_status;
+    }
     if (image_url !== undefined) updateData.image_url = image_url;
 
     updateData.updated_at = new Date().toISOString();

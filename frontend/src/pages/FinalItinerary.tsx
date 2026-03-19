@@ -2046,9 +2046,9 @@ const FinalItinerary = () => {
               <Button
                 variant="ghost"
                 onClick={() => {
-                  // For planned/archived trips, go to dashboard with planned tab
+                  // Planned trips return to Ongoing/Upcoming, archived trips to Past Trips.
                   if (tripStatus === "planned" || tripStatus === "archived") {
-                    navigate("/dashboard?tab=planned");
+                    navigate(`/dashboard?tab=${tripStatus === "archived" ? "archived" : "planned"}`);
                   } else {
                     // For draft trips, go back to trip planning
                     navigate(tripId ? `/trip/${tripId}` : "/dashboard");

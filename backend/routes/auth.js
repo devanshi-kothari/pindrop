@@ -6,6 +6,79 @@ import supabase from '../supabaseClient.js';
 
 const router = express.Router();
 
+const syncUserTripStatusesOnLogin = async (userId) => {
+  const { data: tripsWithPreferences, error: tripsError } = await supabase
+    .from('trip')
+    .select(`
+      trip_id,
+      trip_status,
+      trip_preference (
+        end_date
+      )
+    `)
+    .eq('user_id', userId)
+    .neq('trip_status', 'draft');
+
+  if (tripsError) {
+    throw tripsError;
+  }
+
+  if (!Array.isArray(tripsWithPreferences) || tripsWithPreferences.length === 0) {
+    return;
+  }
+
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const tripIdsToArchive = [];
+  const tripIdsToPlan = [];
+
+  tripsWithPreferences.forEach((trip) => {
+    const pref = Array.isArray(trip.trip_preference)
+      ? trip.trip_preference[0]
+      : trip.trip_preference;
+    const endDate = pref?.end_date;
+    if (!endDate || typeof endDate !== 'string') {
+      return;
+    }
+
+    const shouldBeArchived = endDate < todayKey;
+    if (shouldBeArchived && trip.trip_status !== 'archived') {
+      tripIdsToArchive.push(trip.trip_id);
+    } else if (!shouldBeArchived && trip.trip_status !== 'planned') {
+      tripIdsToPlan.push(trip.trip_id);
+    }
+  });
+
+  if (tripIdsToArchive.length > 0) {
+    const { error: archiveError } = await supabase
+      .from('trip')
+      .update({
+        trip_status: 'archived',
+        updated_at: new Date().toISOString()
+      })
+      .in('trip_id', tripIdsToArchive)
+      .eq('user_id', userId);
+
+    if (archiveError) {
+      throw archiveError;
+    }
+  }
+
+  if (tripIdsToPlan.length > 0) {
+    const { error: planError } = await supabase
+      .from('trip')
+      .update({
+        trip_status: 'planned',
+        updated_at: new Date().toISOString()
+      })
+      .in('trip_id', tripIdsToPlan)
+      .eq('user_id', userId);
+
+    if (planError) {
+      throw planError;
+    }
+  }
+};
+
 // Signup route
 router.post('/signup', async (req, res) => {
   try {
@@ -207,6 +280,13 @@ router.post('/login', async (req, res) => {
         success: false,
         message: 'Invalid email or password'
       });
+    }
+
+    try {
+      await syncUserTripStatusesOnLogin(user.user_id);
+    } catch (tripSyncError) {
+      // Do not block login if trip status sync fails.
+      console.error('Trip status sync on login failed:', tripSyncError);
     }
 
     // Remove password hash from response

@@ -158,7 +158,7 @@ const Dashboard = () => {
                     setSearchParams({ tab: "archived" });
                   }}
                 >
-                  Past Trips
+                  Past & Archived Trips
                 </Button>
               </div>
             </div>
@@ -181,7 +181,7 @@ const Dashboard = () => {
               />
             ) : (
               <TripSection
-                title="Archived Trips"
+                title="Past & Archived Trips"
                 trips={archivedTrips}
                 status="archived"
               />

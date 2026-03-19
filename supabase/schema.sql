@@ -12,7 +12,13 @@ CREATE TABLE IF NOT EXISTS app_user (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
 
---CREATE TYPE trip_status_type AS ENUM ('draft', 'planned', 'archived');
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'trip_status_type') THEN
+        CREATE TYPE trip_status_type AS ENUM ('draft', 'planned', 'archived');
+    END IF;
+END
+$$;
 
 CREATE TABLE IF NOT EXISTS trip (
     trip_id BIGSERIAL PRIMARY KEY,
