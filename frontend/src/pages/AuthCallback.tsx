@@ -9,6 +9,7 @@ const AuthCallback = () => {
     const token = searchParams.get("token");
     const user = searchParams.get("user");
     const error = searchParams.get("error");
+    const newUser = searchParams.get("newUser");
 
     if (error) {
       navigate(`/login?error=${error}`);
@@ -24,7 +25,7 @@ const AuthCallback = () => {
         }
       }
     }
-    navigate("/dashboard");
+    navigate(newUser === "1" ? "/onboarding" : "/dashboard");
   }, [searchParams, navigate]);
 
   return (

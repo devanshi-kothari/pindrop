@@ -55,6 +55,7 @@ router.get('/google/callback', async (req, res) => {
       .maybeSingle();
 
     let user;
+    let isNewUser = false;
     if (existingUser) {
       user = existingUser;
     } else {
@@ -91,6 +92,7 @@ router.get('/google/callback', async (req, res) => {
 
         if (insertError) throw insertError;
         user = newUser;
+        isNewUser = true;
       }
     }
 
@@ -102,7 +104,8 @@ router.get('/google/callback', async (req, res) => {
 
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
     const userJson = encodeURIComponent(JSON.stringify(user));
-    res.redirect(`${frontendUrl}/auth/callback?token=${token}&user=${userJson}`);
+    const newUserParam = isNewUser ? '&newUser=1' : '';
+    res.redirect(`${frontendUrl}/auth/callback?token=${token}&user=${userJson}${newUserParam}`);
   } catch (err) {
     console.error('Google OAuth error:', err);
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
