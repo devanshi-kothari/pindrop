@@ -230,15 +230,6 @@ router.get('/return', authenticateToken, async (req, res) => {
       });
     }
 
-    if (!departure_token) {
-      return res.status(200).json({
-        success: false,
-        message: 'No cached return flights found and no departure_token provided for live lookup.',
-        best_flights: [],
-        other_flights: []
-      });
-    }
-
     // Get SerpAPI key from environment
     const SERPAPI_KEY = process.env.SERPAPI_KEY;
     if (!SERPAPI_KEY) {
@@ -248,8 +239,8 @@ router.get('/return', authenticateToken, async (req, res) => {
       });
     }
 
-    // Build the SerpAPI URL with departure_token
-    // Keep same departure_id and arrival_id - SerpAPI uses departure_token to identify return flights
+    // Build the SerpAPI URL for a direct parameter-based round-trip search.
+    // If a departure_token is provided, include it as an optional refinement only.
     const params = new URLSearchParams({
       engine: 'google_flights',
       api_key: SERPAPI_KEY,
@@ -258,18 +249,32 @@ router.get('/return', authenticateToken, async (req, res) => {
       outbound_date: outbound_date,
       return_date: return_date,
       type: '1', // Round trip
-      departure_token: departure_token, // Key parameter for return flights
       currency: 'USD'
     });
+
+    if (departure_token) {
+      params.append('departure_token', departure_token);
+    }
 
     const serpApiUrl = `https://serpapi.com/search?${params.toString()}`;
     console.log('Calling SerpAPI for return flights:', serpApiUrl.replace(SERPAPI_KEY, '***'));
 
     // Fetch from SerpAPI
-    const response = await fetch(serpApiUrl);
-    const data = await response.json();
+    let response = await fetch(serpApiUrl);
+    let data = await response.json();
 
     console.log('SerpAPI return response status:', response.status);
+
+    // If token-based lookup fails, retry once without departure_token so
+    // return flight lookup is not blocked by stale/invalid tokens.
+    if ((data?.error === 'Invalid `departure_token`' || data?.error === 'Invalid departure_token') && departure_token) {
+      console.warn('Invalid departure_token for return lookup; retrying without token');
+      params.delete('departure_token');
+      const fallbackUrl = `https://serpapi.com/search?${params.toString()}`;
+      response = await fetch(fallbackUrl);
+      data = await response.json();
+      console.log('SerpAPI return fallback response status:', response.status);
+    }
 
     // SerpAPI can return HTTP 200 while still embedding an `error` field.
     if (data?.error) {
@@ -285,7 +290,7 @@ router.get('/return', authenticateToken, async (req, res) => {
 
     if (!response.ok) {
       console.error('SerpAPI error:', data);
-      if (data?.error === 'Invalid `departure_token`') {
+      if (data?.error === 'Invalid `departure_token`' || data?.error === 'Invalid departure_token') {
         return res.status(200).json({
           success: false,
           message: 'Invalid `departure_token`',
