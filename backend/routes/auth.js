@@ -199,6 +199,13 @@ router.post('/login', async (req, res) => {
       });
     }
 
+    if (!user.password_hash) {
+      return res.status(401).json({
+        success: false,
+        message: 'This account uses Google Sign-In. Please use the Sign in with Google button.'
+      });
+    }
+
     // Verify password
     const isPasswordValid = await bcrypt.compare(password, user.password_hash);
 

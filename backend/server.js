@@ -6,6 +6,7 @@ import morgan from 'morgan';
 import dotenv from 'dotenv';
 import supabase from './supabaseClient.js';
 import authRoutes from './routes/auth.js';
+import authGoogleRoutes from './routes/auth-google.js';
 import chatRoutes from './routes/chat.js';
 import tripRoutes from './routes/trips.js';
 import imageRoutes from './routes/images.js';
@@ -98,6 +99,7 @@ app.get('/api', (req, res) => {
 
 // Authentication routes
 app.use('/api/auth', authRoutes);
+app.use('/api/auth', authGoogleRoutes);
 
 // Chat/LLM routes
 app.use('/api/chat', chatRoutes);
