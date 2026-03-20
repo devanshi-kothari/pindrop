@@ -304,6 +304,8 @@ const ChatWindow = ({
   const [finalItinerary, setFinalItinerary] = useState<any | null>(null);
   const [isGeneratingFinalItinerary, setIsGeneratingFinalItinerary] = useState(false);
   const [hasAttemptedFinalItinerary, setHasAttemptedFinalItinerary] = useState(false);
+  const [isUpdatingTripStatus, setIsUpdatingTripStatus] = useState(false);
+  const [tripStatusActionError, setTripStatusActionError] = useState<string | null>(null);
   const [destinationCarouselIndices, setDestinationCarouselIndices] = useState<Record<number, number>>(
     {}
   );
@@ -368,6 +370,44 @@ const ChatWindow = ({
   }, []); // Run once on mount
 
   const getAuthToken = () => localStorage.getItem("token");
+
+  const updateTripStatus = async (newStatus: "planned" | "archived") => {
+    if (!tripId) return;
+    const token = getAuthToken();
+    if (!token) {
+      setTripStatusActionError("Please log in again and retry.");
+      return;
+    }
+
+    try {
+      setIsUpdatingTripStatus(true);
+      setTripStatusActionError(null);
+
+      const response = await fetch(getApiUrl(`api/trips/${tripId}`), {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ trip_status: newStatus }),
+      });
+
+      const result = await response.json();
+      if (!response.ok || !result?.success) {
+        setTripStatusActionError(
+          result?.message || "Could not update trip status. Please try again."
+        );
+        return;
+      }
+
+      navigate(`/dashboard?tab=${newStatus === "archived" ? "archived" : "planned"}`);
+    } catch (error) {
+      console.error("Error updating trip status from final summary:", error);
+      setTripStatusActionError("Could not update trip status. Please try again.");
+    } finally {
+      setIsUpdatingTripStatus(false);
+    }
+  };
 
   const formatTime = () =>
     new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -7888,15 +7928,28 @@ const ChatWindow = ({
                       );
                     })}
                     {tripId && (
-                      <div className="mt-6 flex justify-end">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-8 px-3 border-blue-200 bg-white text-xs text-slate-900 hover:bg-blue-50"
-                          onClick={() => navigate(`/trip/${tripId}/final-itinerary`)}
-                        >
-                          View / edit full itinerary
-                        </Button>
+                      <div className="mt-6 space-y-2">
+                        {tripStatusActionError && (
+                          <p className="text-[11px] text-rose-500">{tripStatusActionError}</p>
+                        )}
+                        <div className="flex flex-wrap items-center justify-end gap-2">
+                          <Button
+                            size="sm"
+                            className="h-8 px-3 bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-60"
+                            onClick={() => void updateTripStatus("archived")}
+                            disabled={isUpdatingTripStatus}
+                          >
+                            {isUpdatingTripStatus ? "Saving..." : "Mark Trip Done / Archived"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 px-3 border-blue-200 bg-white text-xs text-slate-900 hover:bg-blue-50"
+                            onClick={() => navigate(`/trip/${tripId}/final-itinerary`)}
+                          >
+                            View / edit full itinerary
+                          </Button>
+                        </div>
                       </div>
                     )}
                   </div>
