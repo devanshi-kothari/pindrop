@@ -53,6 +53,20 @@ const canonicalizeCityValue = (value) => {
 
 const normalizeCityKey = (value) => canonicalizeCityValue(value).toLowerCase();
 
+const extractCountryFromDestination = (destination) => {
+  if (!destination) return '';
+  const trimmed = String(destination).trim();
+  const parts = trimmed.split(',').map((part) => part.trim()).filter(Boolean);
+  if (parts.length >= 2) {
+    return parts[parts.length - 1];
+  }
+  const parenMatch = trimmed.match(/\(([^)]+)\)/);
+  if (parenMatch) {
+    return parenMatch[1].trim();
+  }
+  return trimmed;
+};
+
 const parseDateKey = (value) => {
   if (!value) return null;
   const asDate = new Date(value);
@@ -1242,7 +1256,7 @@ async function fetchRestaurantsForCityCatalog(cityName, limit = 60) {
       .from('restaurant')
       .select(selectFields)
       .ilike('city', cityPattern)
-      .order('updated_at', { ascending: false })
+      .order('created_at', { ascending: false })
       .limit(limit);
     if (!error && data && data.length > 0) {
       return data;
@@ -1255,7 +1269,7 @@ async function fetchRestaurantsForCityCatalog(cityName, limit = 60) {
       .from('restaurant')
       .select(selectFields)
       .ilike('location', cityPattern)
-      .order('updated_at', { ascending: false })
+      .order('created_at', { ascending: false })
       .limit(limit);
     if (fallbackError && fallbackError.code !== 'PGRST116') {
       console.error(`Error fetching fallback restaurants for city ${cityName}:`, fallbackError);
@@ -1490,13 +1504,14 @@ async function generateRestaurantsForRemainingSlots({
       const cuisineType = suggestion.cuisine_type || 'Various';
       const costEstimate = suggestion.cost_estimate != null ? parseFloat(suggestion.cost_estimate) : null;
       const link = suggestion.link || suggestion.source_url || null;
-      const normalizedCity = canonicalizeCityValue(cityLabel);
+      const normalizedCity = canonicalizeCityValue(cityLabel) || cityLabel || canonicalizeCityValue(destination);
+      const countryOnly = extractCountryFromDestination(destination);
       const { data: insertedRest, error: restErr } = await supabase
         .from('restaurant')
         .insert({
           name,
-          city: normalizedCity,
-          location: destination || null,
+          city: normalizedCity || null,
+          location: countryOnly || null,
           address: address || null,
           cuisine_type: cuisineType,
           meal_types: Array.isArray(suggestion.meal_types) ? suggestion.meal_types : [],
@@ -4183,12 +4198,9 @@ router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res)
         typeof explicitCityLabel === 'string' && explicitCityLabel.trim().length > 0
           ? explicitCityLabel.trim()
           : '';
-      const preferCity = trimmedExplicit ? canonicalizeCity(trimmedExplicit) : '';
-      if (preferCity) {
-        return preferCity;
-      }
       if (trimmedExplicit) {
-        return trimmedExplicit;
+        const preferCity = canonicalizeCity(trimmedExplicit);
+        return preferCity || trimmedExplicit;
       }
       const fromEntry = matchCityFromValue(
         restaurantEntry?.city ||
@@ -4211,11 +4223,13 @@ router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res)
           return canonicalizeCity(candidate) || candidate;
         }
       }
-      return (
-        canonicalizeCity(destinationName || trip.destination || fallbackCityLabel || '') ||
+      const fallbackCity = canonicalizeCity(destinationName) || 
+        canonicalizeCity(trip.destination) || 
+        canonicalizeCity(fallbackCityLabel) ||
         fallbackCityLabel ||
-        null
-      );
+        destinationName ||
+        trip.destination;
+      return fallbackCity || null;
     };
 
     const insertRestaurantFromLLM = async (restaurantEntry, explicitCityLabel = null) => {
@@ -4229,12 +4243,8 @@ router.post('/:tripId/generate-restaurants', authenticateToken, async (req, res)
           '';
         const cityValue = resolveRestaurantCity(restaurantEntry, explicitCityLabel);
         const location =
-          canonicalizeCountry(destinationCountry) ||
-          canonicalizeCountry(destinationLabel) ||
+          canonicalizeCountry(destinationName) ||
           canonicalizeCountry(trip.destination) ||
-          destinationCountry ||
-          destinationLabel ||
-          trip.destination ||
           '';
         const cuisine_type = restaurantEntry.cuisine_type || 'Various';
         const meal_types = Array.isArray(restaurantEntry.meal_types) ? restaurantEntry.meal_types : [];
