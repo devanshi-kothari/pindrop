@@ -5,6 +5,7 @@ import fetch from 'node-fetch';
 import supabase from '../supabaseClient.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { saveMessage, extractTripInfo, fetchDestinationImage } from './chat.js';
+import { syncPastTripsPastEndDateForUser } from '../utils/syncPastTripsByEndDate.js';
 
 const router = express.Router();
 
@@ -2117,6 +2118,12 @@ router.get('/', authenticateToken, async (req, res) => {
     const userId = req.user.userId;
     const { status } = req.query; // 'draft', 'planned', 'archived'
 
+    try {
+      await syncPastTripsPastEndDateForUser(userId);
+    } catch (syncError) {
+      console.error('Past trips sync (by end date) failed:', syncError);
+    }
+
     let query = supabase
       .from('trip')
       .select(
@@ -2160,6 +2167,12 @@ router.get('/:tripId', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
     const tripId = parseInt(req.params.tripId);
+
+    try {
+      await syncPastTripsPastEndDateForUser(userId);
+    } catch (syncError) {
+      console.error('Past trips sync (by end date) failed:', syncError);
+    }
 
     const { data, error } = await supabase
       .from('trip')
