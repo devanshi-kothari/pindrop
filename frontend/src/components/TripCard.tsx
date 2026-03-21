@@ -101,75 +101,73 @@ const TripCard = ({ tripId, title, destination, imageUrl, startDate, endDate, st
           </span>
         </div>
       </CardContent>
-      {status !== "archived" && (
-        <>
-          <button
-            type="button"
-            className="absolute bottom-3 right-3 h-8 w-8 flex items-center justify-center rounded-full bg-white/90 border border-slate-200 text-slate-400 hover:text-rose-500 hover:border-rose-300 hover:bg-rose-50 shadow-sm transition-colors"
-            title="Delete trip"
-            onClick={(e) => {
-              e.stopPropagation();
-              setIsConfirmingDelete((prev) => !prev);
-            }}
+      <>
+        <button
+          type="button"
+          className="absolute bottom-3 right-3 h-8 w-8 flex items-center justify-center rounded-full bg-white/90 border border-slate-200 text-slate-400 hover:text-rose-500 hover:border-rose-300 hover:bg-rose-50 shadow-sm transition-colors"
+          title="Delete trip"
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsConfirmingDelete((prev) => !prev);
+          }}
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
+        {isConfirmingDelete && (
+          <div
+            className="absolute bottom-14 right-3 rounded-md border border-rose-200 bg-white/95 px-3 py-2 shadow-md text-[11px] text-slate-700 space-y-2"
+            onClick={(e) => e.stopPropagation()}
           >
-            <Trash2 className="h-4 w-4" />
-          </button>
-          {isConfirmingDelete && (
-            <div
-              className="absolute bottom-14 right-3 rounded-md border border-rose-200 bg-white/95 px-3 py-2 shadow-md text-[11px] text-slate-700 space-y-2"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <p className="text-[11px]">
-                Delete this trip? This cannot be undone.
-              </p>
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  className="px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
-                  onClick={() => setIsConfirmingDelete(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="px-2 py-1 rounded bg-rose-500 text-white hover:bg-rose-600"
-                  onClick={async () => {
-                    try {
-                      const token = localStorage.getItem("token");
-                      if (!token) {
-                        console.error("No auth token found; cannot delete trip.");
-                        return;
-                      }
-
-                      const response = await fetch(getApiUrl(`api/trips/${tripId}`), {
-                        method: "DELETE",
-                        headers: {
-                          Authorization: `Bearer ${token}`,
-                        },
-                      });
-
-                      const result = await response.json().catch(() => null);
-                      if (!response.ok || !result?.success) {
-                        console.error("Failed to delete trip:", result);
-                        window.alert(
-                          result?.message || "Sorry, something went wrong deleting this trip."
-                        );
-                      } else {
-                        window.location.reload();
-                      }
-                    } catch (err) {
-                      console.error("Error deleting trip:", err);
-                      window.alert("Sorry, something went wrong deleting this trip.");
+            <p className="text-[11px]">
+              Delete this trip? This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                className="px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-slate-50"
+                onClick={() => setIsConfirmingDelete(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="px-2 py-1 rounded bg-rose-500 text-white hover:bg-rose-600"
+                onClick={async () => {
+                  try {
+                    const token = localStorage.getItem("token");
+                    if (!token) {
+                      console.error("No auth token found; cannot delete trip.");
+                      return;
                     }
-                  }}
-                >
-                  Confirm delete
-                </button>
-              </div>
+
+                    const response = await fetch(getApiUrl(`api/trips/${tripId}`), {
+                      method: "DELETE",
+                      headers: {
+                        Authorization: `Bearer ${token}`,
+                      },
+                    });
+
+                    const result = await response.json().catch(() => null);
+                    if (!response.ok || !result?.success) {
+                      console.error("Failed to delete trip:", result);
+                      window.alert(
+                        result?.message || "Sorry, something went wrong deleting this trip."
+                      );
+                    } else {
+                      window.location.reload();
+                    }
+                  } catch (err) {
+                    console.error("Error deleting trip:", err);
+                    window.alert("Sorry, something went wrong deleting this trip.");
+                  }
+                }}
+              >
+                Confirm delete
+              </button>
             </div>
-          )}
-        </>
-      )}
+          </div>
+        )}
+      </>
     </Card>
   );
 };
