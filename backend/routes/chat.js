@@ -387,6 +387,51 @@ function extractCityResolvedCities(trip, tripPreferences) {
   return [];
 }
 
+/**
+ * When start_date moves later but end_date stays fixed, the trip loses calendar day(s).
+ * Those days should come out of the first stop only (intercity / later cities stay aligned).
+ * Returns a new city_days object, or null if nothing to change.
+ */
+function shrinkFirstCityInCityDays(tripPreferences, trip, lostCalendarDays) {
+  const lost = Number(lostCalendarDays);
+  if (!Number.isFinite(lost) || lost <= 0) return null;
+  const raw = tripPreferences?.city_days;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+
+  const cities = extractCityResolvedCities(trip, tripPreferences);
+  if (cities.length < 1) return null;
+
+  const firstNorm = normalizeCityKey(cities[0]);
+  if (!firstNorm) return null;
+
+  const updated = { ...raw };
+  for (const [key, value] of Object.entries(raw)) {
+    if (normalizeCityKey(key) !== firstNorm) continue;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return null;
+    const next = Math.max(1, Math.round(numeric - lost));
+    updated[key] = next;
+    return updated;
+  }
+  return null;
+}
+
+function dayNumbersWhereAssignedCityChanged(oldDayCityByIndex, newDayCityByIndex, numDays) {
+  const changed = [];
+  const n = Math.min(
+    numDays,
+    Math.min(oldDayCityByIndex?.length ?? 0, newDayCityByIndex?.length ?? 0)
+  );
+  for (let i = 0; i < n; i += 1) {
+    const o = oldDayCityByIndex[i];
+    const ne = newDayCityByIndex[i];
+    const oKey = o ? normalizeCityKey(o) : "";
+    const nKey = ne ? normalizeCityKey(ne) : "";
+    if (oKey !== nKey) changed.push(i + 1);
+  }
+  return changed;
+}
+
 function computeDayCityByIndex({ trip, tripPreferences, selectedOutboundFlight, numDays }) {
   const calendarDates =
     tripPreferences?.start_date && tripPreferences?.end_date
@@ -767,7 +812,39 @@ async function applyOutboundDelayAndReplanFirstCity({ userId, tripId, delayHours
   if (!newStartDateKey) throw new Error("Failed to compute new trip start_date");
 
   const newCalendarDates = buildCalendarDates(newStartDateKey, tripPreferences.end_date);
-  const newNumDays = newCalendarDates.length || oldNumDays;
+  const oldCalendarDates = buildCalendarDates(tripPreferences.start_date, tripPreferences.end_date);
+  const oldCalendarCount = oldCalendarDates.length || oldNumDays;
+  const newNumDays = newCalendarDates.length || oldCalendarCount;
+
+  // Losing calendar days at the start should shorten the first stop, not later cities (intercity dates unchanged).
+  const lostCalendarDays = Math.max(0, oldCalendarCount - newNumDays);
+  const shrunkCityDays = shrinkFirstCityInCityDays(tripPreferences, trip, lostCalendarDays);
+
+  const planningTripPreferences = {
+    ...tripPreferences,
+    start_date: newStartDateKey,
+    num_days: newNumDays,
+    end_date: tripPreferences.end_date,
+    ...(shrunkCityDays ? { city_days: shrunkCityDays } : {}),
+  };
+
+  const oldDayLayout = computeDayCityByIndex({
+    trip,
+    tripPreferences,
+    selectedOutboundFlight: oldSelectedOutboundFlight,
+    numDays: oldCalendarCount,
+  });
+  const newDayLayout = computeDayCityByIndex({
+    trip,
+    tripPreferences: planningTripPreferences,
+    selectedOutboundFlight: newOutboundFlightForPlanning,
+    numDays: newNumDays,
+  });
+  const cityChangedDayNumbers = dayNumbersWhereAssignedCityChanged(
+    oldDayLayout.dayCityByIndex,
+    newDayLayout.dayCityByIndex,
+    newNumDays
+  );
 
   const { error: prefUpdateError } = await supabase
     .from("trip_preference")
@@ -775,6 +852,7 @@ async function applyOutboundDelayAndReplanFirstCity({ userId, tripId, delayHours
       start_date: newStartDateKey,
       num_days: newNumDays,
       updated_at: nowIso,
+      ...(shrunkCityDays ? { city_days: shrunkCityDays } : {}),
     })
     .eq("trip_id", tripId);
   if (prefUpdateError) throw prefUpdateError;
@@ -840,6 +918,30 @@ async function applyOutboundDelayAndReplanFirstCity({ userId, tripId, delayHours
     if (clearTravelMealsErr) throw clearTravelMealsErr;
   }
 
+  // Days that switched city (e.g. second Naples day is now a Rome day) must drop old activities/meals.
+  if (cityChangedDayNumbers.length > 0) {
+    const { data: changedItinRows, error: changedItinErr } = await supabase
+      .from("itinerary")
+      .select("itinerary_id")
+      .eq("trip_id", tripId)
+      .in("day_number", cityChangedDayNumbers);
+    if (changedItinErr) throw changedItinErr;
+    const changedItinIds = (changedItinRows || []).map((r) => r.itinerary_id).filter(Boolean);
+    if (changedItinIds.length > 0) {
+      const { error: clearChangedActErr } = await supabase
+        .from("itinerary_activity")
+        .delete()
+        .in("itinerary_id", changedItinIds);
+      if (clearChangedActErr) throw clearChangedActErr;
+    }
+    const { error: clearChangedMealsErr } = await supabase
+      .from("trip_meal")
+      .delete()
+      .eq("trip_id", tripId)
+      .in("day_number", cityChangedDayNumbers);
+    if (clearChangedMealsErr) throw clearChangedMealsErr;
+  }
+
   // Truncate meals beyond newNumDays
   const { error: mealsDeleteError } = await supabase
     .from("trip_meal")
@@ -849,13 +951,6 @@ async function applyOutboundDelayAndReplanFirstCity({ userId, tripId, delayHours
   if (mealsDeleteError) throw mealsDeleteError;
 
   // Compute new first-city segment (only that segment gets replan work)
-  const planningTripPreferences = {
-    ...tripPreferences,
-    start_date: newStartDateKey,
-    num_days: newNumDays,
-    end_date: tripPreferences.end_date,
-  };
-
   const newFirstRange = computeDayCityByIndex({
     trip,
     tripPreferences: planningTripPreferences,
