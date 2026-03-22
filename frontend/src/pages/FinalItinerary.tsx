@@ -425,6 +425,7 @@ const FinalItinerary = () => {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [hasLoadedChatHistory, setHasLoadedChatHistory] = useState(false);
+  const [chatMode, setChatMode] = useState<"modify_logistics" | null>(null);
 
   // Replace activity modal state
   const [replaceModalOpen, setReplaceModalOpen] = useState(false);
@@ -1187,6 +1188,7 @@ const FinalItinerary = () => {
         body: JSON.stringify({
           message: content,
           tripId: tripId ? Number(tripId) : undefined,
+          chatMode: chatMode || undefined,
         }),
       });
 
@@ -1199,6 +1201,40 @@ const FinalItinerary = () => {
           timestamp: formatChatTime(),
         };
         setChatMessages((prev) => [...prev, assistantMessage]);
+
+        // If the backend applied a logistics change, refresh the overview + budget inputs.
+        if (result.logisticsApplied && tripId) {
+          try {
+            const token = getAuthToken();
+            if (token) {
+              const itineraryResponse = await fetch(
+                getApiUrl(`api/trips/${tripId}/final-itinerary`),
+                {
+                  method: "GET",
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json",
+                  },
+                }
+              );
+
+              const itineraryResult = await itineraryResponse.json();
+              if (
+                itineraryResponse.ok &&
+                itineraryResult?.success &&
+                Array.isArray(itineraryResult?.itinerary?.days)
+              ) {
+                setItinerary(itineraryResult.itinerary);
+              }
+
+              // Meals/expenses drive calendar and budget views.
+              void loadPersistedMeals();
+              void loadPersistedExpenses();
+            }
+          } catch (reloadErr) {
+            console.error("Error reloading itinerary after logistics apply:", reloadErr);
+          }
+        }
       } else if (result) {
         const errorMessage: ChatMessage = {
           role: "assistant",
@@ -4597,7 +4633,9 @@ const FinalItinerary = () => {
         <div className="fixed bottom-20 right-4 z-40 w-full max-w-md">
           <Card className="shadow-xl border border-blue-200 bg-white/95 backdrop-blur">
             <CardHeader className="flex flex-row items-center justify-between py-2">
-              <CardTitle className="text-sm">Chat with Pindrop</CardTitle>
+            <CardTitle className="text-sm">
+              {chatMode === "modify_logistics" ? "Modify logistics" : "Chat with Pindrop"}
+            </CardTitle>
               <Button
                 variant="ghost"
                 size="icon"
@@ -4644,7 +4682,11 @@ const FinalItinerary = () => {
               <div className="mt-3 flex gap-2">
                 <Input
                   type="text"
-                  placeholder="Ask about this trip..."
+                  placeholder={
+                    chatMode === "modify_logistics"
+                      ? "Ask about flight delays and logistics..."
+                      : "Ask about this trip..."
+                  }
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   onKeyDown={(e) => {
@@ -4672,13 +4714,34 @@ const FinalItinerary = () => {
 
       {/* Floating chat launcher */}
       <div className="fixed bottom-6 right-6 z-30">
-        <Button
-          size="sm"
-          className="rounded-full shadow-lg bg-yellow-400 hover:bg-yellow-300 text-slate-900 text-xs px-4 py-2"
-          onClick={() => setIsChatOpen(true)}
-        >
-          Chat with Pindrop
-        </Button>
+        <div className="flex items-center gap-2">
+          {tripStatus === "planned" && (
+            <Button
+              size="sm"
+              className="rounded-full shadow-lg bg-blue-500 hover:bg-blue-600 text-white text-xs px-4 py-2"
+              onClick={() => {
+                setChatMode("modify_logistics");
+                setHasLoadedChatHistory(false);
+                setChatMessages([]);
+                setIsChatOpen(true);
+              }}
+            >
+              Modify Logistics
+            </Button>
+          )}
+          <Button
+            size="sm"
+            className="rounded-full shadow-lg bg-yellow-400 hover:bg-yellow-300 text-slate-900 text-xs px-4 py-2"
+            onClick={() => {
+              setChatMode(null);
+              setHasLoadedChatHistory(false);
+              setChatMessages([]);
+              setIsChatOpen(true);
+            }}
+          >
+            Chat with Pindrop
+          </Button>
+        </div>
       </div>
 
       {/* Replace Activity Modal */}

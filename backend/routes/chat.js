@@ -139,6 +139,1065 @@ async function saveMessage(userId, role, content, tripId = null) {
   }
 }
 
+const logisticsMealSlotOrder = ["breakfast", "lunch", "dinner"];
+
+function extractDelayHours(text) {
+  if (!text || typeof text !== "string") return null;
+  // Supports: "delayed 24 hours", "delayed 24h", "delayed 24 hr"
+  const m = text.match(/(\d+)\s*(?:hours?|hrs?|hour)\b/i);
+  if (m?.[1]) return Number(m[1]);
+  const h = text.match(/(\d+)\s*h\b/i);
+  if (h?.[1]) return Number(h[1]);
+  return null;
+}
+
+function inferFlightType(text) {
+  if (!text || typeof text !== "string") return null;
+  const lower = text.toLowerCase();
+  if (/\boutbound\b/.test(lower)) return "outbound";
+  if (/\breturn\b/.test(lower)) return "return";
+  if (/\bintercity\b/.test(lower) || /\binter-city\b/.test(lower)) return "intercity";
+  return null;
+}
+
+function isConfirmationMessage(text) {
+  if (!text || typeof text !== "string") return false;
+  return /\b(confirm|apply|yes|do it)\b/i.test(text.trim());
+}
+
+function canonicalizeCityValue(raw) {
+  if (!raw) return null;
+  const trimmed = String(raw).trim().toLowerCase();
+  if (!trimmed) return null;
+  // Match the canonicalization approach used elsewhere in the app:
+  // - remove parenthetical suffixes
+  // - take the part before a comma (if present)
+  const noParens = trimmed.replace(/\(.*?\)/g, " ");
+  const primary = noParens.split(",")[0] || noParens;
+  return primary
+    .trim()
+    .split(/\s+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function normalizeCityKey(value) {
+  if (!value) return "";
+  return canonicalizeCityValue(value).toLowerCase();
+}
+
+function parseDateKey(value) {
+  if (!value) return null;
+  const s = String(value);
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+
+  // Fallback: best-effort parse.
+  const asDate = new Date(s);
+  if (!Number.isNaN(asDate.getTime())) return asDate.toISOString().slice(0, 10);
+  return null;
+}
+
+function parseDateParts(s) {
+  const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return { y: Number(m[1]), m: Number(m[2]), d: Number(m[3]) };
+}
+
+function toDateKeyFromParts(dateObj) {
+  if (!dateObj) return null;
+  const mm = String(dateObj.m).padStart(2, "0");
+  const dd = String(dateObj.d).padStart(2, "0");
+  return `${dateObj.y}-${mm}-${dd}`;
+}
+
+function nextDayFromParts(dateObj) {
+  if (!dateObj) return null;
+  const dt = new Date(Date.UTC(dateObj.y, dateObj.m - 1, dateObj.d + 1));
+  return { y: dt.getUTCFullYear(), m: dt.getUTCMonth() + 1, d: dt.getUTCDate() };
+}
+
+function buildCalendarDates(startDateKey, endDateKey) {
+  const startParts = parseDateParts(startDateKey);
+  const endParts = parseDateParts(endDateKey);
+  if (!startParts || !endParts) return [];
+  const dates = [];
+  const endKey = toDateKeyFromParts(endParts);
+  let cur = { ...startParts };
+  while (toDateKeyFromParts(cur) <= endKey) {
+    dates.push(toDateKeyFromParts(cur));
+    cur = nextDayFromParts(cur);
+  }
+  return dates;
+}
+
+function addHoursToDateKeyUTC(dateKey, hours) {
+  if (!dateKey || typeof dateKey !== "string") return null;
+  const parts = parseDateParts(dateKey);
+  if (!parts) return null;
+  const ms = Date.UTC(parts.y, parts.m - 1, parts.d);
+  const next = new Date(ms + hours * 60 * 60 * 1000);
+  return next.toISOString().slice(0, 10);
+}
+
+// Field names that commonly hold departure/arrival datetimes in stored SerpAPI/Google Flights JSON.
+const FLIGHT_DATETIME_FIELD_KEYS = new Set([
+  "time",
+  "date",
+  "departure_time",
+  "arrival_time",
+  "departure_date",
+  "arrival_date",
+]);
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+/**
+ * Shifts strings like "2026-12-11 16:45" or "2026-12-11T07:05" (final itinerary flight rows)
+ * while preserving the same date+time shape for the UI.
+ */
+function shiftDateTimeString(s, delayHours) {
+  if (typeof s !== "string" || !s.trim()) return s;
+  const trimmed = s.trim();
+  const pure = parseDateParts(trimmed);
+  if (pure && trimmed === toDateKeyFromParts(pure)) {
+    return addHoursToDateKeyUTC(trimmed, delayHours);
+  }
+
+  // ISO-like local: YYYY-MM-DD[ T]HH:mm[:ss] — match what Final Itinerary displays.
+  const localIsoLike = trimmed.match(
+    /^(\d{4})-(\d{2})-(\d{2})([ T])(\d{1,2}):(\d{2})(?::(\d{2}))?$/
+  );
+  if (localIsoLike) {
+    const y = Number(localIsoLike[1]);
+    const mo = Number(localIsoLike[2]);
+    const da = Number(localIsoLike[3]);
+    const sep = localIsoLike[4];
+    const h = Number(localIsoLike[5]);
+    const mi = Number(localIsoLike[6]);
+    const sec = localIsoLike[7] != null ? Number(localIsoLike[7]) : 0;
+    const base = new Date(y, mo - 1, da, h, mi, sec);
+    if (Number.isNaN(base.getTime())) return s;
+    const shifted = new Date(base.getTime() + delayHours * 60 * 60 * 1000);
+    const datePart = `${shifted.getFullYear()}-${pad2(shifted.getMonth() + 1)}-${pad2(shifted.getDate())}`;
+    const timeCore = `${pad2(shifted.getHours())}:${pad2(shifted.getMinutes())}`;
+    if (localIsoLike[7] != null) {
+      return `${datePart}${sep}${timeCore}:${pad2(shifted.getSeconds())}`;
+    }
+    return `${datePart}${sep}${timeCore}`;
+  }
+
+  // Avoid Date.parse on month/day without a year (parses to ~2001 and corrupts the schedule).
+  const hasExplicitYear = /\b(19|20)\d{2}\b/.test(trimmed);
+  const isoDatePrefix = /^\d{4}-\d{2}-\d{2}/.test(trimmed);
+  if (!hasExplicitYear && !isoDatePrefix) return s;
+
+  const ms = Date.parse(trimmed);
+  if (Number.isNaN(ms)) return s;
+  const d = new Date(ms + delayHours * 60 * 60 * 1000);
+  if (/^\d{4}-\d{2}-\d{2}T/.test(trimmed)) {
+    return d.toISOString();
+  }
+  return d.toLocaleString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+}
+
+/** Shift schedule strings inside flight.legs JSON (not whole-trip blobs like tokens). */
+function shiftFlightLegJsonByDelay(value, delayHours) {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    return value.map((v) => shiftFlightLegJsonByDelay(v, delayHours));
+  }
+  if (typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (typeof v === "string" && FLIGHT_DATETIME_FIELD_KEYS.has(k)) {
+        out[k] = shiftDateTimeString(v, delayHours);
+      } else {
+        out[k] = shiftFlightLegJsonByDelay(v, delayHours);
+      }
+    }
+    return out;
+  }
+  return value;
+}
+
+/** Same calendar date extraction as trips.js extractArrivalInfo + parseDateKey (local Date parsing). */
+function tripsStyleParseDateKey(value) {
+  if (!value) return null;
+  const asDate = new Date(value);
+  if (!Number.isNaN(asDate.getTime())) {
+    const yyyy = asDate.getFullYear();
+    const mm = String(asDate.getMonth() + 1).padStart(2, "0");
+    const dd = String(asDate.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  const match = String(value).match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    return `${match[1]}-${match[2]}-${match[3]}`;
+  }
+  return null;
+}
+
+function extractArrivalDateKeyTripsStyle(flight) {
+  if (!flight || !Array.isArray(flight.flights) || flight.flights.length === 0) return null;
+  const lastLeg = flight.flights[flight.flights.length - 1] || {};
+  const arrivalValue =
+    lastLeg?.arrival_airport?.time ||
+    lastLeg?.arrival_airport?.date ||
+    lastLeg?.arrival?.time ||
+    lastLeg?.arrival?.date ||
+    lastLeg?.arrival_time ||
+    lastLeg?.arrival_date ||
+    null;
+  if (!arrivalValue) return null;
+  return tripsStyleParseDateKey(arrivalValue);
+}
+
+function computeOutboundActivityStartIndex({ startDateKey, endDateKey, selectedOutboundFlight, maxDays }) {
+  const calendarDates =
+    startDateKey && endDateKey ? buildCalendarDates(startDateKey, endDateKey) : [];
+  let activityStartIndex = 0;
+  const arrivalDateKey = extractArrivalDateKeyTripsStyle(selectedOutboundFlight);
+  if (arrivalDateKey && calendarDates.length > 0) {
+    const calendarIndex = calendarDates.indexOf(arrivalDateKey);
+    if (calendarIndex >= 0) {
+      activityStartIndex = calendarIndex;
+    }
+  }
+  return Math.max(0, Math.min(activityStartIndex, Math.max(0, maxDays)));
+}
+
+function extractCityResolvedCities(trip, tripPreferences) {
+  const ordered = Array.isArray(tripPreferences?.ordered_cities) ? tripPreferences.ordered_cities : [];
+  const selected = Array.isArray(tripPreferences?.selected_cities) ? tripPreferences.selected_cities : [];
+
+  if (ordered.length > 0) return ordered;
+  if (selected.length > 0) return selected;
+  if (trip?.destination) return [trip.destination];
+  return [];
+}
+
+function computeDayCityByIndex({ trip, tripPreferences, selectedOutboundFlight, numDays }) {
+  const calendarDates =
+    tripPreferences?.start_date && tripPreferences?.end_date
+      ? buildCalendarDates(tripPreferences.start_date, tripPreferences.end_date)
+      : [];
+
+  const activityStartIndexRaw = (() => {
+    if (!selectedOutboundFlight) return 0;
+    const arrivalDateKey = extractArrivalDateKeyTripsStyle(selectedOutboundFlight);
+    if (!arrivalDateKey) return 0;
+    if (calendarDates.length === 0) return 0;
+    const calendarIndex = calendarDates.indexOf(arrivalDateKey);
+    if (calendarIndex >= 0) return calendarIndex;
+    // fallback: if dates didn't align, place at the start.
+    return 0;
+  })();
+
+  const activityStartIndex = Math.max(0, Math.min(activityStartIndexRaw, Math.max(1, numDays)));
+  const dayCityByIndex = Array(numDays).fill(null);
+
+  let effectiveCities = extractCityResolvedCities(trip, tripPreferences);
+  if (effectiveCities.length === 0) {
+    effectiveCities = [trip?.destination || "Destination"];
+  }
+
+  const cityDayAllocations = new Map();
+  const cityDaysObj = tripPreferences?.city_days;
+  if (cityDaysObj && typeof cityDaysObj === "object" && !Array.isArray(cityDaysObj)) {
+    Object.entries(cityDaysObj).forEach(([key, value]) => {
+      const normalized = normalizeCityKey(key);
+      const numeric = Number(value);
+      if (normalized && Number.isFinite(numeric) && numeric > 0) cityDayAllocations.set(normalized, numeric);
+    });
+  }
+
+  let remainingSlots = Math.max(0, numDays - activityStartIndex);
+  let remainingCities = effectiveCities.length;
+  const allocations = [];
+
+  effectiveCities.forEach((city, idx) => {
+    if (remainingSlots <= 0) {
+      allocations.push(0);
+      remainingCities--;
+      return;
+    }
+    const normalized = normalizeCityKey(city);
+    let desired = cityDayAllocations.get(normalized);
+    if (!Number.isFinite(desired) || desired <= 0) desired = Math.floor(remainingSlots / Math.max(1, remainingCities));
+    if (idx === effectiveCities.length - 1) desired = Math.max(desired, remainingSlots);
+    desired = Math.min(remainingSlots, Math.max(0, Math.round(desired)));
+    allocations.push(desired);
+    remainingSlots -= desired;
+    remainingCities--;
+  });
+
+  if (remainingSlots > 0 && allocations.length > 0) {
+    allocations[allocations.length - 1] += remainingSlots;
+  }
+
+  let pointer = Math.min(activityStartIndex, dayCityByIndex.length);
+  allocations.forEach((count, idx) => {
+    const city = effectiveCities[idx];
+    for (let i = 0; i < count && pointer < dayCityByIndex.length; i += 1) {
+      dayCityByIndex[pointer] = city;
+      pointer += 1;
+    }
+  });
+
+  // Fill any remaining nulls with last known city (best-effort)
+  while (pointer < dayCityByIndex.length) {
+    dayCityByIndex[pointer] = effectiveCities[effectiveCities.length - 1] || trip?.destination || null;
+    pointer += 1;
+  }
+
+  const firstCityDays = allocations[0] ?? 0;
+  const firstCityStartIndex = activityStartIndex;
+  const firstCityEndIndexExclusive = Math.min(dayCityByIndex.length, firstCityStartIndex + firstCityDays);
+  const firstCityDayNumbers = [];
+  for (let i = firstCityStartIndex; i < firstCityEndIndexExclusive; i += 1) {
+    firstCityDayNumbers.push(i + 1);
+  }
+
+  return { activityStartIndex, dayCityByIndex, firstCityDayNumbers, firstCityDays };
+}
+
+const EARTH_RADIUS_KM = 6371;
+const coordinateCache = new Map();
+
+const hasValidCoords = (coord) =>
+  coord &&
+  typeof coord.lat === "number" &&
+  typeof coord.lng === "number" &&
+  Number.isFinite(coord.lat) &&
+  Number.isFinite(coord.lng);
+
+function haversineDistanceKm(a, b) {
+  if (!hasValidCoords(a) || !hasValidCoords(b)) return Infinity;
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const sinLat = Math.sin(dLat / 2);
+  const sinLon = Math.sin(dLon / 2);
+  const h = sinLat * sinLat + Math.cos(lat1) * Math.cos(lat2) * sinLon * sinLon;
+  const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+  return EARTH_RADIUS_KM * c;
+}
+
+const centroidOfCoords = (coords) => {
+  if (!Array.isArray(coords) || coords.length === 0) return null;
+  const sum = coords.reduce(
+    (acc, coord) => {
+      if (!hasValidCoords(coord)) return acc;
+      return { lat: acc.lat + coord.lat, lng: acc.lng + coord.lng, count: acc.count + 1 };
+    },
+    { lat: 0, lng: 0, count: 0 }
+  );
+  if (!sum.count) return null;
+  return { lat: sum.lat / sum.count, lng: sum.lng / sum.count };
+};
+
+async function geocodeText(query) {
+  const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
+  if (!GOOGLE_MAPS_API_KEY) return null;
+  if (!query || typeof query !== "string") return null;
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return null;
+  if (coordinateCache.has(normalized)) return coordinateCache.get(normalized);
+
+  try {
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
+      normalized
+    )}&key=${GOOGLE_MAPS_API_KEY}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      coordinateCache.set(normalized, null);
+      return null;
+    }
+    const data = await res.json();
+    const location = data?.results?.[0]?.geometry?.location || null;
+    coordinateCache.set(normalized, location || null);
+    return location || null;
+  } catch {
+    coordinateCache.set(normalized, null);
+    return null;
+  }
+}
+
+async function resolvePlaceCoordinates({ address, name, city, destination }) {
+  const pieces = [];
+  if (address) pieces.push(address);
+  if (!address && name) pieces.push(name);
+  if (city) pieces.push(city);
+  if (destination) pieces.push(destination);
+  if (pieces.length === 0) return null;
+  return geocodeText(pieces.join(", "));
+}
+
+async function attachGeoToActivity(activity, { city, destination }) {
+  if (!activity) return null;
+  if (activity._geo_resolved) return activity._geo || null;
+  const coords = await resolvePlaceCoordinates({
+    address: activity.address || activity.location || null,
+    name: activity.name,
+    city,
+    destination,
+  });
+  if (coords) activity._geo = coords;
+  activity._geo_resolved = true;
+  return activity._geo || null;
+}
+
+function clusterActivitiesByCoords(activities, clusterCount) {
+  if (!Array.isArray(activities) || activities.length === 0) {
+    return Array.from({ length: clusterCount }, () => []);
+  }
+  if (clusterCount <= 1) return [activities.slice()];
+
+  const entries = activities
+    .map((activity) => ({ activity, coord: hasValidCoords(activity._geo) ? activity._geo : null }))
+    .filter((e) => e.coord);
+
+  const withoutCoords = activities.filter((activity) => !hasValidCoords(activity._geo));
+  if (entries.length === 0) {
+    const result = Array.from({ length: clusterCount }, () => []);
+    activities.forEach((activity, index) => result[index % clusterCount].push(activity));
+    return result;
+  }
+
+  const k = Math.min(clusterCount, entries.length);
+
+  // Initial centroids: pick far-apart entries
+  const centroids = [];
+  centroids.push({ ...entries[0].coord });
+  while (centroids.length < k && centroids.length < entries.length) {
+    let bestEntry = null;
+    let bestDistance = -1;
+    for (const entry of entries) {
+      const minDistance = centroids.reduce((min, centroid) => Math.min(min, haversineDistanceKm(entry.coord, centroid)), Infinity);
+      if (minDistance > bestDistance) {
+        bestDistance = minDistance;
+        bestEntry = entry;
+      }
+    }
+    if (bestEntry) centroids.push({ ...bestEntry.coord });
+    else break;
+  }
+
+  while (centroids.length < k) centroids.push({ ...entries[0].coord });
+
+  // 5 iterations of centroid reassignment
+  for (let iter = 0; iter < 5; iter++) {
+    const clusters = Array.from({ length: k }, () => []);
+    for (const entry of entries) {
+      let bestIdx = 0;
+      let bestDistance = Infinity;
+      centroids.forEach((centroid, idx) => {
+        const dist = haversineDistanceKm(entry.coord, centroid);
+        if (dist < bestDistance) {
+          bestDistance = dist;
+          bestIdx = idx;
+        }
+      });
+      clusters[bestIdx].push(entry);
+    }
+    const nextCentroids = clusters.map((cluster) => (cluster.length ? centroidOfCoords(cluster.map((e) => e.coord)) : null));
+    // Stop if centroids don't move much
+    let changed = false;
+    nextCentroids.forEach((next, idx) => {
+      const cur = centroids[idx];
+      if (!next || !cur) return;
+      if (Math.abs(next.lat - cur.lat) > 0.0001 || Math.abs(next.lng - cur.lng) > 0.0001) changed = true;
+    });
+    centroids.splice(0, centroids.length, ...nextCentroids.map((c) => c || entries[0].coord));
+    if (!changed) break;
+  }
+
+  // Final grouping
+  const grouped = Array.from({ length: clusterCount }, () => []);
+  const finalK = Math.min(clusterCount, entries.length);
+  const finalCentroids = centroids.slice(0, finalK);
+  for (const entry of entries) {
+    let bestIdx = 0;
+    let bestDistance = Infinity;
+    finalCentroids.forEach((centroid, idx) => {
+      const dist = haversineDistanceKm(entry.coord, centroid);
+      if (dist < bestDistance) {
+        bestDistance = dist;
+        bestIdx = idx;
+      }
+    });
+    grouped[bestIdx].push(entry.activity);
+  }
+  withoutCoords.forEach((activity, index) => {
+    grouped[index % grouped.length].push(activity);
+  });
+  return grouped;
+}
+
+async function applyOutboundDelayAndReplanFirstCity({ userId, tripId, delayHours }) {
+  const nowIso = new Date().toISOString();
+
+  // Load trip + preferences
+  const { data: trip, error: tripError } = await supabase
+    .from("trip")
+    .select("trip_id, user_id, title, destination")
+    .eq("trip_id", tripId)
+    .eq("user_id", userId)
+    .single();
+  if (tripError || !trip) throw new Error("Trip not found");
+
+  const { data: tripPreferences, error: prefError } = await supabase
+    .from("trip_preference")
+    .select("*")
+    .eq("trip_id", tripId)
+    .maybeSingle();
+  if (prefError) throw prefError;
+  if (!tripPreferences?.start_date || !tripPreferences?.end_date) {
+    throw new Error("Trip dates are required to apply logistics changes");
+  }
+
+  // Load current selected outbound flight
+  const { data: selectedTripFlights, error: selectedFlightsError } = await supabase
+    .from("trip_flight")
+    .select(
+      `
+        flight_id,
+        is_selected,
+        finalized,
+        flight:flight(*)
+      `
+    )
+    .eq("trip_id", tripId)
+    .eq("is_selected", true);
+  if (selectedFlightsError) throw selectedFlightsError;
+
+  const selectedOutboundLink = selectedTripFlights?.find((tf) => tf.flight?.flight_type === "outbound") || null;
+  if (!selectedOutboundLink?.flight) throw new Error("No selected outbound flight found");
+
+  const oldSelectedOutboundFlight = selectedOutboundLink.flight;
+  const oldSelectedOutboundTripFlightId = selectedOutboundLink.flight_id;
+
+  const oldNumDays =
+    tripPreferences?.num_days ||
+    buildCalendarDates(tripPreferences.start_date, tripPreferences.end_date).length ||
+    (tripPreferences ? 1 : 1);
+
+  const oldFirstRange = computeDayCityByIndex({
+    trip,
+    tripPreferences,
+    selectedOutboundFlight: oldSelectedOutboundFlight,
+    numDays: oldNumDays,
+  });
+
+  // Create NEW delayed outbound flight row (no overwrites)
+  const shiftedOutboundDate = oldSelectedOutboundFlight?.outbound_date
+    ? addHoursToDateKeyUTC(oldSelectedOutboundFlight.outbound_date, delayHours)
+    : tripPreferences.start_date;
+
+  const shiftedFlights = shiftFlightLegJsonByDelay(oldSelectedOutboundFlight.flights, delayHours);
+
+  const { data: newFlightData, error: newFlightInsertError } = await supabase
+    .from("flight")
+    .insert([
+      {
+        flight_type: "outbound",
+        price: oldSelectedOutboundFlight.price,
+        departure_token: oldSelectedOutboundFlight.departure_token,
+        total_duration: oldSelectedOutboundFlight.total_duration,
+        flights: shiftedFlights,
+        layovers: oldSelectedOutboundFlight.layovers,
+        additional_data: oldSelectedOutboundFlight.additional_data || {},
+        departure_id: oldSelectedOutboundFlight.departure_id,
+        arrival_id: oldSelectedOutboundFlight.arrival_id,
+        outbound_date: shiftedOutboundDate,
+        return_date: oldSelectedOutboundFlight.return_date || null,
+        currency: oldSelectedOutboundFlight.currency || "USD",
+        additional_search_params: oldSelectedOutboundFlight.additional_search_params || {},
+      },
+    ])
+    .select("flight_id")
+    .single();
+  if (newFlightInsertError || !newFlightData?.flight_id) {
+    throw new Error("Failed to insert delayed outbound flight");
+  }
+  const newFlightId = newFlightData.flight_id;
+
+  const newOutboundFlightForPlanning = {
+    ...oldSelectedOutboundFlight,
+    flight_id: newFlightId,
+    flights: shiftedFlights,
+    outbound_date: shiftedOutboundDate,
+  };
+
+  // Update trip_flight selection: old outbound -> unselected, new outbound -> selected
+  const { error: unselectError } = await supabase
+    .from("trip_flight")
+    .update({ is_selected: false, updated_at: nowIso })
+    .eq("trip_id", tripId)
+    .eq("flight_id", oldSelectedOutboundTripFlightId);
+  if (unselectError) throw unselectError;
+
+  const { error: selectError } = await supabase.from("trip_flight").insert([
+    {
+      trip_id: tripId,
+      flight_id: newFlightId,
+      is_selected: true,
+      finalized: selectedOutboundLink.finalized ?? true,
+      updated_at: nowIso,
+      created_at: nowIso,
+    },
+  ]);
+  if (selectError) throw selectError;
+
+  // Shift trip start_date forward and keep end_date fixed
+  const newStartDateKey = addHoursToDateKeyUTC(tripPreferences.start_date, delayHours);
+  if (!newStartDateKey) throw new Error("Failed to compute new trip start_date");
+
+  const newCalendarDates = buildCalendarDates(newStartDateKey, tripPreferences.end_date);
+  const newNumDays = newCalendarDates.length || oldNumDays;
+
+  const { error: prefUpdateError } = await supabase
+    .from("trip_preference")
+    .update({
+      start_date: newStartDateKey,
+      num_days: newNumDays,
+      updated_at: nowIso,
+    })
+    .eq("trip_id", tripId);
+  if (prefUpdateError) throw prefUpdateError;
+
+  // Update itinerary day dates/summaries and truncate tail days
+  const { error: itineraryDeleteError } = await supabase
+    .from("itinerary")
+    .delete()
+    .eq("trip_id", tripId)
+    .gt("day_number", newNumDays);
+  if (itineraryDeleteError) throw itineraryDeleteError;
+
+  const { data: itineraryRowsToUpdate, error: itineraryRowsErr } = await supabase
+    .from("itinerary")
+    .select("itinerary_id, day_number")
+    .eq("trip_id", tripId)
+    .lte("day_number", newNumDays);
+  if (itineraryRowsErr) throw itineraryRowsErr;
+
+  for (const row of itineraryRowsToUpdate || []) {
+    const dateKey = addHoursToDateKeyUTC(newStartDateKey, (row.day_number - 1) * 24);
+    await supabase
+      .from("itinerary")
+      .update({
+        date: dateKey,
+        summary: `Day ${row.day_number}${trip.destination ? ` in ${trip.destination}` : ""}`,
+        updated_at: nowIso,
+      })
+      .eq("itinerary_id", row.itinerary_id);
+  }
+
+  // Remove activities and meals on travel-only days (matches final-itinerary travel_day logic).
+  const outboundActivityStartIndex = computeOutboundActivityStartIndex({
+    startDateKey: newStartDateKey,
+    endDateKey: tripPreferences.end_date,
+    selectedOutboundFlight: newOutboundFlightForPlanning,
+    maxDays: newNumDays,
+  });
+  const travelDayNumbers = [];
+  for (let dn = 1; dn <= outboundActivityStartIndex; dn += 1) {
+    travelDayNumbers.push(dn);
+  }
+  if (travelDayNumbers.length > 0) {
+    const { data: travelItinRows, error: travelItinErr } = await supabase
+      .from("itinerary")
+      .select("itinerary_id")
+      .eq("trip_id", tripId)
+      .in("day_number", travelDayNumbers);
+    if (travelItinErr) throw travelItinErr;
+    const travelItinIds = (travelItinRows || []).map((r) => r.itinerary_id).filter(Boolean);
+    if (travelItinIds.length > 0) {
+      const { error: clearTravelActErr } = await supabase
+        .from("itinerary_activity")
+        .delete()
+        .in("itinerary_id", travelItinIds);
+      if (clearTravelActErr) throw clearTravelActErr;
+    }
+    const { error: clearTravelMealsErr } = await supabase
+      .from("trip_meal")
+      .delete()
+      .eq("trip_id", tripId)
+      .in("day_number", travelDayNumbers);
+    if (clearTravelMealsErr) throw clearTravelMealsErr;
+  }
+
+  // Truncate meals beyond newNumDays
+  const { error: mealsDeleteError } = await supabase
+    .from("trip_meal")
+    .delete()
+    .eq("trip_id", tripId)
+    .gt("day_number", newNumDays);
+  if (mealsDeleteError) throw mealsDeleteError;
+
+  // Compute new first-city segment (only that segment gets replan work)
+  const planningTripPreferences = {
+    ...tripPreferences,
+    start_date: newStartDateKey,
+    num_days: newNumDays,
+    end_date: tripPreferences.end_date,
+  };
+
+  const newFirstRange = computeDayCityByIndex({
+    trip,
+    tripPreferences: planningTripPreferences,
+    selectedOutboundFlight: newOutboundFlightForPlanning,
+    numDays: newNumDays,
+  });
+
+  const newFirstDayNumbers = newFirstRange.firstCityDayNumbers;
+  if (Array.isArray(newFirstDayNumbers) && newFirstDayNumbers.length > 0) {
+    const firstDayItinerary = await supabase
+      .from("itinerary")
+      .select("itinerary_id, day_number")
+      .eq("trip_id", tripId)
+      .in("day_number", newFirstDayNumbers);
+    if (firstDayItinerary.error) throw firstDayItinerary.error;
+
+    const itineraryRows = firstDayItinerary.data || [];
+    const itineraryIds = itineraryRows.map((r) => r.itinerary_id);
+
+    if (itineraryIds.length > 0) {
+      // Load current activities linked to the affected segment
+      const { data: links, error: linksErr } = await supabase
+        .from("itinerary_activity")
+        .select(
+          `
+            itinerary_id,
+            activity_id,
+            order_index,
+            activity:activity(*)
+          `
+        )
+        .in("itinerary_id", itineraryIds);
+      if (linksErr) throw linksErr;
+
+      const activityByItineraryId = new Map();
+      (itineraryRows || []).forEach((r) => activityByItineraryId.set(r.itinerary_id, { day_number: r.day_number, activities: [] }));
+      (links || []).forEach((l) => {
+        const bucket = activityByItineraryId.get(l.itinerary_id);
+        if (bucket && l.activity) {
+          bucket.activities.push(l.activity);
+        }
+      });
+
+      const allActivities = [];
+      for (const bucket of activityByItineraryId.values()) {
+        allActivities.push(...bucket.activities);
+      }
+
+      // Importance heuristic to keep most important activities if we need to cut.
+      const allowedCategories = Array.isArray(tripPreferences.activity_categories)
+        ? tripPreferences.activity_categories.map((c) => String(c).toLowerCase())
+        : [];
+      const avoidedCategories = Array.isArray(tripPreferences.avoid_activity_categories)
+        ? tripPreferences.avoid_activity_categories.map((c) => String(c).toLowerCase())
+        : [];
+
+      const scoreActivity = (activity) => {
+        const cat = (activity?.category || "").toString().toLowerCase();
+        if (avoidedCategories.includes(cat)) return -1000;
+        if (allowedCategories.includes(cat)) return 1000;
+        // If no category match, keep neutral.
+        return 0;
+      };
+
+      const oldFirstCityDays = oldFirstRange.firstCityDayNumbers?.length || 0;
+      const newFirstCityDays = newFirstRange.firstCityDayNumbers?.length || 0;
+      const targetTotal = (() => {
+        if (!oldFirstCityDays || oldFirstCityDays <= 0) return allActivities.length;
+        if (!newFirstCityDays || newFirstCityDays <= 0) return 0;
+        const scaled = Math.round(allActivities.length * (newFirstCityDays / oldFirstCityDays));
+        return Math.max(0, Math.min(allActivities.length, scaled));
+      })();
+
+      let activitiesToAssign = allActivities;
+      if (targetTotal > 0 && targetTotal < allActivities.length) {
+        activitiesToAssign = allActivities
+          .slice()
+          .sort((a, b) => scoreActivity(b) - scoreActivity(a))
+          .slice(0, targetTotal);
+      }
+
+      // Geocode for coords-based clustering (only best-effort if API key exists)
+      const destination = trip.destination || null;
+      for (const activity of activitiesToAssign) {
+        const fallbackCity = activity?.city || activity?.location || destination || null;
+        // Use the new first-city segment bucket day to improve geocoding.
+        const dayIndexGuess =
+          newFirstDayNumbers.indexOf(
+            // If activity has been loaded from DB without an itinerary day, this will be best-effort.
+            null
+          ) || -1;
+        const cityForGeo = fallbackCity || (dayIndexGuess >= 0 ? newFirstDayNumbers[dayIndexGuess] : destination);
+        // eslint-disable-next-line no-await-in-loop
+        await attachGeoToActivity(activity, { city: cityForGeo, destination });
+      }
+
+      // Clear existing links for this segment
+      const { error: clearLinksErr } = await supabase
+        .from("itinerary_activity")
+        .delete()
+        .in("itinerary_id", itineraryIds);
+      if (clearLinksErr) throw clearLinksErr;
+
+      const dayNumbersSorted = itineraryRows
+        .slice()
+        .sort((a, b) => (a.day_number ?? 0) - (b.day_number ?? 0))
+        .map((r) => r.day_number);
+
+      const clusters = clusterActivitiesByCoords(activitiesToAssign, Math.max(1, dayNumbersSorted.length));
+
+      // Insert new links with updated order_index
+      for (let i = 0; i < dayNumbersSorted.length; i += 1) {
+        const dayNumber = dayNumbersSorted[i];
+        const itineraryId = itineraryRows.find((r) => r.day_number === dayNumber)?.itinerary_id;
+        if (!itineraryId) continue;
+        const assigned = Array.isArray(clusters[i]) ? clusters[i] : [];
+
+        if (assigned.length === 0) continue;
+
+        const rows = assigned.map((a, idx) => ({
+          itinerary_id: itineraryId,
+          activity_id: a.activity_id,
+          order_index: idx,
+        }));
+
+        const { error: insErr } = await supabase.from("itinerary_activity").insert(rows);
+        if (insErr) throw insErr;
+      }
+
+      // Meal/restaurant reallocation for the same first-city segment days
+      const { data: existingMeals, error: existingMealsErr } = await supabase
+        .from("trip_meal")
+        .select("day_number, slot")
+        .eq("trip_id", tripId)
+        .in("day_number", newFirstDayNumbers);
+      if (existingMealsErr) throw existingMealsErr;
+
+      const slotByDay = new Map();
+      (existingMeals || []).forEach((m) => {
+        if (!slotByDay.has(m.day_number)) slotByDay.set(m.day_number, new Set());
+        slotByDay.get(m.day_number).add(m.slot);
+      });
+
+      // Delete meals for those day numbers
+      const { error: clearMealsErr } = await supabase
+        .from("trip_meal")
+        .delete()
+        .eq("trip_id", tripId)
+        .in("day_number", newFirstDayNumbers);
+      if (clearMealsErr) throw clearMealsErr;
+
+      const uniqueCities = new Set();
+      for (const dn of newFirstDayNumbers) {
+        const cityLabel = newFirstRange.dayCityByIndex[dn - 1] || trip.destination || null;
+        const canonical = canonicalizeCityValue(cityLabel);
+        if (canonical) uniqueCities.add(canonical);
+      }
+
+      // Pools: liked restaurants first, then general
+      const canonicalCities = Array.from(uniqueCities);
+      let likedRestaurantIds = [];
+      const { data: likedPrefs } = await supabase
+        .from("trip_restaurant_preference")
+        .select("restaurant_id")
+        .eq("trip_id", tripId)
+        .eq("preference", "liked");
+      likedRestaurantIds = (likedPrefs || []).map((p) => p.restaurant_id).filter(Boolean);
+
+      const likedRestaurants = likedRestaurantIds.length
+        ? await supabase
+            .from("restaurant")
+            .select("restaurant_id, name, city, address, location, reservation_url, source_url, cost_estimate, image_url")
+            .in("restaurant_id", likedRestaurantIds)
+        : { data: [], error: null };
+      if (likedRestaurants.error) throw likedRestaurants.error;
+
+      const generalRestaurants = canonicalCities.length
+        ? await supabase
+            .from("restaurant")
+            .select("restaurant_id, name, city, address, location, reservation_url, source_url, cost_estimate, image_url")
+            .in("city", canonicalCities)
+            .limit(200)
+        : { data: [], error: null };
+      if (generalRestaurants.error) throw generalRestaurants.error;
+
+      // Fallback pool (any city) so meal slots are always filled.
+      const fallbackRestaurants = await supabase
+        .from("restaurant")
+        .select("restaurant_id, name, city, address, location, reservation_url, source_url, cost_estimate, image_url")
+        .limit(200);
+      if (fallbackRestaurants.error) throw fallbackRestaurants.error;
+
+      const likedPoolByCity = new Map();
+      (likedRestaurants.data || []).forEach((r) => {
+        const key = r.city ? String(r.city) : "";
+        if (!key) return;
+        if (!likedPoolByCity.has(key)) likedPoolByCity.set(key, []);
+        likedPoolByCity.get(key).push(r);
+      });
+
+      const generalPoolByCity = new Map();
+      (generalRestaurants.data || []).forEach((r) => {
+        const key = r.city ? String(r.city) : "";
+        if (!key) return;
+        if (!generalPoolByCity.has(key)) generalPoolByCity.set(key, []);
+        generalPoolByCity.get(key).push(r);
+      });
+
+      const usedRestaurantIds = new Set();
+
+      const pickRestaurant = (cityKey) => {
+        const likedPool = likedPoolByCity.get(cityKey) || [];
+        const generalPool = generalPoolByCity.get(cityKey) || [];
+        const fromPool = (pool) => {
+          const found = pool.find((r) => !usedRestaurantIds.has(r.restaurant_id));
+          return found || pool[0] || null;
+        };
+        const r = fromPool(likedPool) || fromPool(generalPool) || null;
+        const fallback = fromPool(fallbackRestaurants.data || []);
+        if (r?.restaurant_id) usedRestaurantIds.add(r.restaurant_id);
+        return r || fallback;
+      };
+
+      const mealRowsToInsert = [];
+      const daysSorted = newFirstDayNumbers.slice().sort((a, b) => a - b);
+      for (const dayNumber of daysSorted) {
+        const slots = Array.from(slotByDay.get(dayNumber) || []);
+        slots.sort((a, b) => logisticsMealSlotOrder.indexOf(a) - logisticsMealSlotOrder.indexOf(b));
+
+        const cityLabel = newFirstRange.dayCityByIndex[dayNumber - 1] || trip.destination || null;
+        const canonicalCity = canonicalizeCityValue(cityLabel);
+        const cityKey = canonicalCity || (trip.destination ? canonicalizeCityValue(trip.destination) : null);
+
+        for (const slot of slots) {
+          const restaurant = pickRestaurant(cityKey || "");
+          if (!restaurant) continue;
+          mealRowsToInsert.push({
+            trip_id: tripId,
+            day_number: dayNumber,
+            slot,
+            name: restaurant.name || "Restaurant",
+            location: (restaurant.address || restaurant.location || "").trim() || null,
+            link: restaurant.reservation_url || restaurant.source_url || null,
+            cost: restaurant.cost_estimate != null ? parseFloat(restaurant.cost_estimate) : null,
+            finalized: false,
+            updated_at: nowIso,
+            created_at: nowIso,
+          });
+        }
+      }
+
+      if (mealRowsToInsert.length > 0) {
+        const { error: insMealsErr } = await supabase.from("trip_meal").insert(mealRowsToInsert);
+        if (insMealsErr) throw insMealsErr;
+      }
+    }
+  }
+
+  return {
+    logisticsApplied: true,
+    movedFlightType: "outbound",
+    delayHours,
+    newStartDate: newStartDateKey,
+    newNumDays,
+    oldFirstCityDays: oldFirstRange.firstCityDayNumbers?.length || 0,
+    newFirstCityDays: newFirstRange.firstCityDayNumbers?.length || 0,
+  };
+}
+
+async function handleModifyLogisticsChat({ userId, tripId, message, conversationHistory }) {
+  if (!tripId) {
+    return { success: false, message: "No trip selected; cannot modify logistics." };
+  }
+
+  const trimmedMessage = (message || "").trim();
+  const inferredFlightType = inferFlightType(trimmedMessage);
+  const delayHours = extractDelayHours(trimmedMessage);
+  const confirm = isConfirmationMessage(trimmedMessage);
+
+  // Fallback: infer delayHours and flight type from recent chat history
+  const userMessages = (conversationHistory || []).filter((m) => m.role === "user").slice(-10);
+  const latestDelayHours = (() => {
+    if (delayHours != null) return delayHours;
+    for (let i = userMessages.length - 1; i >= 0; i -= 1) {
+      const h = extractDelayHours(userMessages[i].content);
+      if (h != null) return h;
+    }
+    return null;
+  })();
+
+  const latestFlightType = (() => {
+    if (inferredFlightType) return inferredFlightType;
+    for (let i = userMessages.length - 1; i >= 0; i -= 1) {
+      const ft = inferFlightType(userMessages[i].content);
+      if (ft) return ft;
+    }
+    return null;
+  })();
+
+  // Save the user's message immediately (since we may bypass the LLM flow)
+  await saveMessage(userId, "user", trimmedMessage, tripId);
+
+  if (!latestDelayHours) {
+    const assistantMessage =
+      "Tell me the flight delay in hours. Example: “my flight has been delayed 24 hours”.";
+    await saveMessage(userId, "assistant", assistantMessage, tripId);
+    return { success: true, message: assistantMessage, logisticsApplied: false };
+  }
+
+  if (!latestFlightType) {
+    const assistantMessage =
+      "Which leg is affected—your flight to the destination (outbound), your return home, or an intercity flight between stops? Reply with one of those words.";
+    await saveMessage(userId, "assistant", assistantMessage, tripId);
+    return { success: true, message: assistantMessage, logisticsApplied: false };
+  }
+
+  if (!confirm) {
+    const assistantMessage = `Here’s what I’ll update: your ${latestFlightType} flight is ${latestDelayHours} hour(s) later than planned. Your trip dates and first-stop schedule will adjust to match.\n\nReply “confirm” when you want me to apply this.`;
+    await saveMessage(userId, "assistant", assistantMessage, tripId);
+    return { success: true, message: assistantMessage, logisticsApplied: false };
+  }
+
+  // Apply only outbound delays (first-city recluster optimization)
+  if (latestFlightType !== "outbound") {
+    const assistantMessage =
+      "Right now I can only auto-adjust outbound delays (the flight that gets you to your first destination). For return or intercity changes, describe what you need and we can handle it another way—or say your outbound flight was delayed and I’ll update that.";
+    await saveMessage(userId, "assistant", assistantMessage, tripId);
+    return { success: true, message: assistantMessage, logisticsApplied: false };
+  }
+
+  const applyResult = await applyOutboundDelayAndReplanFirstCity({
+    userId,
+    tripId,
+    delayHours: latestDelayHours,
+  });
+
+  const assistantMessage = `All set — your trip is updated for the ${latestDelayHours}-hour outbound delay.\n\n- Your trip now starts on ${applyResult.newStartDate} and runs ${applyResult.newNumDays} day(s) through your original end date.\n- Outbound flight times in your plan reflect the new schedule.\n- Travel-only days (before you land) no longer show activities or meals; activities and restaurants for your first stop were reorganized for the days you’re actually there.`;
+
+  await saveMessage(userId, "assistant", assistantMessage, tripId);
+  return { success: true, message: assistantMessage, logisticsApplied: true };
+}
+
 // Helper function to extract trip information from a message using LLM
 async function extractTripInfo(message) {
   try {
@@ -280,7 +1339,7 @@ router.get('/history', authenticateToken, async (req, res) => {
 router.post('/chat', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
-    const { message, model, tripId, suppressTripCreation } = req.body;
+    const { message, model, tripId, suppressTripCreation, chatMode } = req.body;
 
     console.log('📨 Chat endpoint called:', { userId, message: message?.substring(0, 50), model, tripId });
 
@@ -344,6 +1403,21 @@ router.post('/chat', authenticateToken, async (req, res) => {
       conversationHistory.length > MAX_CONTEXT_MESSAGES
         ? conversationHistory.slice(-MAX_CONTEXT_MESSAGES)
         : conversationHistory;
+
+    // Special mode: modify logistics from the Final Itinerary page.
+    // This mode performs deterministic DB updates (create NEW flight rows, shift dates,
+    // recluster activities/meals for the affected first city segment).
+    if (chatMode === "modify_logistics") {
+      const result = await handleModifyLogisticsChat({
+        userId,
+        tripId: parsedTripId,
+        message,
+        conversationHistory,
+        delayHours: null,
+        inferredFlightType: null,
+      });
+      return res.status(200).json(result);
+    }
 
     // Load user profile so the LLM can ground recommendations in their preferences
     let userProfileContext = 'No saved profile preferences.';
