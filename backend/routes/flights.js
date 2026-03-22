@@ -6,6 +6,58 @@ import supabase from '../supabaseClient.js';
 
 const router = express.Router();
 
+// Deduplicate flight rows coming from the cache.
+// The cache is keyed by search params, so if the same API results are inserted
+// multiple times, the user might see duplicates. We keep the first unique result.
+const dedupeCachedFlights = (rows) => {
+  if (!Array.isArray(rows)) return [];
+
+  const stableStringify = (value) => {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "string") return value;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  };
+
+  const getDedupKey = (row) => {
+    const departureTokenKey = row.departure_token ? `token:${row.departure_token}` : "";
+    const priceKey = row.price ?? "";
+    const durationKey = row.total_duration ?? "";
+
+    // When we have a departure_token (outbound search), it is usually the best identifier.
+    if (departureTokenKey) {
+      return `${departureTokenKey}|price:${priceKey}|dur:${durationKey}`;
+    }
+
+    // Fallback: dedupe by core flight content (works better for return flights).
+    return [
+      "content",
+      row.departure_id ?? "",
+      row.arrival_id ?? "",
+      row.outbound_date ?? "",
+      row.return_date ?? "",
+      `price:${priceKey}`,
+      `dur:${durationKey}`,
+      `flights:${stableStringify(row.flights)}`,
+      `layovers:${stableStringify(row.layovers)}`
+    ].join("|");
+  };
+
+  const seen = new Set();
+  const unique = [];
+  for (const row of rows) {
+    const key = getDedupKey(row);
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(row);
+    }
+  }
+  return unique;
+};
+
 // Search for flights using SerpAPI Google Flights
 router.get('/search', authenticateToken, async (req, res) => {
   try {
@@ -49,7 +101,9 @@ router.get('/search', authenticateToken, async (req, res) => {
     }
 
     if (cachedFlights && cachedFlights.length > 0) {
-      const normalizedFlights = cachedFlights.map((row) => ({
+      const dedupedCachedFlights = dedupeCachedFlights(cachedFlights);
+
+      const normalizedFlights = dedupedCachedFlights.map((row) => ({
         ...(row.additional_data || {}),
         flight_id: row.flight_id,
         price: row.price,
@@ -208,7 +262,9 @@ router.get('/return', authenticateToken, async (req, res) => {
     }
 
     if (cachedFlights && cachedFlights.length > 0) {
-      const normalizedFlights = cachedFlights.map((row) => ({
+      const dedupedCachedFlights = dedupeCachedFlights(cachedFlights);
+
+      const normalizedFlights = dedupedCachedFlights.map((row) => ({
         ...(row.additional_data || {}),
         flight_id: row.flight_id,
         price: row.price,

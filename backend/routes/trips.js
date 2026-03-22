@@ -5760,7 +5760,10 @@ router.get('/:tripId/final-itinerary', authenticateToken, async (req, res) => {
       const travelDay = index < activityStartIndex;
       const detailed = {
         ...day,
-        activities: Array.isArray(day.activities) ? day.activities : [],
+        activities:
+          travelDay || !Array.isArray(day.activities)
+            ? []
+            : day.activities,
         city,
         travel_day: travelDay,
       };
