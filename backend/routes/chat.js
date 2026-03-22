@@ -866,8 +866,93 @@ function clusterActivitiesByCoords(activities, clusterCount) {
   return grouped;
 }
 
+function activityDisplayNameForUser(activity) {
+  if (!activity) return "";
+  const n = activity.name != null ? String(activity.name).trim() : "";
+  return n || "a saved stop";
+}
+
+function formatNameListForUser(names) {
+  const n = (names || []).filter(Boolean);
+  if (n.length === 0) return "";
+  if (n.length === 1) return n[0];
+  if (n.length === 2) return `${n[0]} and ${n[1]}`;
+  return `${n.slice(0, -1).join(", ")}, and ${n[n.length - 1]}`;
+}
+
+/** Plain-language recap after logistics apply — no implementation jargon. */
+function buildLogisticsSuccessUserMessage(ctx) {
+  if (!ctx) {
+    return "All set — your itinerary is updated to match your new flight timing.";
+  }
+  const {
+    delayHours,
+    newStartDate,
+    newNumDays,
+    travelDayCount,
+    firstStopCity,
+    droppedActivities,
+    keptActivities,
+    refreshedMealsFirstStop,
+    multiCityTailPreserved,
+  } = ctx;
+
+  const keptNames = (keptActivities || []).map(activityDisplayNameForUser).filter(Boolean);
+  const droppedNames = (droppedActivities || []).map(activityDisplayNameForUser).filter(Boolean);
+
+  const parts = [];
+  parts.push(
+    `You’re all set. I adjusted your trip for a ${delayHours}-hour delay on the way to your first stop: it now starts on ${newStartDate} and still covers ${newNumDays} days through your original last day. The flight times you see in your plan match the new schedule.`
+  );
+
+  if (travelDayCount > 0) {
+    parts.push(
+      travelDayCount === 1
+        ? "That first day is only for travel until you land, so I left it without activities or meals."
+        : `The first ${travelDayCount} days are mainly travel until you arrive, so I left those without activities or meals.`
+    );
+  }
+
+  if (firstStopCity) {
+    if (droppedNames.length > 0 && keptNames.length > 0) {
+      const droppedShow = droppedNames.slice(0, 5);
+      const droppedTail = droppedNames.length > 5 ? ", and a few other stops" : "";
+      const keptHighlight = keptNames.slice(0, 3);
+      const keptExtra = keptNames.length > 3 ? `, plus ${keptNames.length - 3} other stop${keptNames.length - 3 > 1 ? "s" : ""}` : "";
+      parts.push(
+        `You have less time in ${firstStopCity} than before. I took out ${formatNameListForUser(
+          droppedShow
+        )}${droppedTail} and kept ${formatNameListForUser(keptHighlight)}${keptExtra} so you can focus on the standouts that still fit — the better-known spots and the ones that match what you said you like.`
+      );
+    } else if (keptNames.length > 0) {
+      parts.push(
+        `In ${firstStopCity}, I reshuffled ${formatNameListForUser(
+          keptNames.slice(0, 4)
+        )}${keptNames.length > 4 ? ", and your other stops there," : ""} across the days you’re actually in town so the route still makes sense.`
+      );
+    }
+    if (refreshedMealsFirstStop) {
+      parts.push(`I refreshed dining ideas in ${firstStopCity} to match the new days you’re on the ground.`);
+    }
+  }
+
+  if (multiCityTailPreserved) {
+    parts.push(
+      "Everything after your first city stays on the same dates you already planned — later stops, intercity travel, and what you booked there are unchanged."
+    );
+  }
+
+  return parts.join("\n\n");
+}
+
 async function applyOutboundDelayAndReplanFirstCity({ userId, tripId, delayHours }) {
   const nowIso = new Date().toISOString();
+
+  let summaryTravelDays = 0;
+  let summaryFirstStopCity = null;
+  let summaryDroppedActivities = [];
+  let summaryKeptActivities = [];
+  let summaryRefreshedMealsFirstStop = false;
 
   // Load trip + preferences
   const { data: trip, error: tripError } = await supabase
@@ -1085,6 +1170,7 @@ async function applyOutboundDelayAndReplanFirstCity({ userId, tripId, delayHours
     selectedOutboundFlight: newOutboundFlightForPlanning,
     maxDays: newNumDays,
   });
+  summaryTravelDays = outboundActivityStartIndex;
   const travelDayNumbers = [];
   for (let dn = 1; dn <= outboundActivityStartIndex; dn += 1) {
     travelDayNumbers.push(dn);
@@ -1201,6 +1287,14 @@ async function applyOutboundDelayAndReplanFirstCity({ userId, tripId, delayHours
           .sort((a, b) => scoreActivity(b) - scoreActivity(a))
           .slice(0, targetTotal);
       }
+
+      const keptIdSet = new Set((activitiesToAssign || []).map((a) => a.activity_id).filter(Boolean));
+      summaryDroppedActivities = allActivities.filter((a) => a.activity_id != null && !keptIdSet.has(a.activity_id));
+      summaryKeptActivities = activitiesToAssign.slice();
+      const firstSegDay = newFirstDayNumbers[0];
+      summaryFirstStopCity =
+        canonicalizeCityValue(newFirstRange.dayCityByIndex[firstSegDay - 1]) || trip.destination || null;
+      summaryRefreshedMealsFirstStop = true;
 
       // Geocode for coords-based clustering (only best-effort if API key exists)
       const destination = trip.destination || null;
@@ -1387,12 +1481,23 @@ async function applyOutboundDelayAndReplanFirstCity({ userId, tripId, delayHours
     newNumDays,
     oldFirstCityDays: oldFirstRange.firstCityDayNumbers?.length || 0,
     newFirstCityDays: newFirstRange.firstCityDayNumbers?.length || 0,
+    userSummaryContext: {
+      delayHours,
+      newStartDate: newStartDateKey,
+      newNumDays,
+      travelDayCount: summaryTravelDays,
+      firstStopCity: summaryFirstStopCity,
+      droppedActivities: summaryDroppedActivities,
+      keptActivities: summaryKeptActivities,
+      refreshedMealsFirstStop: summaryRefreshedMealsFirstStop,
+      multiCityTailPreserved: effectiveCitiesNew.length >= 2,
+    },
   };
 }
 
 async function handleModifyLogisticsChat({ userId, tripId, message, conversationHistory }) {
   if (!tripId) {
-    return { success: false, message: "No trip selected; cannot modify logistics." };
+    return { success: false, message: "Open a saved trip on your itinerary page and try again — I need a trip to update." };
   }
 
   const trimmedMessage = (message || "").trim();
@@ -1431,21 +1536,19 @@ async function handleModifyLogisticsChat({ userId, tripId, message, conversation
   // 1) Simulated “web search” for outbound flight status (demo: AA1234 only)
   if (!confirm && statusLookupRequest) {
     if (statusLookupRequest.full.toUpperCase() !== DEMO_FLIGHT_STATUS_LOOKUP_NUMBER) {
-      const assistantMessage = `In this demo I can only simulate a status lookup for American Airlines ${DEMO_FLIGHT_STATUS_LOOKUP_NUMBER} (the sample outbound flight). Try asking something like: “Can you check the status of my outbound flight number ${DEMO_FLIGHT_STATUS_LOOKUP_NUMBER}?”`;
+      const assistantMessage = `For this walkthrough I only have sample status for American Airlines ${DEMO_FLIGHT_STATUS_LOOKUP_NUMBER}. Ask something like: “Can you check the status of my outbound flight ${DEMO_FLIGHT_STATUS_LOOKUP_NUMBER}?”`;
       await saveMessage(userId, "assistant", assistantMessage, tripId);
       return { success: true, message: assistantMessage, logisticsApplied: false };
     }
 
     const simulatedDelayHours = 24;
-    const assistantMessage = `I searched public flight-status sources (demo lookup) for American Airlines ${DEMO_FLIGHT_STATUS_LOOKUP_NUMBER} on your outbound route.
-
-I've found this information:
+    const assistantMessage = `I looked up American Airlines ${DEMO_FLIGHT_STATUS_LOOKUP_NUMBER} for your outbound leg. Here’s what I found:
 
 [[PINDROP_FLIGHT_STATUS_DEMO:${simulatedDelayHours}]]
 
-Summary: the feed shows DEPARTING LATE. Your originally scheduled departure was Thu, Dec 11, 2026 at 4:45 PM from JFK; the current estimated departure is Fri, Dec 12, 2026 at 4:45 PM—about ${simulatedDelayHours} hours later. The Naples arrival moves forward by one calendar day as well.
+The airline is showing a late departure: you were originally set to leave JFK on Thu, Dec 11, 2026 at 4:45 PM, and the latest estimate is Fri, Dec 12 at the same time — about ${simulatedDelayHours} hours behind. Your arrival into Naples shifts a day later as well.
 
-I'll adjust your trip start date, outbound flight times, and first-stop plans to match once you approve. Reply “confirm” when you want me to apply these changes.`;
+If that matches what you’re seeing, I can line up your whole itinerary with this new timing. Reply “confirm” and I’ll update your trip.`;
 
     await saveMessage(userId, "assistant", assistantMessage, tripId);
     return { success: true, message: assistantMessage, logisticsApplied: false };
@@ -1453,27 +1556,27 @@ I'll adjust your trip start date, outbound flight times, and first-stop plans to
 
   if (!latestDelayHours) {
     const assistantMessage =
-      "Ask me to check your outbound flight—for example: “Can you check the status of my outbound flight number AA1234?”—or paste a flight-status screen, or say how many hours late the flight is (e.g. “outbound delayed 24 hours”).";
+      "Tell me what changed: you can ask me to check your outbound flight (for example AA 1234), paste a flight-status screenshot, or say plainly how many hours late it is (e.g. “outbound is 24 hours late”).";
     await saveMessage(userId, "assistant", assistantMessage, tripId);
     return { success: true, message: assistantMessage, logisticsApplied: false };
   }
 
   if (!latestFlightType) {
     const assistantMessage =
-      "Which leg is affected—your flight to the destination (outbound), your return home, or an intercity flight between stops? Reply with one of those words.";
+      "Which flight moved — the one that gets you to your first stop (outbound), your flight home (return), or a flight between two cities on the trip? Reply with outbound, return, or intercity.";
     await saveMessage(userId, "assistant", assistantMessage, tripId);
     return { success: true, message: assistantMessage, logisticsApplied: false };
   }
 
   if (!confirm) {
-    const assistantMessage = `Here’s what I’ll update: your ${latestFlightType} flight is ${latestDelayHours} hour(s) later than planned. Your trip dates and first-stop schedule will adjust to match.\n\nReply “confirm” when you want me to apply this.`;
+    const assistantMessage = `Got it — your ${latestFlightType} flight is about ${latestDelayHours} hour(s) behind the original plan. I’ll shift your start date and rework the first part of the trip so it lines up with when you actually land.\n\nReply “confirm” when you want me to make those changes.`;
     await saveMessage(userId, "assistant", assistantMessage, tripId);
     return { success: true, message: assistantMessage, logisticsApplied: false };
   }
 
   if (latestFlightType !== "outbound") {
     const assistantMessage =
-      "Right now I can only auto-adjust outbound delays (the flight that gets you to your first destination). For return or intercity changes, describe what you need and we can handle it another way—or say your outbound flight was delayed and I’ll update that.";
+      "I can automatically fix delays on the flight to your first destination (outbound) right now. For return or between-city flights, tell me what you’d like changed and we’ll figure it out — or start over with your outbound delay if that’s what moved.";
     await saveMessage(userId, "assistant", assistantMessage, tripId);
     return { success: true, message: assistantMessage, logisticsApplied: false };
   }
@@ -1484,7 +1587,7 @@ I'll adjust your trip start date, outbound flight times, and first-stop plans to
     delayHours: latestDelayHours,
   });
 
-  const assistantMessage = `All set — your trip is updated for the ${latestDelayHours}-hour outbound delay.\n\n- Your trip now starts on ${applyResult.newStartDate} and runs ${applyResult.newNumDays} day(s) through your original end date.\n- Outbound flight times in your plan reflect the new schedule.\n- Travel-only days (before you land) no longer show activities or meals; activities and restaurants for your first stop were reorganized for the days you’re actually there.`;
+  const assistantMessage = buildLogisticsSuccessUserMessage(applyResult.userSummaryContext);
 
   await saveMessage(userId, "assistant", assistantMessage, tripId);
   return { success: true, message: assistantMessage, logisticsApplied: true };
