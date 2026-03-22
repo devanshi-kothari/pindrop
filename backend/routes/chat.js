@@ -503,20 +503,107 @@ function shrinkFirstCityInCityDays(tripPreferences, trip, lostCalendarDays) {
   return null;
 }
 
-function dayNumbersWhereAssignedCityChanged(oldDayCityByIndex, newDayCityByIndex, numDays) {
-  const changed = [];
-  const n = Math.min(
-    numDays,
-    Math.min(oldDayCityByIndex?.length ?? 0, newDayCityByIndex?.length ?? 0)
-  );
-  for (let i = 0; i < n; i += 1) {
-    const o = oldDayCityByIndex[i];
-    const ne = newDayCityByIndex[i];
-    const oKey = o ? normalizeCityKey(o) : "";
-    const nKey = ne ? normalizeCityKey(ne) : "";
-    if (oKey !== nKey) changed.push(i + 1);
+/** First calendar day (1-based) assigned to the second city in ordered_cities (intercity / Rome start). */
+function firstSecondCityDayNumber(dayCityByIndex, effectiveCities) {
+  if (!Array.isArray(dayCityByIndex) || dayCityByIndex.length === 0) return null;
+  if (!effectiveCities || effectiveCities.length < 2) return null;
+  const firstNorm = normalizeCityKey(effectiveCities[0]);
+  if (!firstNorm) return null;
+  for (let i = 0; i < dayCityByIndex.length; i += 1) {
+    const c = dayCityByIndex[i];
+    if (!c) continue;
+    if (normalizeCityKey(c) !== firstNorm) return i + 1;
   }
-  return changed;
+  return null;
+}
+
+/**
+ * When the second city starts on an earlier day_number after shrinking the first stop,
+ * move itinerary_activity and trip_meal so the same calendar days (e.g. intercity on 12/14)
+ * stay on the correct absolute dates — without wiping Rome.
+ */
+async function migrateSecondCityDaysAfterOutboundDelay({
+  supabase,
+  tripId,
+  itinerarySnapshot,
+  oldFirstSecondCityDay,
+  newFirstSecondCityDay,
+  oldTripMaxDayNumber,
+  newNumDays,
+  nowIso,
+}) {
+  if (!oldFirstSecondCityDay || !newFirstSecondCityDay) return;
+  const delta = newFirstSecondCityDay - oldFirstSecondCityDay;
+  if (delta === 0) return;
+
+  const snapshotByDay = new Map((itinerarySnapshot || []).map((r) => [r.day_number, r.itinerary_id]));
+
+  const { data: currentItin, error: curErr } = await supabase
+    .from("itinerary")
+    .select("itinerary_id, day_number")
+    .eq("trip_id", tripId);
+  if (curErr) throw curErr;
+  const dayToItinId = new Map((currentItin || []).map((r) => [r.day_number, r.itinerary_id]));
+
+  const { data: mealsBefore, error: mealSnapErr } = await supabase
+    .from("trip_meal")
+    .select("trip_meal_id, day_number, slot, name, location, link, cost, finalized")
+    .eq("trip_id", tripId)
+    .gte("day_number", oldFirstSecondCityDay);
+  if (mealSnapErr) throw mealSnapErr;
+
+  for (let old_d = oldFirstSecondCityDay; old_d <= oldTripMaxDayNumber; old_d += 1) {
+    const new_d = old_d + delta;
+    if (new_d < 1 || new_d > newNumDays) continue;
+    const oldItinId = snapshotByDay.get(old_d);
+    const newItinId = dayToItinId.get(new_d);
+    if (!oldItinId || !newItinId || oldItinId === newItinId) continue;
+
+    if (new_d >= newFirstSecondCityDay) {
+      const { error: clearDestErr } = await supabase
+        .from("itinerary_activity")
+        .delete()
+        .eq("itinerary_id", newItinId);
+      if (clearDestErr) throw clearDestErr;
+    }
+
+    const { error: moveErr } = await supabase
+      .from("itinerary_activity")
+      .update({ itinerary_id: newItinId })
+      .eq("itinerary_id", oldItinId);
+    if (moveErr) throw moveErr;
+  }
+
+  const { error: delMealsErr } = await supabase
+    .from("trip_meal")
+    .delete()
+    .eq("trip_id", tripId)
+    .gte("day_number", newFirstSecondCityDay);
+  if (delMealsErr) throw delMealsErr;
+
+  const mealRows = (mealsBefore || [])
+    .map((m) => {
+      const nd = m.day_number + delta;
+      if (nd < 1 || nd > newNumDays) return null;
+      return {
+        trip_id: tripId,
+        day_number: nd,
+        slot: m.slot,
+        name: m.name,
+        location: m.location,
+        link: m.link,
+        cost: m.cost,
+        finalized: m.finalized ?? false,
+        updated_at: nowIso,
+        created_at: nowIso,
+      };
+    })
+    .filter(Boolean);
+
+  if (mealRows.length > 0) {
+    const { error: insMealErr } = await supabase.from("trip_meal").insert(mealRows);
+    if (insMealErr) throw insMealErr;
+  }
 }
 
 function computeDayCityByIndex({ trip, tripPreferences, selectedOutboundFlight, numDays }) {
@@ -927,11 +1014,19 @@ async function applyOutboundDelayAndReplanFirstCity({ userId, tripId, delayHours
     selectedOutboundFlight: newOutboundFlightForPlanning,
     numDays: newNumDays,
   });
-  const cityChangedDayNumbers = dayNumbersWhereAssignedCityChanged(
-    oldDayLayout.dayCityByIndex,
-    newDayLayout.dayCityByIndex,
-    newNumDays
-  );
+
+  const effectiveCitiesOld = extractCityResolvedCities(trip, tripPreferences);
+  const effectiveCitiesNew = extractCityResolvedCities(trip, planningTripPreferences);
+  const oldFirstSecondCityDay = firstSecondCityDayNumber(oldDayLayout.dayCityByIndex, effectiveCitiesOld);
+  const newFirstSecondCityDay = firstSecondCityDayNumber(newDayLayout.dayCityByIndex, effectiveCitiesNew);
+
+  const { data: itinerarySnapshotRows, error: itinerarySnapErr } = await supabase
+    .from("itinerary")
+    .select("itinerary_id, day_number, date")
+    .eq("trip_id", tripId);
+  if (itinerarySnapErr) throw itinerarySnapErr;
+  const oldTripMaxDayNumber =
+    (itinerarySnapshotRows || []).reduce((m, r) => Math.max(m, r.day_number || 0), 0) || oldCalendarCount;
 
   const { error: prefUpdateError } = await supabase
     .from("trip_preference")
@@ -960,7 +1055,8 @@ async function applyOutboundDelayAndReplanFirstCity({ userId, tripId, delayHours
   if (itineraryRowsErr) throw itineraryRowsErr;
 
   for (const row of itineraryRowsToUpdate || []) {
-    const dateKey = addHoursToDateKeyUTC(newStartDateKey, (row.day_number - 1) * 24);
+    const dateKey = newCalendarDates[row.day_number - 1] || null;
+    if (!dateKey) continue;
     await supabase
       .from("itinerary")
       .update({
@@ -970,6 +1066,17 @@ async function applyOutboundDelayAndReplanFirstCity({ userId, tripId, delayHours
       })
       .eq("itinerary_id", row.itinerary_id);
   }
+
+  await migrateSecondCityDaysAfterOutboundDelay({
+    supabase,
+    tripId,
+    itinerarySnapshot: itinerarySnapshotRows || [],
+    oldFirstSecondCityDay,
+    newFirstSecondCityDay,
+    oldTripMaxDayNumber,
+    newNumDays,
+    nowIso,
+  });
 
   // Remove activities and meals on travel-only days (matches final-itinerary travel_day logic).
   const outboundActivityStartIndex = computeOutboundActivityStartIndex({
@@ -1003,30 +1110,6 @@ async function applyOutboundDelayAndReplanFirstCity({ userId, tripId, delayHours
       .eq("trip_id", tripId)
       .in("day_number", travelDayNumbers);
     if (clearTravelMealsErr) throw clearTravelMealsErr;
-  }
-
-  // Days that switched city (e.g. second Naples day is now a Rome day) must drop old activities/meals.
-  if (cityChangedDayNumbers.length > 0) {
-    const { data: changedItinRows, error: changedItinErr } = await supabase
-      .from("itinerary")
-      .select("itinerary_id")
-      .eq("trip_id", tripId)
-      .in("day_number", cityChangedDayNumbers);
-    if (changedItinErr) throw changedItinErr;
-    const changedItinIds = (changedItinRows || []).map((r) => r.itinerary_id).filter(Boolean);
-    if (changedItinIds.length > 0) {
-      const { error: clearChangedActErr } = await supabase
-        .from("itinerary_activity")
-        .delete()
-        .in("itinerary_id", changedItinIds);
-      if (clearChangedActErr) throw clearChangedActErr;
-    }
-    const { error: clearChangedMealsErr } = await supabase
-      .from("trip_meal")
-      .delete()
-      .eq("trip_id", tripId)
-      .in("day_number", cityChangedDayNumbers);
-    if (clearChangedMealsErr) throw clearChangedMealsErr;
   }
 
   // Truncate meals beyond newNumDays
