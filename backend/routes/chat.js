@@ -151,6 +151,49 @@ function extractDelayHours(text) {
   return null;
 }
 
+/** Plain-text snippets pasted from a Google-style flight status card (or our demo block). */
+function looksLikeGoogleFlightStatusSnippet(text) {
+  if (!text || typeof text !== "string") return false;
+  const lower = text.toLowerCase();
+  return (
+    /departing\s+late/.test(lower) ||
+    /flight\s+status/.test(lower) ||
+    /estimated\s+departure/.test(lower) ||
+    /original\s+departure/.test(lower) ||
+    /\b(aa|ua|dl|wn|f9|as)\s*\d{2,4}\b/i.test(text)
+  );
+}
+
+function parseLocalYmdHm(ymd, hourStr, minuteStr) {
+  const ymdMatch = String(ymd).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!ymdMatch) return null;
+  const y = Number(ymdMatch[1]);
+  const mo = Number(ymdMatch[2]);
+  const d = Number(ymdMatch[3]);
+  const hh = Number(hourStr);
+  const mm = Number(minuteStr);
+  if (![y, mo, d, hh, mm].every((n) => Number.isFinite(n))) return null;
+  const t = new Date(y, mo - 1, d, hh, mm, 0, 0).getTime();
+  return Number.isNaN(t) ? null : t;
+}
+
+/**
+ * Derive delay length from "Original departure" vs "Estimated departure" lines
+ * (same format as the outbound flight details modal: YYYY-MM-DD HH:mm).
+ */
+function extractDelayHoursFromFlightStatusCard(text) {
+  if (!text || typeof text !== "string") return null;
+  const orig = text.match(/original\s+departure:?\s*(\d{4}-\d{2}-\d{2})[ T](\d{1,2}):(\d{2})/i);
+  const est = text.match(/estimated\s+departure:?\s*(\d{4}-\d{2}-\d{2})[ T](\d{1,2}):(\d{2})/i);
+  if (!orig || !est) return null;
+  const t0 = parseLocalYmdHm(orig[1], orig[2], orig[3]);
+  const t1 = parseLocalYmdHm(est[1], est[2], est[3]);
+  if (t0 == null || t1 == null) return null;
+  const hours = Math.round((t1 - t0) / (60 * 60 * 1000));
+  if (!Number.isFinite(hours) || hours <= 0 || hours > 96) return null;
+  return hours;
+}
+
 function inferFlightType(text) {
   if (!text || typeof text !== "string") return null;
   const lower = text.toLowerCase();
@@ -160,10 +203,54 @@ function inferFlightType(text) {
   return null;
 }
 
+function inferFlightTypeForModifyLogistics(text) {
+  const explicit = inferFlightType(text);
+  if (explicit) return explicit;
+  if (looksLikeGoogleFlightStatusSnippet(text)) return "outbound";
+  return null;
+}
+
+function extractDelayHoursForModifyLogistics(text) {
+  const fromPhrase = extractDelayHours(text);
+  if (fromPhrase != null) return fromPhrase;
+  return extractDelayHoursFromFlightStatusCard(text);
+}
+
 function isConfirmationMessage(text) {
   if (!text || typeof text !== "string") return false;
   return /\b(confirm|apply|yes|do it)\b/i.test(text.trim());
 }
+
+/** Embedded in assistant messages; frontend renders the flight status card between before/after text. */
+
+function extractDelayHoursFromFlightStatusDemoMarker(assistantMessages) {
+  const list = Array.isArray(assistantMessages) ? assistantMessages.slice().reverse() : [];
+  for (const m of list) {
+    const content = String(m.content || "");
+    const match = content.match(/\[\[PINDROP_FLIGHT_STATUS_DEMO:(\d+)\]\]/);
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+/** User asks to look up outbound flight status (simulated search in modify-logistics). */
+function parseOutboundFlightStatusLookupRequest(text) {
+  if (!text || typeof text !== "string") return null;
+  const lower = text.toLowerCase();
+  if (
+    !/check|look\s*up|lookup|search|find|pull\s*up|see\s+if|what'?s\s+the\s+status|status\s+of|probe|internet/.test(
+      lower
+    )
+  ) {
+    return null;
+  }
+  const m = text.match(/\b([a-z]{2})\s*(\d{2,4})\b/i);
+  if (!m) return null;
+  return { airline: m[1].toUpperCase(), number: m[2], full: `${m[1].toUpperCase()}${m[2]}` };
+}
+
+/** Demo simulates only this flight (matches mock card). */
+const DEMO_FLIGHT_STATUS_LOOKUP_NUMBER = "AA1234";
 
 function canonicalizeCityValue(raw) {
   if (!raw) return null;
@@ -1226,36 +1313,64 @@ async function handleModifyLogisticsChat({ userId, tripId, message, conversation
   }
 
   const trimmedMessage = (message || "").trim();
-  const inferredFlightType = inferFlightType(trimmedMessage);
-  const delayHours = extractDelayHours(trimmedMessage);
+  const inferredFlightType = inferFlightTypeForModifyLogistics(trimmedMessage);
+  const delayHoursFromUserText = extractDelayHoursForModifyLogistics(trimmedMessage);
   const confirm = isConfirmationMessage(trimmedMessage);
 
-  // Fallback: infer delayHours and flight type from recent chat history
   const userMessages = (conversationHistory || []).filter((m) => m.role === "user").slice(-10);
+  const assistantMessages = (conversationHistory || []).filter((m) => m.role === "assistant").slice(-10);
+  const delayFromPriorDemo = extractDelayHoursFromFlightStatusDemoMarker(assistantMessages);
+
   const latestDelayHours = (() => {
-    if (delayHours != null) return delayHours;
+    if (delayHoursFromUserText != null) return delayHoursFromUserText;
     for (let i = userMessages.length - 1; i >= 0; i -= 1) {
-      const h = extractDelayHours(userMessages[i].content);
+      const h = extractDelayHoursForModifyLogistics(userMessages[i].content);
       if (h != null) return h;
     }
+    if (confirm && delayFromPriorDemo != null) return delayFromPriorDemo;
     return null;
   })();
 
   const latestFlightType = (() => {
     if (inferredFlightType) return inferredFlightType;
     for (let i = userMessages.length - 1; i >= 0; i -= 1) {
-      const ft = inferFlightType(userMessages[i].content);
+      const ft = inferFlightTypeForModifyLogistics(userMessages[i].content);
       if (ft) return ft;
     }
+    if (confirm && delayFromPriorDemo != null) return "outbound";
     return null;
   })();
 
-  // Save the user's message immediately (since we may bypass the LLM flow)
+  const statusLookupRequest = parseOutboundFlightStatusLookupRequest(trimmedMessage);
+
   await saveMessage(userId, "user", trimmedMessage, tripId);
+
+  // 1) Simulated “web search” for outbound flight status (demo: AA1234 only)
+  if (!confirm && statusLookupRequest) {
+    if (statusLookupRequest.full.toUpperCase() !== DEMO_FLIGHT_STATUS_LOOKUP_NUMBER) {
+      const assistantMessage = `In this demo I can only simulate a status lookup for American Airlines ${DEMO_FLIGHT_STATUS_LOOKUP_NUMBER} (the sample outbound flight). Try asking something like: “Can you check the status of my outbound flight number ${DEMO_FLIGHT_STATUS_LOOKUP_NUMBER}?”`;
+      await saveMessage(userId, "assistant", assistantMessage, tripId);
+      return { success: true, message: assistantMessage, logisticsApplied: false };
+    }
+
+    const simulatedDelayHours = 24;
+    const assistantMessage = `I searched public flight-status sources (demo lookup) for American Airlines ${DEMO_FLIGHT_STATUS_LOOKUP_NUMBER} on your outbound route.
+
+I've found this information:
+
+[[PINDROP_FLIGHT_STATUS_DEMO:${simulatedDelayHours}]]
+
+Summary: the feed shows DEPARTING LATE. Your originally scheduled departure was Thu, Dec 11, 2026 at 4:45 PM from JFK; the current estimated departure is Fri, Dec 12, 2026 at 4:45 PM—about ${simulatedDelayHours} hours later. The Naples arrival moves forward by one calendar day as well.
+
+I'll adjust your trip start date, outbound flight times, and first-stop plans to match once you approve. Reply “confirm” when you want me to apply these changes.`;
+
+    await saveMessage(userId, "assistant", assistantMessage, tripId);
+    return { success: true, message: assistantMessage, logisticsApplied: false };
+  }
 
   if (!latestDelayHours) {
     const assistantMessage =
-      "Tell me the flight delay in hours. Example: “my flight has been delayed 24 hours”.";
+      "Ask me to check your outbound flight—for example: “Can you check the status of my outbound flight number AA1234?”—or paste a flight-status screen, or say how many hours late the flight is (e.g. “outbound delayed 24 hours”).";
     await saveMessage(userId, "assistant", assistantMessage, tripId);
     return { success: true, message: assistantMessage, logisticsApplied: false };
   }
@@ -1273,7 +1388,6 @@ async function handleModifyLogisticsChat({ userId, tripId, message, conversation
     return { success: true, message: assistantMessage, logisticsApplied: false };
   }
 
-  // Apply only outbound delays (first-city recluster optimization)
   if (latestFlightType !== "outbound") {
     const assistantMessage =
       "Right now I can only auto-adjust outbound delays (the flight that gets you to your first destination). For return or intercity changes, describe what you need and we can handle it another way—or say your outbound flight was delayed and I’ll update that.";
@@ -1508,8 +1622,6 @@ router.post('/chat', authenticateToken, async (req, res) => {
         tripId: parsedTripId,
         message,
         conversationHistory,
-        delayHours: null,
-        inferredFlightType: null,
       });
       return res.status(200).json(result);
     }

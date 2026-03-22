@@ -25,6 +25,10 @@ import ReplaceActivityModal from "@/components/ReplaceActivityModal";
 import ReplaceHotelModal from "@/components/ReplaceHotelModal";
 import ReplaceFlightModal from "@/components/ReplaceFlightModal";
 import ReplaceRestaurantModal from "@/components/ReplaceRestaurantModal";
+import {
+  MockGoogleFlightStatusCard,
+  splitFlightStatusDemoMessage,
+} from "@/components/MockGoogleFlightStatusCard";
 
 type FlightLeg = {
   departure_airport?: {
@@ -1159,8 +1163,10 @@ const FinalItinerary = () => {
     void loadChatHistory();
   }, [isChatOpen, hasLoadedChatHistory, tripId]);
 
-  const sendChatMessage = async () => {
-    const content = chatInput.trim();
+  const sendChatMessage = async (contentOverride?: string) => {
+    const raw =
+      contentOverride !== undefined && contentOverride !== null ? String(contentOverride) : chatInput;
+    const content = raw.trim();
     if (!content || isChatLoading) return;
 
     const userMessage: ChatMessage = {
@@ -1169,7 +1175,9 @@ const FinalItinerary = () => {
       timestamp: formatChatTime(),
     };
     setChatMessages((prev) => [...prev, userMessage]);
-    setChatInput("");
+    if (contentOverride === undefined || contentOverride === null) {
+      setChatInput("");
+    }
     setIsChatLoading(true);
 
     try {
@@ -4646,37 +4654,57 @@ const FinalItinerary = () => {
               </Button>
             </CardHeader>
             <CardContent className="pt-1">
-              <ScrollArea className="h-64 pr-2">
+              <ScrollArea className="h-72 pr-2">
                 <div className="space-y-3">
-                  {chatMessages.map((message, index) => (
-                    <div
-                      key={index}
-                      className={`flex ${
-                        message.role === "user" ? "justify-end" : "justify-start"
-                      }`}
-                    >
+                  {chatMessages.map((message, index) => {
+                    const flightDemoParts =
+                      message.role === "assistant"
+                        ? splitFlightStatusDemoMessage(message.content)
+                        : null;
+                    return (
                       <div
-                        className={`max-w-[80%] rounded-lg px-3 py-2 shadow-sm text-xs ${
-                          message.role === "user"
-                            ? "bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 shadow-lg"
-                            : "bg-white border border-blue-200 text-slate-900"
+                        key={index}
+                        className={`flex ${
+                          message.role === "user" ? "justify-end" : "justify-start"
                         }`}
                       >
-                        <div className="whitespace-pre-wrap break-words leading-relaxed">
-                          {message.content}
-                        </div>
-                        <p
-                          className={`text-[10px] mt-1 ${
+                        <div
+                          className={`${
+                            flightDemoParts ? "max-w-[min(100%,20rem)]" : "max-w-[80%]"
+                          } rounded-lg px-3 py-2 shadow-sm text-xs ${
                             message.role === "user"
-                              ? "text-teal-100"
-                              : "text-muted-foreground"
+                              ? "bg-gradient-to-r from-emerald-400 via-sky-500 to-blue-500 text-slate-950 shadow-lg"
+                              : "bg-white border border-blue-200 text-slate-900"
                           }`}
                         >
-                          {message.timestamp}
-                        </p>
+                          {flightDemoParts ? (
+                            <div className="space-y-2">
+                              <div className="whitespace-pre-wrap break-words leading-relaxed">
+                                {flightDemoParts.before}
+                              </div>
+                              <MockGoogleFlightStatusCard variant="embedded" />
+                              <div className="whitespace-pre-wrap break-words leading-relaxed">
+                                {flightDemoParts.after}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="whitespace-pre-wrap break-words leading-relaxed">
+                              {message.content}
+                            </div>
+                          )}
+                          <p
+                            className={`text-[10px] mt-1 ${
+                              message.role === "user"
+                                ? "text-teal-100"
+                                : "text-muted-foreground"
+                            }`}
+                          >
+                            {message.timestamp}
+                          </p>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </ScrollArea>
               <div className="mt-3 flex gap-2">
@@ -4684,7 +4712,7 @@ const FinalItinerary = () => {
                   type="text"
                   placeholder={
                     chatMode === "modify_logistics"
-                      ? "Ask about flight delays and logistics..."
+                      ? 'e.g. Can you check the status of my outbound flight AA1234?'
                       : "Ask about this trip..."
                   }
                   value={chatInput}
