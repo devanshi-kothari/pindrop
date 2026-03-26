@@ -18,7 +18,7 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/
 import { PieChart, Pie, Cell, Legend } from "recharts";
 import { getApiUrl } from "@/lib/api";
 import { getTravelInformation, type TravelInformation } from "@/lib/travelInfo";
-import { ArrowLeft, Plus, Trash2, X, RotateCcw, GripVertical } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, X, RotateCcw, GripVertical, NotebookPen } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
@@ -115,6 +115,7 @@ type MealInfo = {
   link?: string;
   cost?: number;
   finalized?: boolean;
+  description?: string | null;
 };
 
 type ChronoRow =
@@ -163,6 +164,9 @@ const mealSlotLabels: Record<MealSlot, string> = {
   lunch: "Lunch",
   dinner: "Dinner",
 };
+
+const buildActivityKey = (dayNumber: number, index: number) => `activity-${dayNumber}-${index}`;
+const buildMealKey = (dayNumber: number, slot: MealSlot) => `meal-${dayNumber}-${slot}`;
 
 const WALKING_THRESHOLD_MINUTES = 30;
 const WALKING_THRESHOLD_SECONDS = WALKING_THRESHOLD_MINUTES * 60;
@@ -239,9 +243,54 @@ type TripPreferences = {
   selected_cities?: string[] | null;
 };
 
+type JournalEntryInput = {
+  note: string;
+  file: File | null;
+};
+
+type JournalInputs = {
+  tripId: number;
+  overallNotes: string;
+  overallImage: File | null;
+  activities: Record<string, JournalEntryInput>;
+  meals: Record<string, JournalEntryInput>;
+};
+
+interface PdfPreparedImage {
+  dataUrl: string;
+  width: number;
+  height: number;
+}
+
+type JsPdfConstructor = new (options?: {
+  orientation?: "p" | "portrait" | "l" | "landscape";
+  unit?: "pt" | "mm" | "cm" | "in";
+  format?: string | number[];
+}) => JsPdfInstance;
+
+interface JsPdfInstance {
+  internal: {
+    pageSize: {
+      getWidth: () => number;
+      getHeight: () => number;
+    };
+  };
+  setFont: (fontName: string, fontStyle?: string) => void;
+  setFontSize: (size: number) => void;
+  setTextColor: (r: number, g: number, b: number) => void;
+  text: (text: string | string[], x: number, y: number) => void;
+  addImage: (imageData: string, format: string, x: number, y: number, width: number, height: number) => void;
+  addPage: () => void;
+  save: (fileName?: string) => void;
+  splitTextToSize: (text: string, maxWidth: number) => string[];
+}
+
 declare global {
   interface Window {
     google?: typeof google;
+    jspdf?: {
+      jsPDF: JsPdfConstructor;
+    };
   }
 }
 
@@ -449,6 +498,101 @@ const computePreferredRoute = async (
   };
 };
 
+const buildInitialJournalInputs = (data: FinalItineraryData): JournalInputs => {
+  const activities: Record<string, JournalEntryInput> = {};
+  const meals: Record<string, JournalEntryInput> = {};
+
+  data.days.forEach((day) => {
+    (day.activities || []).forEach((_, index) => {
+      const key = buildActivityKey(day.day_number, index);
+      activities[key] = { note: "", file: null };
+    });
+    mealSlotOrder.forEach((slot) => {
+      const key = buildMealKey(day.day_number, slot);
+      meals[key] = { note: "", file: null };
+    });
+  });
+
+  return {
+    tripId: data.trip_id,
+    overallNotes: "",
+    overallImage: null,
+    activities,
+    meals,
+  };
+};
+
+const readFileAsDataUrl = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result === "string") {
+        resolve(result);
+      } else {
+        reject(new Error("Unable to read image contents"));
+      }
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("Failed to read file"));
+    reader.readAsDataURL(file);
+  });
+
+const loadImageDimensions = (file: File) =>
+  new Promise<{ width: number; height: number }>((resolve, reject) => {
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("Unable to load preview image"));
+    };
+    image.src = objectUrl;
+  });
+
+const preparePdfImage = async (file: File): Promise<PdfPreparedImage> => {
+  const dataUrlPromise = readFileAsDataUrl(file);
+  let dimensions: { width: number; height: number };
+  try {
+    dimensions = await loadImageDimensions(file);
+  } catch (err) {
+    console.warn("Falling back to default image dimensions", err);
+    dimensions = { width: 1200, height: 800 };
+  }
+  const dataUrl = await dataUrlPromise;
+  return { dataUrl, ...dimensions };
+};
+
+let jsPdfLoaderPromise: Promise<JsPdfConstructor> | null = null;
+
+const loadJsPdf = () => {
+  if (typeof window === "undefined") {
+    return Promise.reject(new Error("PDF generation is only available in the browser"));
+  }
+  if (window.jspdf?.jsPDF) {
+    return Promise.resolve(window.jspdf.jsPDF);
+  }
+  if (!jsPdfLoaderPromise) {
+    jsPdfLoaderPromise = new Promise<JsPdfConstructor>((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js";
+      script.async = true;
+      script.onload = () => {
+        if (window.jspdf?.jsPDF) {
+          resolve(window.jspdf.jsPDF);
+        } else {
+          reject(new Error("PDF library failed to load"));
+        }
+      };
+      script.onerror = () => reject(new Error("Unable to load PDF library"));
+      document.body.appendChild(script);
+    });
+  }
+  return jsPdfLoaderPromise;
+};
+
 const FinalItinerary = () => {
   const { tripId } = useParams<{ tripId: string }>();
   const navigate = useNavigate();
@@ -524,6 +668,65 @@ const FinalItinerary = () => {
     dayNumber: number;
     slot: MealSlot;
   } | null>(null);
+  const [journalInputs, setJournalInputs] = useState<JournalInputs | null>(null);
+  const [isJournalModalOpen, setJournalModalOpen] = useState(false);
+  const [isGeneratingJournal, setIsGeneratingJournal] = useState(false);
+  const [journalError, setJournalError] = useState<string | null>(null);
+
+  const validateImageFile = (file: File | null) => {
+    if (!file) return true;
+    const mime = file.type.toLowerCase();
+    const isJpeg = mime === "image/jpeg" || mime === "image/jpg" || mime.includes("jpeg");
+    if (!isJpeg) {
+      setJournalError("Please upload JPEG images (files ending in .jpg or .jpeg).");
+      return false;
+    }
+    return true;
+  };
+
+  const updateJournalEntry = (
+    category: "activities" | "meals",
+    key: string,
+    updates: Partial<JournalEntryInput>
+  ) => {
+    setJournalInputs((prev) => {
+      if (!prev || !prev[category][key]) return prev;
+      return {
+        ...prev,
+        [category]: {
+          ...prev[category],
+          [key]: { ...prev[category][key], ...updates },
+        },
+      };
+    });
+  };
+
+  const handleOverallNotesChange = (value: string) => {
+    setJournalInputs((prev) => (prev ? { ...prev, overallNotes: value } : prev));
+  };
+
+  const handleOverallImageChange = (file: File | null) => {
+    if (!validateImageFile(file)) return;
+    setJournalInputs((prev) => (prev ? { ...prev, overallImage: file } : prev));
+  };
+
+  const handleActivityNoteChange = (key: string, value: string) => {
+    updateJournalEntry("activities", key, { note: value });
+  };
+
+  const handleActivityFileChange = (key: string, file: File | null) => {
+    if (!validateImageFile(file)) return;
+    updateJournalEntry("activities", key, { file });
+  };
+
+  const handleMealNoteChange = (key: string, value: string) => {
+    updateJournalEntry("meals", key, { note: value });
+  };
+
+  const handleMealFileChange = (key: string, file: File | null) => {
+    if (!validateImageFile(file)) return;
+    updateJournalEntry("meals", key, { file });
+  };
 
   const dietaryRestrictions = useMemo(() => {
     const raw = tripPreferences?.restaurant_preferences?.dietary_restrictions;
@@ -688,6 +891,57 @@ const FinalItinerary = () => {
 
     loadFinalItinerary();
   }, [tripId, navigate]);
+
+  useEffect(() => {
+    if (!itinerary) {
+      setJournalInputs(null);
+      return;
+    }
+    setJournalInputs((prev) => {
+      if (!prev || prev.tripId !== itinerary.trip_id) {
+        return buildInitialJournalInputs(itinerary);
+      }
+      const nextActivities = { ...prev.activities };
+      const validActivityKeys = new Set<string>();
+      itinerary.days.forEach((day) => {
+        (day.activities || []).forEach((_, index) => {
+          const key = buildActivityKey(day.day_number, index);
+          validActivityKeys.add(key);
+          if (!nextActivities[key]) {
+            nextActivities[key] = { note: "", file: null };
+          }
+        });
+      });
+      Object.keys(nextActivities).forEach((key) => {
+        if (!validActivityKeys.has(key)) {
+          delete nextActivities[key];
+        }
+      });
+
+      const nextMeals = { ...prev.meals };
+      const validMealKeys = new Set<string>();
+      itinerary.days.forEach((day) => {
+        mealSlotOrder.forEach((slot) => {
+          const key = buildMealKey(day.day_number, slot);
+          validMealKeys.add(key);
+          if (!nextMeals[key]) {
+            nextMeals[key] = { note: "", file: null };
+          }
+        });
+      });
+      Object.keys(nextMeals).forEach((key) => {
+        if (!validMealKeys.has(key)) {
+          delete nextMeals[key];
+        }
+      });
+
+      return {
+        ...prev,
+        activities: nextActivities,
+        meals: nextMeals,
+      };
+    });
+  }, [itinerary]);
 
   const handleAddActivity = async (dayNumber: number) => {
     if (!tripId) return;
@@ -1087,6 +1341,203 @@ const FinalItinerary = () => {
         persistExpenses(copy);
         return copy;
       });
+    }
+  };
+
+  const handleGenerateJournalPdf = async () => {
+    if (!itinerary || !journalInputs) {
+      setJournalError("Trip information is still loading. Please try again in a moment.");
+      return;
+    }
+    setIsGeneratingJournal(true);
+    setJournalError(null);
+    try {
+      const JsPdf = await loadJsPdf();
+      const doc = new JsPdf({ unit: "pt", format: "letter" });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const horizontalMargin = 48;
+      const verticalMargin = 56;
+      const contentWidth = pageWidth - horizontalMargin * 2;
+      let cursorY = verticalMargin;
+
+      const ensureSpace = (height: number) => {
+        if (cursorY + height > pageHeight - verticalMargin) {
+          doc.addPage();
+          cursorY = verticalMargin;
+        }
+      };
+
+      const addSpacer = (amount = 10) => {
+        cursorY += amount;
+      };
+
+      const addHeading = (text: string) => {
+        ensureSpace(32);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(22);
+        doc.text(text, horizontalMargin, cursorY);
+        cursorY += 28;
+      };
+
+      const addSubheading = (text: string) => {
+        ensureSpace(24);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(14);
+        doc.text(text, horizontalMargin, cursorY);
+        cursorY += 18;
+      };
+
+      const addBodyText = (text: string, fontSize = 12) => {
+        if (!text || !text.trim()) return;
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(fontSize);
+        const lines = doc.splitTextToSize(text.trim(), contentWidth);
+        lines.forEach((line) => {
+          ensureSpace(16);
+          doc.text(line, horizontalMargin, cursorY);
+          cursorY += 14;
+        });
+        addSpacer(4);
+      };
+
+      const addImageBlock = (image: PdfPreparedImage) => {
+        const maxWidth = contentWidth;
+        const scale = Math.min(1, maxWidth / image.width);
+        const width = image.width * scale;
+        const height = image.height * scale;
+        ensureSpace(height + 12);
+        doc.addImage(image.dataUrl, "JPEG", horizontalMargin, cursorY, width, height);
+        cursorY += height + 12;
+      };
+
+      const imagePromises: Array<Promise<[string, PdfPreparedImage]>> = [];
+      if (journalInputs.overallImage) {
+        imagePromises.push(
+          preparePdfImage(journalInputs.overallImage).then((image) => ["overall", image])
+        );
+      }
+      Object.entries(journalInputs.activities).forEach(([key, entry]) => {
+        if (entry.file) {
+          imagePromises.push(
+            preparePdfImage(entry.file).then((image) => [`activity:${key}`, image])
+          );
+        }
+      });
+      Object.entries(journalInputs.meals).forEach(([key, entry]) => {
+        if (entry.file) {
+          imagePromises.push(
+            preparePdfImage(entry.file).then((image) => [`meal:${key}`, image])
+          );
+        }
+      });
+
+      const imagePairs = await Promise.all(imagePromises);
+      const imageMap = new Map<string, PdfPreparedImage>(imagePairs);
+
+      const title = itinerary.trip_title || "Trip Journal";
+      addHeading(title);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(12);
+      const destinationLine = itinerary.destination ? `Destination: ${itinerary.destination}` : "";
+      const dateLine =
+        itinerary.start_date && itinerary.end_date
+          ? `Dates: ${formatDate(itinerary.start_date) || itinerary.start_date} → ${formatDate(itinerary.end_date) || itinerary.end_date}`
+          : "";
+      const durationLine = `Days planned: ${itinerary.num_days}`;
+      [destinationLine, dateLine, durationLine]
+        .filter((line) => line.length > 0)
+        .forEach((line) => {
+          ensureSpace(16);
+          doc.text(line, horizontalMargin, cursorY);
+          cursorY += 14;
+        });
+
+      if (itinerary.total_budget) {
+        ensureSpace(16);
+        doc.text(`Budget: $${itinerary.total_budget.toLocaleString()}`, horizontalMargin, cursorY);
+        cursorY += 14;
+      }
+
+      addSpacer(6);
+      addSubheading("Traveler Notes");
+      addBodyText(
+        journalInputs.overallNotes ||
+          "Use this space to reflect on standout memories, travel tips, or lessons learned."
+      );
+      const heroImage = imageMap.get("overall");
+      if (heroImage) {
+        addImageBlock(heroImage);
+      }
+
+      itinerary.days.forEach((day) => {
+        const dayTitle = formatDate(day.date) || `Day ${day.day_number}`;
+        addHeading(`Day ${day.day_number}: ${dayTitle}`);
+        if (day.summary) {
+          addBodyText(day.summary);
+        }
+
+        (day.activities || []).forEach((activity, index) => {
+          const activityKey = buildActivityKey(day.day_number, index);
+          const entry = journalInputs.activities[activityKey];
+          addSubheading(activity.name || `Activity ${index + 1}`);
+          if (activity.location) {
+            addBodyText(`Location: ${activity.location}`);
+          }
+          if (activity.description) {
+            addBodyText(activity.description);
+          }
+          if (entry?.note) {
+            addBodyText(`Traveler note: ${entry.note}`);
+          }
+          const image = imageMap.get(`activity:${activityKey}`);
+          if (image) {
+            addImageBlock(image);
+          }
+          addSpacer(4);
+        });
+
+        const dayMeals = mealsByDay[day.day_number] || {};
+        mealSlotOrder.forEach((slot) => {
+          const mealKey = buildMealKey(day.day_number, slot);
+          const entry = journalInputs.meals[mealKey];
+          const meal = dayMeals[slot];
+          const hasContent = meal || (entry?.note && entry.note.trim()) || entry?.file;
+          if (!hasContent) return;
+          const mealTitle = meal?.name
+            ? `${mealSlotLabels[slot]} – ${meal.name}`
+            : `${mealSlotLabels[slot]}`;
+          addSubheading(mealTitle);
+          if (meal?.location) {
+            addBodyText(`Where: ${meal.location}`);
+          }
+          if (meal?.description) {
+            addBodyText(meal.description);
+          }
+          if (entry?.note) {
+            addBodyText(`Traveler note: ${entry.note}`);
+          }
+          const image = imageMap.get(`meal:${mealKey}`);
+          if (image) {
+            addImageBlock(image);
+          }
+          addSpacer(2);
+        });
+      });
+
+      const safeTitle = title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+      const fileName = safeTitle ? `${safeTitle}-journal.pdf` : "trip-journal.pdf";
+      doc.save(fileName);
+      setJournalModalOpen(false);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "We couldn't create the journal right now. Please try again.";
+      setJournalError(message);
+    } finally {
+      setIsGeneratingJournal(false);
     }
   };
 
@@ -2349,11 +2800,23 @@ const FinalItinerary = () => {
                         {itinerary.destination || "Trip"} • {itinerary.num_days} days
                       </p>
                     </div>
-                    {itinerary.total_budget && (
-                      <p className="text-xs text-blue-600">
-                        Budget: ${itinerary.total_budget.toLocaleString()}
-                      </p>
-                    )}
+                    <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
+                      {itinerary.total_budget && (
+                        <p className="text-xs text-slate-600 sm:text-right">
+                          Budget: ${itinerary.total_budget.toLocaleString()}
+                        </p>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex items-center gap-2"
+                        disabled={!journalInputs}
+                        onClick={() => setJournalModalOpen(true)}
+                      >
+                        <NotebookPen className="h-4 w-4" />
+                        Create Trip Journal
+                      </Button>
+                    </div>
                   </div>
 
                   <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="mt-4">
@@ -4824,6 +5287,274 @@ const FinalItinerary = () => {
                         </div>
                       </div>
                     </TabsContent>
+
+                    <Dialog
+                      open={isJournalModalOpen}
+                      onOpenChange={(open) => {
+                        setJournalModalOpen(open);
+                        if (!open) {
+                          setJournalError(null);
+                        }
+                      }}
+                    >
+                      <DialogContent className="max-w-4xl">
+                        <DialogHeader>
+                          <DialogTitle>Create trip journal</DialogTitle>
+                          <DialogDescription>
+                            Add optional notes or JPEG images for each activity and meal before downloading a polished PDF.
+                          </DialogDescription>
+                        </DialogHeader>
+                        {!journalInputs ? (
+                          <p className="text-sm text-slate-600">Trip details are still loading.</p>
+                        ) : (
+                          <>
+                            {journalError && (
+                              <p className="text-sm text-red-600 mb-2" role="alert">
+                                {journalError}
+                              </p>
+                            )}
+                            <ScrollArea className="h-[70vh] pr-3">
+                              <div className="space-y-4">
+                                <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-4 space-y-3">
+                                  <p className="text-sm font-semibold text-slate-900">Trip overview</p>
+                                  <Textarea
+                                    value={journalInputs.overallNotes}
+                                    onChange={(event) => handleOverallNotesChange(event.target.value)}
+                                    placeholder="Summarize standout memories, lessons learned, or gratitude for the entire trip."
+                                    className="text-sm min-h-[100px]"
+                                  />
+                                  <div className="space-y-2 text-xs text-slate-600">
+                                    <Input
+                                      type="file"
+                                      accept="image/jpeg"
+                                      onChange={(event) => {
+                                        const file = event.target.files?.[0] ?? null;
+                                        if (!validateImageFile(file)) {
+                                          event.target.value = "";
+                                          return;
+                                        }
+                                        handleOverallImageChange(file);
+                                        event.target.value = "";
+                                      }}
+                                      className="h-8"
+                                    />
+                                    {journalInputs.overallImage ? (
+                                      <div className="flex items-center justify-between text-[11px] text-slate-600">
+                                        <span>Attached: {journalInputs.overallImage.name}</span>
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="sm"
+                                          className="h-6 px-2 text-[11px]"
+                                          onClick={() => handleOverallImageChange(null)}
+                                        >
+                                          Remove
+                                        </Button>
+                                      </div>
+                                    ) : (
+                                      <p>Optional cover image (JPEG files only).</p>
+                                    )}
+                                  </div>
+                                </div>
+                                {itinerary.days.map((day) => {
+                                  const activities = day.activities || [];
+                                  const dayMeals = mealsByDay[day.day_number] || {};
+                                  return (
+                                    <div
+                                      key={`journal-day-${day.day_number}`}
+                                      className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-3"
+                                    >
+                                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                                        <div>
+                                          <p className="text-xs font-semibold text-slate-900">
+                                            Day {day.day_number}: {formatDate(day.date) || `Day ${day.day_number}`}
+                                          </p>
+                                          {day.summary && (
+                                            <p className="text-[11px] text-slate-600">{day.summary}</p>
+                                          )}
+                                        </div>
+                                        <span className="text-[11px] text-slate-500">
+                                          {activities.length} activities • {mealSlotOrder.length} meals
+                                        </span>
+                                      </div>
+                                      <div className="space-y-3">
+                                        <div>
+                                          <p className="text-xs uppercase tracking-wide text-slate-500 font-semibold mb-1">
+                                            Activities
+                                          </p>
+                                          {activities.length === 0 && (
+                                            <p className="text-[11px] text-slate-500">
+                                              No saved activities for this day yet.
+                                            </p>
+                                          )}
+                                          <div className="space-y-2">
+                                            {activities.map((activity, index) => {
+                                              const activityKey = buildActivityKey(day.day_number, index);
+                                              const entry = journalInputs.activities[activityKey] || {
+                                                note: "",
+                                                file: null,
+                                              };
+                                              return (
+                                                <div
+                                                  key={activityKey}
+                                                  className="rounded border border-blue-100 bg-white px-3 py-2 space-y-2"
+                                                >
+                                                  <div className="flex flex-col">
+                                                    <p className="text-sm font-semibold text-slate-900">
+                                                      {activity.name || `Activity ${index + 1}`}
+                                                    </p>
+                                                    {activity.location && (
+                                                      <span className="text-[11px] text-slate-500">
+                                                        {activity.location}
+                                                      </span>
+                                                    )}
+                                                  </div>
+                                                  <Textarea
+                                                    value={entry.note}
+                                                    onChange={(event) =>
+                                                      handleActivityNoteChange(activityKey, event.target.value)
+                                                    }
+                                                    placeholder="Add memories, reactions, or tips."
+                                                    className="text-sm min-h-[80px]"
+                                                  />
+                                                  <div className="space-y-1 text-[11px] text-slate-600">
+                                                    <Input
+                                                      type="file"
+                                                      accept="image/jpeg"
+                                                      onChange={(event) => {
+                                                        const file = event.target.files?.[0] ?? null;
+                                                        if (!validateImageFile(file)) {
+                                                          event.target.value = "";
+                                                          return;
+                                                        }
+                                                        handleActivityFileChange(activityKey, file);
+                                                        event.target.value = "";
+                                                      }}
+                                                      className="h-8"
+                                                    />
+                                                    {entry.file && (
+                                                      <div className="flex items-center justify-between">
+                                                        <span>Attached: {entry.file.name}</span>
+                                                        <Button
+                                                          type="button"
+                                                          variant="ghost"
+                                                          size="sm"
+                                                          className="h-6 px-2 text-[11px]"
+                                                          onClick={() => handleActivityFileChange(activityKey, null)}
+                                                        >
+                                                          Remove
+                                                        </Button>
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        </div>
+                                        <div>
+                                          <p className="text-xs uppercase tracking-wide text-slate-500 font-semibold mb-1">
+                                            Meals
+                                          </p>
+                                          <div className="space-y-2">
+                                            {mealSlotOrder.map((slot) => {
+                                              const mealKey = buildMealKey(day.day_number, slot);
+                                              const entry = journalInputs.meals[mealKey] || { note: "", file: null };
+                                              const meal = dayMeals[slot];
+                                              const label = meal?.name
+                                                ? `${mealSlotLabels[slot]} – ${meal.name}`
+                                                : `${mealSlotLabels[slot]} (not set)`;
+                                              return (
+                                                <div
+                                                  key={mealKey}
+                                                  className="rounded border border-amber-100 bg-white px-3 py-2 space-y-2"
+                                                >
+                                                  <div className="flex flex-col">
+                                                    <p className="text-sm font-semibold text-slate-900">{label}</p>
+                                                    {meal?.location && (
+                                                      <span className="text-[11px] text-slate-500">
+                                                        {meal.location}
+                                                      </span>
+                                                    )}
+                                                  </div>
+                                                  <Textarea
+                                                    value={entry.note}
+                                                    onChange={(event) =>
+                                                      handleMealNoteChange(mealKey, event.target.value)
+                                                    }
+                                                    placeholder="Capture flavors, ambiance, or who you dined with."
+                                                    className="text-sm min-h-[70px]"
+                                                  />
+                                                  <div className="space-y-1 text-[11px] text-slate-600">
+                                                    <Input
+                                                      type="file"
+                                                      accept="image/jpeg"
+                                                      onChange={(event) => {
+                                                        const file = event.target.files?.[0] ?? null;
+                                                        if (!validateImageFile(file)) {
+                                                          event.target.value = "";
+                                                          return;
+                                                        }
+                                                        handleMealFileChange(mealKey, file);
+                                                        event.target.value = "";
+                                                      }}
+                                                      className="h-8"
+                                                    />
+                                                    {entry.file && (
+                                                      <div className="flex items-center justify-between">
+                                                        <span>Attached: {entry.file.name}</span>
+                                                        <Button
+                                                          type="button"
+                                                          variant="ghost"
+                                                          size="sm"
+                                                          className="h-6 px-2 text-[11px]"
+                                                          onClick={() => handleMealFileChange(mealKey, null)}
+                                                        >
+                                                          Remove
+                                                        </Button>
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </ScrollArea>
+                            <div className="flex flex-col gap-2 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                              <p className="text-[11px] text-slate-500">
+                                JPEG images only. Notes and photos remain in your browser until you download the PDF.
+                              </p>
+                              <div className="flex justify-end gap-2">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  onClick={() => {
+                                    setJournalModalOpen(false);
+                                    setJournalError(null);
+                                  }}
+                                  disabled={isGeneratingJournal}
+                                >
+                                  Cancel
+                                </Button>
+                                <Button
+                                  type="button"
+                                  onClick={handleGenerateJournalPdf}
+                                  disabled={isGeneratingJournal}
+                                >
+                                  {isGeneratingJournal ? "Generating..." : "Download PDF"}
+                                </Button>
+                              </div>
+                            </div>
+                          </>
+                        )}
+                      </DialogContent>
+                    </Dialog>
 
                     {/* Meal edit dialog - used by Overview tab for editing/adding meals */}
                     <Dialog
