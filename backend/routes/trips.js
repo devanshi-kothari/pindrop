@@ -2546,7 +2546,7 @@ router.get('/:tripId/expenses', authenticateToken, async (req, res) => {
 
     const { data, error } = await supabase
       .from('trip_expense')
-      .select('trip_expense_id, client_id, day_number, label, amount, category, finalized')
+      .select('trip_expense_id, client_id, day_number, label, amount, entered_amount, currency_code, category, finalized')
       .eq('trip_id', tripId)
       .order('day_number', { ascending: true });
 
@@ -2588,16 +2588,36 @@ router.put('/:tripId/expenses', authenticateToken, async (req, res) => {
     if (deleteError) throw deleteError;
 
     if (expenses.length > 0) {
-      const rows = expenses.map((expense) => ({
-        trip_id: tripId,
-        day_number: expense.day_number,
-        client_id: expense.client_id,
-        label: expense.label,
-        amount: expense.amount,
-        category: expense.category,
-        finalized: typeof expense.finalized === 'boolean' ? expense.finalized : true,
-        updated_at: new Date().toISOString(),
-      }));
+      const rows = expenses.map((expense) => {
+        const parsedUsdAmount =
+          typeof expense.amount === 'number'
+            ? expense.amount
+            : Number.isFinite(Number(expense.amount))
+            ? Number(expense.amount)
+            : 0;
+        const parsedEnteredAmount =
+          typeof expense.entered_amount === 'number'
+            ? expense.entered_amount
+            : Number.isFinite(Number(expense.entered_amount))
+            ? Number(expense.entered_amount)
+            : parsedUsdAmount;
+        const currencyCode =
+          typeof expense.currency_code === 'string' && expense.currency_code.trim().length > 0
+            ? expense.currency_code.trim().toUpperCase().slice(0, 10)
+            : 'USD';
+        return {
+          trip_id: tripId,
+          day_number: expense.day_number,
+          client_id: expense.client_id,
+          label: expense.label,
+          amount: parsedUsdAmount,
+          entered_amount: parsedEnteredAmount,
+          currency_code: currencyCode,
+          category: expense.category,
+          finalized: typeof expense.finalized === 'boolean' ? expense.finalized : true,
+          updated_at: new Date().toISOString(),
+        };
+      });
       const { error: insertError } = await supabase.from('trip_expense').insert(rows);
       if (insertError) throw insertError;
     }

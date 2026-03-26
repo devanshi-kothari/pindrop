@@ -568,6 +568,58 @@ const FinalItinerary = () => {
     return itinerary.total_budget / rate;
   }, [itinerary?.total_budget, travelInformation.currency.code, travelInformation.currency.usdRate]);
 
+  const manualExpenseCurrencyOptions = useMemo(
+    () => {
+      const options = [
+        { code: "USD", label: "USD (United States Dollar)" },
+      ];
+      if (travelInformation.currency.code !== "USD") {
+        options.push({
+          code: travelInformation.currency.code,
+          label: `${travelInformation.currency.code} (${travelInformation.currency.name})`,
+        });
+      }
+      return options;
+    },
+    [travelInformation.currency.code, travelInformation.currency.name]
+  );
+
+  const defaultExpenseCurrency =
+    manualExpenseCurrencyOptions[manualExpenseCurrencyOptions.length - 1]?.code || "USD";
+
+  const ensureDraftDefaults = (draft?: ExpenseDraft): ExpenseDraft => ({
+    label: draft?.label ?? "",
+    amount: draft?.amount ?? "",
+    category: draft?.category ?? "other",
+    currency: draft?.currency ?? defaultExpenseCurrency,
+  });
+
+  const convertCurrencyToUsd = useCallback(
+    (amount: number, currencyCode?: string) => {
+      if (!Number.isFinite(amount) || amount <= 0) return 0;
+      if (!currencyCode || currencyCode === "USD") return amount;
+      if (currencyCode === travelInformation.currency.code) {
+        const rate = travelInformation.currency.usdRate;
+        return rate > 0 ? amount * rate : amount;
+      }
+      return amount;
+    },
+    [travelInformation.currency.code, travelInformation.currency.usdRate]
+  );
+
+  const convertUsdToCurrency = useCallback(
+    (usdAmount: number, currencyCode?: string) => {
+      if (!Number.isFinite(usdAmount) || usdAmount <= 0) return 0;
+      if (!currencyCode || currencyCode === "USD") return usdAmount;
+      if (currencyCode === travelInformation.currency.code) {
+        const rate = travelInformation.currency.usdRate;
+        return rate > 0 ? usdAmount / rate : usdAmount;
+      }
+      return usdAmount;
+    },
+    [travelInformation.currency.code, travelInformation.currency.usdRate]
+  );
+
   useEffect(() => {
     const loadFinalItinerary = async () => {
       if (!tripId) return;
@@ -1394,13 +1446,22 @@ const FinalItinerary = () => {
     id: string;
     label: string;
     amount: number;
+    amountUsd: number;
+    currencyCode: string;
     category: BudgetCategory;
     finalized?: boolean;
   };
 
+  type ExpenseDraft = {
+    label: string;
+    amount: string;
+    category: BudgetCategory;
+    currency: string;
+  };
+
   const [extraExpensesByDay, setExtraExpensesByDay] = useState<Record<number, ExtraExpense[]>>({});
   const [extraExpenseDrafts, setExtraExpenseDrafts] = useState<
-    Record<number, { label: string; amount: string; category: BudgetCategory }>
+    Record<number, { label: string; amount: string; category: BudgetCategory; currency: string }>
   >({});
   const [hasLoadedMeals, setHasLoadedMeals] = useState(false);
   const [hasLoadedExpenses, setHasLoadedExpenses] = useState(false);
@@ -1467,10 +1528,18 @@ const FinalItinerary = () => {
           const day = e.day_number;
           if (!day) return;
           if (!next[day]) next[day] = [];
+          const currencyCode = typeof e.currency_code === "string" && e.currency_code.trim().length > 0
+            ? e.currency_code.trim().toUpperCase()
+            : "USD";
+          const enteredAmount =
+            typeof e.entered_amount === "number" ? e.entered_amount : parseMoneyNumber(e.amount);
+          const usdAmount = parseMoneyNumber(e.amount);
           next[day].push({
             id: e.client_id || String(e.trip_expense_id),
             label: e.label,
-            amount: parseMoneyNumber(e.amount),
+            amount: enteredAmount,
+            amountUsd: usdAmount,
+            currencyCode,
             category: e.category as BudgetCategory,
             finalized: typeof e.finalized === "boolean" ? e.finalized : true,
           });
@@ -1797,17 +1866,27 @@ const FinalItinerary = () => {
       client_id: string;
       label: string;
       amount: number;
+      entered_amount: number;
+      currency_code: string;
       category: BudgetCategory;
       finalized?: boolean;
     }> = [];
     Object.entries(nextExpenses).forEach(([dayStr, items]) => {
       const dayNum = Number(dayStr);
       items.forEach((item) => {
+        const currencyCode = item.currencyCode || "USD";
+        const enteredAmount = Number.isFinite(item.amount) ? item.amount : 0;
+        const usdAmount =
+          Number.isFinite(item.amountUsd) && item.amountUsd > 0
+            ? item.amountUsd
+            : convertCurrencyToUsd(enteredAmount, currencyCode);
         expensesPayload.push({
           day_number: dayNum,
           client_id: item.id,
           label: item.label,
-          amount: item.amount,
+          amount: Number.isFinite(usdAmount) ? usdAmount : 0,
+          entered_amount: Number.isFinite(enteredAmount) ? enteredAmount : 0,
+          currency_code: currencyCode,
           category: item.category,
           finalized: typeof item.finalized === "boolean" ? item.finalized : true,
         });
@@ -1832,6 +1911,7 @@ const FinalItinerary = () => {
     label: string;
     amount: string;
     category: BudgetCategory;
+    currency: string;
   } | null>(null);
   const [editingBudgetItemId, setEditingBudgetItemId] = useState<string | null>(null);
   const [editingBudgetAmount, setEditingBudgetAmount] = useState("");
@@ -1865,10 +1945,14 @@ const FinalItinerary = () => {
           return sum + (m && typeof m.cost === "number" ? m.cost : 0);
         }, 0);
       })();
-      const extrasTotal = (extraExpensesByDay[day.day_number] || []).reduce(
-        (sum, e) => sum + parseMoneyNumber(e.amount),
-        0
-      );
+      const extrasTotal = (extraExpensesByDay[day.day_number] || []).reduce((sum, e) => {
+        const currencyCode = e.currencyCode || "USD";
+        const usdValue =
+          typeof e.amountUsd === "number" && Number.isFinite(e.amountUsd)
+            ? e.amountUsd
+            : convertCurrencyToUsd(e.amount, currencyCode);
+        return sum + usdValue;
+      }, 0);
       let flightTotal = 0;
       flightTotal += parseMoneyNumber(day.outbound_flight?.price);
       flightTotal += parseMoneyNumber(day.intercity_flight?.price);
@@ -3650,6 +3734,19 @@ const FinalItinerary = () => {
                                   <span className="font-semibold">Total planned spend:</span>{" "}
                                   {totals.total ? `$${formatMoney(totals.total)}` : "—"}
                                 </p>
+                                {totals.total &&
+                                  travelInformation.currency.code !== "USD" &&
+                                  travelInformation.currency.usdRate > 0 && (
+                                    <p>
+                                      <span className="font-semibold">
+                                        Total in {travelInformation.currency.code}:
+                                      </span>{" "}
+                                      {travelInformation.currency.code}{" "}
+                                      {formatMoney(
+                                        convertUsdToCurrency(totals.total, travelInformation.currency.code)
+                                      )}
+                                    </p>
+                                  )}
                                 {typeof itinerary.total_budget === "number" && (
                                   <p>
                                     <span className="font-semibold">Overall budget:</span>{" "}
@@ -3682,17 +3779,14 @@ const FinalItinerary = () => {
                                 {itinerary.days.map((day) => {
                                   const d = daily.find((row) => row.day_number === day.day_number);
                                   const extras = extraExpensesByDay[day.day_number] || [];
-                                  const draft =
-                                    extraExpenseDrafts[day.day_number] || {
-                                      label: "",
-                                      amount: "",
-                                      category: "other" as BudgetCategory,
-                                    };
+                                  const draft = ensureDraftDefaults(extraExpenseDrafts[day.day_number]);
 
                                   type BudgetItem = {
                                     id: string;
                                     label: string;
                                     amount: number;
+                                    displayAmount?: number;
+                                    displayCurrency?: string;
                                     kind: BudgetCategory;
                                     source: "auto" | "extra";
                                     dayNumber: number;
@@ -3794,14 +3888,21 @@ const FinalItinerary = () => {
 
                                   // Manual extras
                                   extras.forEach((e) => {
+                                    const currencyCode = e.currencyCode || "USD";
+                                    const usdValue =
+                                      typeof e.amountUsd === "number" && Number.isFinite(e.amountUsd)
+                                        ? e.amountUsd
+                                        : convertCurrencyToUsd(e.amount, currencyCode);
                                     items.push({
                                       id: e.id,
                                       label: e.label,
-                                      amount: e.amount,
+                                      amount: usdValue,
+                                      displayAmount: e.amount,
+                                      displayCurrency: currencyCode,
                                       kind: e.category,
                                       source: "extra",
-                                        dayNumber: day.day_number,
-                                        finalized: e.finalized ?? true,
+                                      dayNumber: day.day_number,
+                                      finalized: e.finalized ?? true,
                                     });
                                   });
 
@@ -3824,6 +3925,18 @@ const FinalItinerary = () => {
                                     hotel: "Hotel",
                                     transport: "Transportation",
                                     other: "Other",
+                                  };
+
+                                  const formatItemAmount = (budgetItem: BudgetItem) => {
+                                    const currencyCode = budgetItem.displayCurrency || "USD";
+                                    const displayValue =
+                                      typeof budgetItem.displayAmount === "number"
+                                        ? budgetItem.displayAmount
+                                        : budgetItem.amount;
+                                    if (currencyCode === "USD") {
+                                      return `$${displayValue.toFixed(2)}`;
+                                    }
+                                    return `${currencyCode} ${displayValue.toFixed(2)} (≈ $${budgetItem.amount.toFixed(2)})`;
                                   };
                                   return (
                                     <div
@@ -3990,7 +4103,7 @@ const FinalItinerary = () => {
                                                         )
                                                       }
                                                     />
-                                                    <div className="flex gap-2">
+                                                    <div className="flex gap-2 flex-wrap">
                                                       <Input
                                                         type="number"
                                                         min={0}
@@ -4005,6 +4118,23 @@ const FinalItinerary = () => {
                                                           )
                                                         }
                                                       />
+                                                      <select
+                                                        className="h-7 text-[11px] border border-blue-200 rounded px-1 bg-white text-slate-700"
+                                                        value={editingExtraDraft.currency}
+                                                        onChange={(ev) =>
+                                                          setEditingExtraDraft((prev) =>
+                                                            prev
+                                                              ? { ...prev, currency: ev.target.value }
+                                                              : prev
+                                                          )
+                                                        }
+                                                      >
+                                                        {manualExpenseCurrencyOptions.map((option) => (
+                                                          <option key={option.code} value={option.code}>
+                                                            {option.label}
+                                                          </option>
+                                                        ))}
+                                                      </select>
                                                       <select
                                                         className="h-7 text-[11px] border border-blue-200 rounded px-1 bg-white text-slate-700 flex-1"
                                                         value={editingExtraDraft.category}
@@ -4041,6 +4171,16 @@ const FinalItinerary = () => {
                                                         ) {
                                                           return;
                                                         }
+                                                        const currencySelection =
+                                                          editingExtraDraft.currency || defaultExpenseCurrency;
+                                                        const normalizedAmount = Math.max(
+                                                          0,
+                                                          parseFloat(amountNum.toFixed(2))
+                                                        );
+                                                        const usdValue = convertCurrencyToUsd(
+                                                          normalizedAmount,
+                                                          currencySelection
+                                                        );
                                                         setExtraExpensesByDay((prev) => {
                                                           const copy = { ...prev };
                                                           copy[day.day_number] = (copy[day.day_number] || []).map(
@@ -4049,10 +4189,9 @@ const FinalItinerary = () => {
                                                                 ? {
                                                                     ...x,
                                                                     label: editingExtraDraft.label.trim(),
-                                                                    amount: Math.max(
-                                                                      0,
-                                                                      parseFloat(amountNum.toFixed(2))
-                                                                    ),
+                                                                    amount: normalizedAmount,
+                                                                    amountUsd: usdValue,
+                                                                    currencyCode: currencySelection,
                                                                     category: editingExtraDraft.category,
                                                                   }
                                                                 : x
@@ -4099,7 +4238,7 @@ const FinalItinerary = () => {
                                               </div>
                                               <div className="flex items-center gap-2">
                                                 <span className="text-[11px] font-semibold">
-                                                  ${item.amount.toFixed(2)}
+                                                  {formatItemAmount(item)}
                                                 </span>
                                                 {showFinalToggle && (
                                                   <div className="flex items-center gap-1">
@@ -4135,8 +4274,9 @@ const FinalItinerary = () => {
                                                         setEditingExtraId(item.id);
                                                         setEditingExtraDraft({
                                                           label: item.label,
-                                                          amount: item.amount.toFixed(2),
+                                                          amount: (item.displayAmount ?? item.amount).toFixed(2),
                                                           category: item.kind,
+                                                          currency: item.displayCurrency || "USD",
                                                         });
                                                       }}
                                                     >
@@ -4181,7 +4321,7 @@ const FinalItinerary = () => {
                                           );
                                         })}
                                         <div className="mt-1 flex flex-col gap-1.5">
-                                          <div className="flex items-center gap-2 flex-nowrap">
+                                          <div className="flex items-center gap-2 flex-wrap">
                                             <Input
                                               placeholder="Label"
                                               className="h-7 text-[11px] flex-1 min-w-[140px]"
@@ -4190,11 +4330,7 @@ const FinalItinerary = () => {
                                                 setExtraExpenseDrafts((prev) => ({
                                                   ...prev,
                                                   [day.day_number]: {
-                                                    ...(prev[day.day_number] || {
-                                                      label: "",
-                                                      amount: "",
-                                                      category: "other" as BudgetCategory,
-                                                    }),
+                                                    ...ensureDraftDefaults(prev[day.day_number]),
                                                     label: ev.target.value,
                                                   },
                                                 }))
@@ -4203,23 +4339,38 @@ const FinalItinerary = () => {
                                             <Input
                                               type="number"
                                               min={0}
-                                              placeholder="$"
+                                              placeholder="Amount"
                                               className="h-7 w-20 text-[11px]"
                                               value={draft.amount}
                                               onChange={(ev) =>
                                                 setExtraExpenseDrafts((prev) => ({
                                                   ...prev,
                                                   [day.day_number]: {
-                                                    ...(prev[day.day_number] || {
-                                                      label: "",
-                                                      amount: "",
-                                                      category: "other" as BudgetCategory,
-                                                    }),
+                                                    ...ensureDraftDefaults(prev[day.day_number]),
                                                     amount: ev.target.value,
                                                   },
                                                 }))
                                               }
                                             />
+                                            <select
+                                              className="h-7 text-[11px] border border-blue-200 rounded px-1 bg-white text-slate-700"
+                                              value={draft.currency}
+                                              onChange={(ev) =>
+                                                setExtraExpenseDrafts((prev) => ({
+                                                  ...prev,
+                                                  [day.day_number]: {
+                                                    ...ensureDraftDefaults(prev[day.day_number]),
+                                                    currency: ev.target.value,
+                                                  },
+                                                }))
+                                              }
+                                            >
+                                              {manualExpenseCurrencyOptions.map((option) => (
+                                                <option key={option.code} value={option.code}>
+                                                  {option.label}
+                                                </option>
+                                              ))}
+                                            </select>
                                             <select
                                               className="h-7 text-[11px] border border-blue-200 rounded px-1 bg-white text-slate-700 w-32"
                                               value={draft.category}
@@ -4227,11 +4378,7 @@ const FinalItinerary = () => {
                                                 setExtraExpenseDrafts((prev) => ({
                                                   ...prev,
                                                   [day.day_number]: {
-                                                    ...(prev[day.day_number] || {
-                                                      label: "",
-                                                      amount: "",
-                                                      category: "other" as BudgetCategory,
-                                                    }),
+                                                    ...ensureDraftDefaults(prev[day.day_number]),
                                                     category: ev.target.value as BudgetCategory,
                                                   },
                                                 }))
@@ -4254,6 +4401,15 @@ const FinalItinerary = () => {
                                                 if (!draft.label.trim() || Number.isNaN(amountNum)) {
                                                   return;
                                                 }
+                                                const currencySelection = draft.currency || defaultExpenseCurrency;
+                                                const normalizedAmount = Math.max(
+                                                  0,
+                                                  parseFloat(amountNum.toFixed(2))
+                                                );
+                                                const usdValue = convertCurrencyToUsd(
+                                                  normalizedAmount,
+                                                  currencySelection
+                                                );
                                                 setExtraExpensesByDay((prev) => {
                                                   const next = {
                                                     ...prev,
@@ -4264,10 +4420,9 @@ const FinalItinerary = () => {
                                                           .toString(36)
                                                           .slice(2, 6)}`,
                                                         label: draft.label.trim(),
-                                                        amount: Math.max(
-                                                          0,
-                                                          parseFloat(amountNum.toFixed(2))
-                                                        ),
+                                                        amount: normalizedAmount,
+                                                        amountUsd: usdValue,
+                                                        currencyCode: currencySelection,
                                                         category: draft.category,
                                                         finalized: true,
                                                       },
@@ -4282,6 +4437,7 @@ const FinalItinerary = () => {
                                                     label: "",
                                                     amount: "",
                                                     category: draft.category,
+                                                    currency: currencySelection,
                                                   },
                                                 }));
                                               }}

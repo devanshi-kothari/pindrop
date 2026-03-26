@@ -91,6 +91,8 @@ CREATE TABLE IF NOT EXISTS trip_expense (
     client_id TEXT NOT NULL,
     label VARCHAR(255) NOT NULL,
     amount DECIMAL(10, 2) NOT NULL,
+    entered_amount DECIMAL(10, 2),
+    currency_code VARCHAR(10) DEFAULT 'USD',
     category VARCHAR(20) NOT NULL CHECK (category IN ('activity', 'meal', 'hotel', 'transport', 'other')),
     finalized BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
