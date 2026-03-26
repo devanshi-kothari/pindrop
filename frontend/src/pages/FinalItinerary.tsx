@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import DashboardHeader from "@/components/DashboardHeader";
 import DashboardSidebar from "@/components/DashboardSidebar";
@@ -17,6 +17,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { PieChart, Pie, Cell, Legend } from "recharts";
 import { getApiUrl } from "@/lib/api";
+import { getTravelInformation, type TravelInformation } from "@/lib/travelInfo";
 import { ArrowLeft, Plus, Trash2, X, RotateCcw, GripVertical } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -165,6 +166,57 @@ const mealSlotLabels: Record<MealSlot, string> = {
 
 const WALKING_THRESHOLD_MINUTES = 30;
 const WALKING_THRESHOLD_SECONDS = WALKING_THRESHOLD_MINUTES * 60;
+const conversionPreviewValues = [10, 50, 100];
+
+const formatExchangeRate = (value: number) => {
+  if (!Number.isFinite(value) || value <= 0) return "—";
+  if (value >= 1) return value.toFixed(2);
+  if (value >= 0.1) return value.toFixed(3);
+  return value.toFixed(4);
+};
+
+const formatUsdEstimate = (value: number) => {
+  if (!Number.isFinite(value) || value <= 0) return "—";
+  let formatted: string;
+  if (value >= 1000) {
+    formatted = value.toFixed(0);
+  } else if (value >= 100) {
+    formatted = value.toFixed(1);
+  } else {
+    formatted = value.toFixed(2);
+  }
+  return `$${formatted}`;
+};
+
+const foodTagLabelMap: Record<string, string> = {
+  vegetarian: "Vegetarian",
+  vegan: "Vegan",
+  "gluten-free": "Gluten-free",
+  pescatarian: "Pescatarian",
+  halal: "Halal",
+  kosher: "Kosher",
+  "dairy-free": "Dairy-free",
+  "nut-free": "Nut-free",
+  "contains-meat": "Contains meat",
+};
+
+const formatFoodTagLabel = (tag: string) => {
+  const key = tag.toLowerCase();
+  if (foodTagLabelMap[key]) {
+    return foodTagLabelMap[key];
+  }
+  return key
+    .replace(/-/g, " ")
+    .split(" ")
+    .map((word) => (word ? word.charAt(0).toUpperCase() + word.slice(1) : ""))
+    .join(" ")
+    .trim();
+};
+
+const formatPreferenceSummary = (values: string[]) => {
+  if (values.length === 0) return "No saved preferences";
+  return values.map((value) => formatFoodTagLabel(value)).join(", ");
+};
 
 type FinalItineraryData = {
   trip_id: number;
@@ -175,6 +227,16 @@ type FinalItineraryData = {
   num_days: number;
   total_budget: number | null;
   days: FinalItineraryDay[];
+};
+
+type RestaurantPreferences = {
+  dietary_restrictions?: string[] | null;
+};
+
+type TripPreferences = {
+  restaurant_preferences?: RestaurantPreferences | null;
+  ordered_cities?: string[] | null;
+  selected_cities?: string[] | null;
 };
 
 declare global {
@@ -403,7 +465,8 @@ const FinalItinerary = () => {
       { name: string; description: string; source_url: string; location: string; cost_estimate: string }
     >
   >({});
-  const [activeTab, setActiveTab] = useState<"overview" | "map" | "budget" | "calendar">("overview");
+  const [activeTab, setActiveTab] =
+    useState<"overview" | "map" | "budget" | "calendar" | "travel_info">("overview");
   const [selectedMapDayIndex, setSelectedMapDayIndex] = useState(0);
   const mapRef = useRef<HTMLDivElement | null>(null);
   const [travelInfoByDay, setTravelInfoByDay] = useState<Record<number, { segments: TravelSegment[] }>>({});
@@ -418,6 +481,7 @@ const FinalItinerary = () => {
   const [dragContext, setDragContext] = useState<DragContext | null>(null);
   const [dragHoverKey, setDragHoverKey] = useState<string | null>(null);
   const [selectedMapSegment, setSelectedMapSegment] = useState<{ dayNumber: number; index: number } | null>(null);
+  const [tripPreferences, setTripPreferences] = useState<TripPreferences | null>(null);
 
   type ChatMessage = {
     role: "user" | "assistant";
@@ -461,6 +525,49 @@ const FinalItinerary = () => {
     slot: MealSlot;
   } | null>(null);
 
+  const dietaryRestrictions = useMemo(() => {
+    const raw = tripPreferences?.restaurant_preferences?.dietary_restrictions;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((value) => (typeof value === "string" ? value.trim() : ""))
+      .filter((value): value is string => Boolean(value));
+  }, [tripPreferences]);
+
+  const inferredDestination = useMemo(() => {
+    if (itinerary?.destination) return itinerary.destination;
+    if (Array.isArray(tripPreferences?.ordered_cities) && tripPreferences.ordered_cities.length > 0) {
+      return tripPreferences.ordered_cities[0] || null;
+    }
+    if (Array.isArray(tripPreferences?.selected_cities) && tripPreferences.selected_cities.length > 0) {
+      return tripPreferences.selected_cities[0] || null;
+    }
+    return null;
+  }, [itinerary?.destination, tripPreferences]);
+
+  const travelInformation = useMemo<TravelInformation>(
+    () => getTravelInformation(inferredDestination, dietaryRestrictions),
+    [inferredDestination, dietaryRestrictions]
+  );
+
+  const conversionSamples = useMemo(
+    () =>
+      conversionPreviewValues.map((amount) => ({
+        amount,
+        usd: travelInformation.currency.usdRate > 0 ? amount * travelInformation.currency.usdRate : 0,
+      })),
+    [travelInformation.currency.usdRate]
+  );
+
+  const localBudgetEstimate = useMemo(() => {
+    if (!itinerary?.total_budget) return null;
+    const rate = travelInformation.currency.usdRate;
+    if (!rate || rate <= 0) return null;
+    if (travelInformation.currency.code === "USD") {
+      return itinerary.total_budget;
+    }
+    return itinerary.total_budget / rate;
+  }, [itinerary?.total_budget, travelInformation.currency.code, travelInformation.currency.usdRate]);
+
   useEffect(() => {
     const loadFinalItinerary = async () => {
       if (!tripId) return;
@@ -474,8 +581,8 @@ const FinalItinerary = () => {
           return;
         }
 
-        // Load both trip info and final itinerary
-        const [tripResponse, itineraryResponse] = await Promise.all([
+        // Load trip info, preferences, and final itinerary
+        const [tripResponse, itineraryResponse, preferencesResponse] = await Promise.all([
           fetch(getApiUrl(`api/trips/${tripId}`), {
             method: "GET",
             headers: {
@@ -484,6 +591,13 @@ const FinalItinerary = () => {
             },
           }),
           fetch(getApiUrl(`api/trips/${tripId}/final-itinerary`), {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+          }),
+          fetch(getApiUrl(`api/trips/${tripId}/preferences`), {
             method: "GET",
             headers: {
               Authorization: `Bearer ${token}`,
@@ -504,6 +618,13 @@ const FinalItinerary = () => {
           setItinerary(result.itinerary);
         } else {
           setItinerary(null);
+        }
+
+        const preferencesResult = await preferencesResponse.json();
+        if (preferencesResponse.ok && preferencesResult.success) {
+          setTripPreferences(preferencesResult.preferences || null);
+        } else {
+          setTripPreferences(null);
         }
       } catch (fetchError) {
         console.error("Error loading final itinerary:", fetchError);
@@ -2152,7 +2273,7 @@ const FinalItinerary = () => {
                   </div>
 
                   <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="mt-4">
-                    <TabsList className="grid w-full grid-cols-3 sm:grid-cols-4 mb-4">
+                    <TabsList className="grid w-full grid-cols-2 sm:grid-cols-5 mb-4">
                       <TabsTrigger value="overview" className="text-xs">
                         Editable Overview
                       </TabsTrigger>
@@ -2164,6 +2285,9 @@ const FinalItinerary = () => {
                       </TabsTrigger>
                       <TabsTrigger value="calendar" className="hidden sm:inline-flex text-xs">
                         Calendar
+                      </TabsTrigger>
+                      <TabsTrigger value="travel_info" className="text-xs">
+                        Travel Information
                       </TabsTrigger>
                     </TabsList>
 
@@ -4395,6 +4519,153 @@ const FinalItinerary = () => {
                             )}
                           </div>
                         ))}
+                      </div>
+                    </TabsContent>
+
+                    <TabsContent value="travel_info" className="mt-0">
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+                        <span className="font-semibold">Destination insights</span>
+                        <span>
+                          {travelInformation.matchedLocation
+                            ? `Matched to ${travelInformation.matchedLocation}`
+                            : "Add a destination to unlock localized guidance"}
+                        </span>
+                      </div>
+                      <div className="space-y-4">
+                        <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-4 space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <p className="text-xs uppercase tracking-wide text-blue-600 font-semibold">Language</p>
+                              <p className="text-base font-semibold text-slate-900">
+                                {travelInformation.language.name}
+                              </p>
+                            </div>
+                            {travelInformation.language.tip && (
+                              <p className="text-[11px] text-slate-600 max-w-md">
+                                {travelInformation.language.tip}
+                              </p>
+                            )}
+                          </div>
+                          {travelInformation.language.isEnglish ? (
+                            <p className="text-xs text-slate-600">
+                              English is widely spoken, but leading with a local greeting still earns instant goodwill.
+                            </p>
+                          ) : travelInformation.language.phrases.length > 0 ? (
+                            <div className="grid gap-2 sm:grid-cols-2">
+                              {travelInformation.language.phrases.map((phrase) => (
+                                <div
+                                  key={phrase.phrase}
+                                  className="rounded-md border border-blue-100 bg-white px-3 py-2 shadow-sm"
+                                >
+                                  <p className="text-sm font-semibold text-slate-900">{phrase.phrase}</p>
+                                  <p className="text-xs text-slate-500">{phrase.translation}</p>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-slate-600">
+                              Keep a translation app handy—we&apos;ll surface phrases once we know more about your route.
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-4 space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <p className="text-xs uppercase tracking-wide text-amber-600 font-semibold">Food</p>
+                              <p className="text-base font-semibold text-slate-900">Local favorites</p>
+                            </div>
+                            <div className="text-[11px] text-amber-700">
+                              Dietary focus: {formatPreferenceSummary(travelInformation.food.appliedRestrictions)}
+                            </div>
+                          </div>
+                          {travelInformation.food.suggestions.length > 0 ? (
+                            <div className="grid gap-3 md:grid-cols-2">
+                              {travelInformation.food.suggestions.map((food) => (
+                                <div
+                                  key={food.name}
+                                  className="rounded-md border border-amber-100 bg-white px-3 py-2 shadow-sm"
+                                >
+                                  <p className="text-sm font-semibold text-slate-900">{food.name}</p>
+                                  <p className="text-xs text-slate-600">{food.description}</p>
+                                  {food.tags && food.tags.length > 0 && (
+                                    <p className="mt-1 text-[11px] text-slate-500">
+                                      {food.tags.map((tag) => formatFoodTagLabel(tag)).join(" • ")}
+                                    </p>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-slate-600">
+                              Add a confirmed destination to surface exact dishes worth planning meals around.
+                            </p>
+                          )}
+                          {travelInformation.food.usedFallback &&
+                            travelInformation.food.appliedRestrictions.length > 0 && (
+                              <p className="text-[11px] text-amber-700">
+                                Local classics rarely align perfectly with your saved dietary needs—call ahead or look
+                                for specialty restaurants to confirm ingredients.
+                              </p>
+                            )}
+                        </div>
+
+                        <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 p-4 space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <p className="text-xs uppercase tracking-wide text-emerald-600 font-semibold">
+                                Currency
+                              </p>
+                              <p className="text-base font-semibold text-slate-900">
+                                {travelInformation.currency.name} ({travelInformation.currency.code})
+                              </p>
+                            </div>
+                            <div className="text-[11px] text-emerald-700">
+                              1 {travelInformation.currency.code} ≈ ${formatExchangeRate(travelInformation.currency.usdRate)} USD
+                            </div>
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <div className="rounded-md border border-emerald-100 bg-white px-3 py-2 text-xs text-slate-600">
+                              <p className="text-[11px] uppercase tracking-wide text-emerald-600 font-semibold">
+                                Local → USD
+                              </p>
+                              <ul className="mt-2 space-y-1">
+                                {conversionSamples.map((sample) => (
+                                  <li key={`local-${sample.amount}`} className="flex items-center justify-between">
+                                    <span>
+                                      {sample.amount.toLocaleString()} {travelInformation.currency.code}
+                                    </span>
+                                    <span>{formatUsdEstimate(sample.usd)}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                            <div className="rounded-md border border-emerald-100 bg-white px-3 py-2 text-xs text-slate-600 space-y-2">
+                              <p className="text-[11px] uppercase tracking-wide text-emerald-600 font-semibold">
+                                USD → Local
+                              </p>
+                              <p className="text-sm font-semibold text-slate-900">
+                                1 USD ≈ {formatExchangeRate(travelInformation.currency.inverseRate)}{" "}
+                                {travelInformation.currency.code}
+                              </p>
+                              {itinerary?.total_budget &&
+                                travelInformation.currency.code !== "USD" &&
+                                localBudgetEstimate !== null && (
+                                  <p className="text-[11px] text-slate-600">
+                                    Planned budget ${itinerary.total_budget.toLocaleString()} ≈{" "}
+                                    {travelInformation.currency.code}{" "}
+                                    {Math.round(localBudgetEstimate).toLocaleString()}
+                                  </p>
+                                )}
+                            </div>
+                          </div>
+                          {travelInformation.currency.note && (
+                            <p className="text-xs text-emerald-700">{travelInformation.currency.note}</p>
+                          )}
+                          <p className="text-[10px] text-slate-500">
+                            Rates are approximate averages—refresh closer to travel for live conversions.
+                          </p>
+                        </div>
                       </div>
                     </TabsContent>
 
