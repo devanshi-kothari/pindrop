@@ -20,6 +20,7 @@ interface RestaurantAlternative {
   link?: string;
   reservation_url?: string;
   source_url?: string;
+  image_url?: string | null;
   is_new?: boolean;
 }
 

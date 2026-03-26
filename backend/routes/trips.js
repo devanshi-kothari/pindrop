@@ -1349,6 +1349,7 @@ const buildMealRowFromRestaurant = (tripId, slotContext, restaurant) => ({
   name: restaurant.name || 'Restaurant',
   location: (restaurant.address || restaurant.location || '').trim() || null,
   link: restaurant.reservation_url || restaurant.source_url || null,
+  image_url: restaurant.image_url || null,
   cost: restaurant.cost_estimate != null ? parseFloat(restaurant.cost_estimate) : null,
   finalized: false,
 });
@@ -1525,7 +1526,7 @@ async function generateRestaurantsForRemainingSlots({
           description: suggestion.description || null,
           image_url: suggestion.image_url || null,
         })
-        .select('restaurant_id, name, city, location, address, cost_estimate, source_url, reservation_url')
+        .select('restaurant_id, name, city, location, address, cost_estimate, source_url, reservation_url, image_url')
         .single();
 
       if (restErr) {
@@ -1537,6 +1538,7 @@ async function generateRestaurantsForRemainingSlots({
           name,
           location: address,
           link,
+          image_url: suggestion.image_url || null,
           cost: costEstimate,
           finalized: false,
         });
@@ -2457,7 +2459,7 @@ router.get('/:tripId/meals', authenticateToken, async (req, res) => {
 
     const { data, error } = await supabase
       .from('trip_meal')
-      .select('trip_meal_id, day_number, slot, name, location, link, cost, finalized')
+      .select('trip_meal_id, day_number, slot, name, location, link, image_url, cost, finalized')
       .eq('trip_id', tripId)
       .order('day_number', { ascending: true });
 
@@ -2508,6 +2510,7 @@ router.put('/:tripId/meals', authenticateToken, async (req, res) => {
         name: meal.name || null,
         location: meal.location || null,
         link: meal.link || null,
+        image_url: meal.image_url || null,
         cost: meal.cost ?? null,
         finalized: typeof meal.finalized === 'boolean' ? meal.finalized : false,
         updated_at: new Date().toISOString(),
@@ -2515,7 +2518,7 @@ router.put('/:tripId/meals', authenticateToken, async (req, res) => {
       const { data: insertedMeals, error: insertError } = await supabase
         .from('trip_meal')
         .insert(rows)
-        .select('trip_meal_id, day_number, slot, name, location, link, cost, finalized');
+        .select('trip_meal_id, day_number, slot, name, location, link, image_url, cost, finalized');
       if (insertError) throw insertError;
       savedMeals = insertedMeals || [];
     }
@@ -8338,7 +8341,7 @@ IMPORTANT: Return ONLY valid JSON array, no markdown, no additional text.`;
       let fallbackQuery = supabase
         .from('restaurant')
         .select(
-          'restaurant_id, name, location, address, cuisine_type, meal_types, dietary_options, price_range, cost_estimate, rating, source_url, reservation_url, description'
+          'restaurant_id, name, location, address, cuisine_type, meal_types, dietary_options, price_range, cost_estimate, rating, source_url, reservation_url, description, image_url'
         );
 
       if (destination) {
@@ -8358,7 +8361,7 @@ IMPORTANT: Return ONLY valid JSON array, no markdown, no additional text.`;
         const { data: anyRestaurants, error: anyError } = await supabase
           .from('restaurant')
           .select(
-            'restaurant_id, name, location, address, cuisine_type, meal_types, dietary_options, price_range, cost_estimate, rating, source_url, reservation_url, description'
+            'restaurant_id, name, location, address, cuisine_type, meal_types, dietary_options, price_range, cost_estimate, rating, source_url, reservation_url, description, image_url'
           )
           .limit(3);
 
@@ -8464,6 +8467,7 @@ router.put('/:tripId/meals/:mealId/confirm-replacement', authenticateToken, asyn
         name: selectedRestaurant.name,
         location: selectedRestaurant.location || selectedRestaurant.address || null,
         link: selectedRestaurant.link || selectedRestaurant.reservation_url || selectedRestaurant.source_url || null,
+        image_url: selectedRestaurant.image_url || null,
         cost: selectedRestaurant.cost_estimate !== undefined ? parseFloat(selectedRestaurant.cost_estimate) : null,
         finalized: false,
         updated_at: new Date().toISOString(),

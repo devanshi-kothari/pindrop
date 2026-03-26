@@ -96,6 +96,7 @@ type FinalItineraryDay = {
     source_url?: string;
     source?: string;
     description?: string;
+    image_url?: string | null;
     finalized?: boolean;
   }>;
   outbound_flight?: FinalItineraryFlight;
@@ -113,6 +114,7 @@ type MealInfo = {
   name: string;
   location: string;
   link?: string;
+  image_url?: string | null;
   cost?: number;
   finalized?: boolean;
   description?: string | null;
@@ -260,6 +262,7 @@ interface PdfPreparedImage {
   dataUrl: string;
   width: number;
   height: number;
+  format: "JPEG" | "PNG" | "WEBP";
 }
 
 type JsPdfConstructor = new (options?: {
@@ -522,7 +525,7 @@ const buildInitialJournalInputs = (data: FinalItineraryData): JournalInputs => {
   };
 };
 
-const readFileAsDataUrl = (file: File) =>
+const readBlobAsDataUrl = (blob: Blob) =>
   new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -534,13 +537,13 @@ const readFileAsDataUrl = (file: File) =>
       }
     };
     reader.onerror = () => reject(reader.error ?? new Error("Failed to read file"));
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(blob);
   });
 
-const loadImageDimensions = (file: File) =>
+const loadImageDimensions = (blob: Blob) =>
   new Promise<{ width: number; height: number }>((resolve, reject) => {
     const image = new Image();
-    const objectUrl = URL.createObjectURL(file);
+    const objectUrl = URL.createObjectURL(blob);
     image.onload = () => {
       URL.revokeObjectURL(objectUrl);
       resolve({ width: image.naturalWidth, height: image.naturalHeight });
@@ -553,7 +556,7 @@ const loadImageDimensions = (file: File) =>
   });
 
 const preparePdfImage = async (file: File): Promise<PdfPreparedImage> => {
-  const dataUrlPromise = readFileAsDataUrl(file);
+  const dataUrlPromise = readBlobAsDataUrl(file);
   let dimensions: { width: number; height: number };
   try {
     dimensions = await loadImageDimensions(file);
@@ -562,7 +565,41 @@ const preparePdfImage = async (file: File): Promise<PdfPreparedImage> => {
     dimensions = { width: 1200, height: 800 };
   }
   const dataUrl = await dataUrlPromise;
-  return { dataUrl, ...dimensions };
+  return { dataUrl, ...dimensions, format: "JPEG" };
+};
+
+const determineImageFormat = (contentType?: string | null, url?: string): "JPEG" | "PNG" | "WEBP" => {
+  const normalizedType = contentType?.toLowerCase() || "";
+  const normalizedUrl = url?.toLowerCase() || "";
+  if (normalizedType.includes("webp") || normalizedUrl.endsWith(".webp")) {
+    return "WEBP";
+  }
+  if (normalizedType.includes("png") || normalizedUrl.endsWith(".png")) {
+    return "PNG";
+  }
+  return "JPEG";
+};
+
+const fetchImageForPdf = async (url: string): Promise<PdfPreparedImage> => {
+  if (typeof window === "undefined") {
+    throw new Error("Image loading is only available in the browser");
+  }
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to load image (${response.status})`);
+  }
+  const blob = await response.blob();
+  const format = determineImageFormat(response.headers.get("content-type"), url);
+  const dataUrlPromise = readBlobAsDataUrl(blob);
+  let dimensions: { width: number; height: number };
+  try {
+    dimensions = await loadImageDimensions(blob);
+  } catch (err) {
+    console.warn("Unable to detect remote image dimensions", err);
+    dimensions = { width: 1200, height: 800 };
+  }
+  const dataUrl = await dataUrlPromise;
+  return { dataUrl, ...dimensions, format };
 };
 
 let jsPdfLoaderPromise: Promise<JsPdfConstructor> | null = null;
@@ -1407,33 +1444,86 @@ const FinalItinerary = () => {
         const width = image.width * scale;
         const height = image.height * scale;
         ensureSpace(height + 12);
-        doc.addImage(image.dataUrl, "JPEG", horizontalMargin, cursorY, width, height);
+        doc.addImage(image.dataUrl, image.format, horizontalMargin, cursorY, width, height);
         cursorY += height + 12;
       };
 
-      const imagePromises: Array<Promise<[string, PdfPreparedImage]>> = [];
+      const userImagePromises: Array<Promise<[string, PdfPreparedImage]>> = [];
       if (journalInputs.overallImage) {
-        imagePromises.push(
-          preparePdfImage(journalInputs.overallImage).then((image) => ["overall", image])
+        userImagePromises.push(
+          preparePdfImage(journalInputs.overallImage).then(
+            (image): [string, PdfPreparedImage] => ["overall", image]
+          )
         );
       }
       Object.entries(journalInputs.activities).forEach(([key, entry]) => {
         if (entry.file) {
-          imagePromises.push(
-            preparePdfImage(entry.file).then((image) => [`activity:${key}`, image])
+          userImagePromises.push(
+            preparePdfImage(entry.file).then(
+              (image): [string, PdfPreparedImage] => [`activity:${key}`, image]
+            )
           );
         }
       });
       Object.entries(journalInputs.meals).forEach(([key, entry]) => {
         if (entry.file) {
-          imagePromises.push(
-            preparePdfImage(entry.file).then((image) => [`meal:${key}`, image])
+          userImagePromises.push(
+            preparePdfImage(entry.file).then(
+              (image): [string, PdfPreparedImage] => [`meal:${key}`, image]
+            )
           );
         }
       });
 
-      const imagePairs = await Promise.all(imagePromises);
-      const imageMap = new Map<string, PdfPreparedImage>(imagePairs);
+      const userImagePairs: Array<[string, PdfPreparedImage]> = await Promise.all(userImagePromises);
+      const userImageMap = new Map<string, PdfPreparedImage>(userImagePairs);
+
+      const dbImagePromises: Array<Promise<[string, PdfPreparedImage] | null>> = [];
+      const dbImageCache = new Map<string, Promise<PdfPreparedImage | null>>();
+      const queueDbImage = (key: string, url?: string | null) => {
+        if (!url) return;
+        const normalized = url.trim();
+        if (!normalized) return;
+        if (!dbImageCache.has(normalized)) {
+          dbImageCache.set(
+            normalized,
+            fetchImageForPdf(normalized).catch((err) => {
+              console.warn("Unable to fetch itinerary image", normalized, err);
+              return null;
+            })
+          );
+        }
+        const promise = dbImageCache
+          .get(normalized)!
+          .then((image): [string, PdfPreparedImage] | null => (image ? [key, image] : null));
+        dbImagePromises.push(promise);
+      };
+
+      itinerary.days.forEach((day) => {
+        (day.activities || []).forEach((activity, index) => {
+          queueDbImage(`activity:${buildActivityKey(day.day_number, index)}`, activity.image_url);
+        });
+        const dayMeals = mealsByDay[day.day_number] || {};
+        mealSlotOrder.forEach((slot) => {
+          const meal = dayMeals[slot];
+          queueDbImage(`meal:${buildMealKey(day.day_number, slot)}`, meal?.image_url);
+        });
+      });
+
+      const dbImageResults = await Promise.all(dbImagePromises);
+      const dbImagePairs = dbImageResults.filter(
+        (pair): pair is [string, PdfPreparedImage] => Array.isArray(pair)
+      );
+      const dbImageMap = new Map<string, PdfPreparedImage>(dbImagePairs);
+
+      const getImagesForKey = (key: string) => {
+        const images: PdfPreparedImage[] = [];
+        const dbImage = dbImageMap.get(key);
+        if (dbImage) images.push(dbImage);
+        const userImage = userImageMap.get(key);
+        if (userImage) images.push(userImage);
+        return images;
+      };
 
       const title = itinerary.trip_title || "Trip Journal";
       addHeading(title);
@@ -1465,7 +1555,7 @@ const FinalItinerary = () => {
         journalInputs.overallNotes ||
           "Use this space to reflect on standout memories, travel tips, or lessons learned."
       );
-      const heroImage = imageMap.get("overall");
+      const heroImage = userImageMap.get("overall");
       if (heroImage) {
         addImageBlock(heroImage);
       }
@@ -1490,10 +1580,7 @@ const FinalItinerary = () => {
           if (entry?.note) {
             addBodyText(`Traveler note: ${entry.note}`);
           }
-          const image = imageMap.get(`activity:${activityKey}`);
-          if (image) {
-            addImageBlock(image);
-          }
+          getImagesForKey(`activity:${activityKey}`).forEach((image) => addImageBlock(image));
           addSpacer(4);
         });
 
@@ -1517,10 +1604,7 @@ const FinalItinerary = () => {
           if (entry?.note) {
             addBodyText(`Traveler note: ${entry.note}`);
           }
-          const image = imageMap.get(`meal:${mealKey}`);
-          if (image) {
-            addImageBlock(image);
-          }
+          getImagesForKey(`meal:${mealKey}`).forEach((image) => addImageBlock(image));
           addSpacer(2);
         });
       });
@@ -1947,6 +2031,7 @@ const FinalItinerary = () => {
             name: m.name || "",
             location: m.location || "",
             link: m.link || undefined,
+            image_url: m.image_url || undefined,
             cost: typeof m.cost === "number" ? m.cost : undefined,
             finalized: typeof m.finalized === "boolean" ? m.finalized : false,
           };
@@ -2015,6 +2100,7 @@ const FinalItinerary = () => {
         name?: string;
         location?: string;
         link?: string;
+        image_url?: string;
         cost?: number;
         finalized?: boolean;
       }> = [];
@@ -2031,6 +2117,7 @@ const FinalItinerary = () => {
             name: m.name || "",
             location: m.location || "",
             link: m.link,
+            image_url: m.image_url || undefined,
             cost: typeof m.cost === "number" ? m.cost : undefined,
             finalized: typeof m.finalized === "boolean" ? m.finalized : false,
           });
@@ -5658,13 +5745,15 @@ const FinalItinerary = () => {
                                 }
                                 const parsedCost = parseFloat(mealForm.cost);
                                 setMealsByDay((prev) => {
-                                  const existingFinalized =
-                                    prev[editingMeal.dayNumber]?.[editingMeal.slot]?.finalized ?? false;
+                                  const existingEntry =
+                                    prev[editingMeal.dayNumber]?.[editingMeal.slot];
+                                  const existingFinalized = existingEntry?.finalized ?? false;
                                   const next = {
                                     ...prev,
                                     [editingMeal.dayNumber]: {
                                       ...(prev[editingMeal.dayNumber] || {}),
                                       [editingMeal.slot]: {
+                                        ...existingEntry,
                                         name: mealForm.name.trim() || "",
                                         location: mealForm.location.trim(),
                                         link: mealForm.link.trim() || undefined,

@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS trip_meal (
     name VARCHAR(255),
     location VARCHAR(255),
     link TEXT,
+    image_url TEXT,
     cost DECIMAL(10, 2),
     finalized BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
